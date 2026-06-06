@@ -373,6 +373,24 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 	return ret;
 }
 
+static int64_t edge264_unwrap_output_poc(Edge264Decoder *dec, int view, int32_t raw_poc) {
+	int64_t base = dec->OutputPocBase[view];
+	if (dec->HavePrevOutputPoc[view]) {
+		if (raw_poc < dec->PrevOutputPoc[view]) {
+			int64_t span = 0;
+			if (dec->sps.pic_order_cnt_type == 0 && dec->sps.log2_max_pic_order_cnt_lsb > 0)
+				span = (int64_t)1 << dec->sps.log2_max_pic_order_cnt_lsb;
+			if (span > 0)
+				base += span;
+		}
+	} else {
+		dec->HavePrevOutputPoc[view] = 1;
+	}
+	dec->OutputPocBase[view] = base;
+	dec->PrevOutputPoc[view] = raw_poc;
+	return base + raw_poc;
+}
+
 
 
 /**
@@ -406,6 +424,10 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		out->samples[1] = dec->samples_buffers[pic0] + offC;
 		out->samples[2] = dec->samples_buffers[pic0] + offC + (dec->out.stride_C >> 1);
 		out->FrameId = dec->FrameIds[pic0];
+		out->Poc = dec->FieldOrderCnt[0][pic0];
+		out->Poc_mvc = 0;
+		out->DisplayPoc = edge264_unwrap_output_poc(dec, 0, out->Poc);
+		out->DisplayPoc_mvc = 0;
 		out->return_arg = (void *)((uintptr_t)1 << pic0);
 		if (idx1 >= 0) {
 			dec->get_frame_queue[1][idx1] = -1;
@@ -415,6 +437,8 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 			out->samples_mvc[1] = dec->samples_buffers[pic1] + offC;
 			out->samples_mvc[2] = dec->samples_buffers[pic1] + offC + (dec->out.stride_C >> 1);
 			out->FrameId_mvc = dec->FrameIds[pic1];
+			out->Poc_mvc = dec->FieldOrderCnt[0][pic1];
+			out->DisplayPoc_mvc = edge264_unwrap_output_poc(dec, 1, out->Poc_mvc);
 			out->return_arg = (void *)((uintptr_t)1 << pic0 | (uintptr_t)1 << pic1);
 		}
 		res = 0;

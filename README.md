@@ -1,3 +1,61 @@
+# edge264-mvc
+
+A maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) that makes the
+**MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end.
+
+**Why this fork exists:** edge264 is the only viable open-source *software* MVC decoder -
+FFmpeg / libavcodec do not decode MVC at all (they drop the dependent view entirely). But
+upstream's MVC path has several bugs, and the fixing PRs have sat open for 3+ months. This
+fork integrates those PRs plus additional fixes and verifies the result on real 3D streams.
+
+### What's fixed vs upstream master
+
+| Fix | Source |
+|---|---|
+| MVC DPB slot aliasing (corrupt dependent view) | [PR #23](https://github.com/tvlabs/edge264/pull/23) · @intrepidsilence |
+| Single-threaded decode hang (`ready_tasks == 0`) | [PR #25](https://github.com/tvlabs/edge264/pull/25) · @intrepidsilence |
+| DPB undersizing (assert / single-thread hang) | this fork |
+| Strict subset-SPS trailing bits (remuxed Blu-rays) | this fork |
+| Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
+| Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
+| Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
+
+### Status
+
+- **Single-thread only** - upstream's experimental multi-thread path is broken (pre-existing,
+  reproducible on pristine upstream even for non-MVC streams). Call `edge264_alloc` with
+  `n_threads = 0`.
+- Verified on three commercial 1080p MVC streams: all decode to correct, POC-paired,
+  display-ordered stereo - **0 pairing / 0 ordering errors over 2,500+ frame pairs**.
+- Builds exactly like upstream (`make`), passes upstream's own `make check` suite, and
+  matches upstream **exactly, file by file, on the full JVT conformance set** (AVCv1 +
+  FRExt + MVC, 231 streams, bit-exact against reference YUV where provided): 113 PASS /
+  114 unsupported / 4 FAIL on both - zero regressions. API is upstream's plus four POC
+  fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`, `DisplayPoc_mvc`).
+- Upstream [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults)
+  is deliberately **not** included: the JVT conformance run shows it breaks 5 High
+  Profile streams with `seq_scaling_matrix_present_flag = 0` (spec mandates flat-16
+  there, and `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade
+  correctly).
+- Unspecified NAL types (0, 24-31) - including the type-24 units some 3D Blu-rays carry
+  ([issue #20](https://github.com/tvlabs/edge264/issues/20)) - return `ENOTSUP` by design,
+  matching upstream's tested contract. Skip them in your decode loop rather than treating
+  them as fatal (this is a caller-side concern, not a library change).
+
+### Layout
+
+`master` carries upstream master plus the patches above. Each fix also lives on its own
+`fix/*`, `pick/*`, or `port/*` branch so it can be submitted upstream individually;
+cherry-picked PRs keep their original authorship.
+
+Used in production by **[Oku3D Media Player](https://oku3d.com/)**, a native 3D media player.
+
+Credits: [@intrepidsilence](https://github.com/intrepidsilence) and
+[@vkapartzianis](https://github.com/vkapartzianis) for the upstream PRs / patches this fork
+builds on, and Thibault Raffaillac (tvlabs) for edge264 itself.
+
+---
+
 # edge264
 
 edge264 is an H.264/AVC cross-platform open-source decoder, focused on **speed** and **ease-of-use**.

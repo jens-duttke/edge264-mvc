@@ -398,6 +398,9 @@ typedef struct Edge264Decoder {
 	int32_t BottomFieldOrderCnt;
 	Edge264SeqParameterSet sps;
 	Edge264SeqParameterSet ssps;
+	int64_t OutputPocBase[2];
+	int32_t PrevOutputPoc[2];
+	int8_t HavePrevOutputPoc[2];
 	Edge264PicParameterSet PPS[4];
 	
 	// frame buffer as a Structure Of Arrays

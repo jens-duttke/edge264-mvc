@@ -405,12 +405,28 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		return EINVAL;
 	if (dec->n_threads)
 		pthread_mutex_lock(&dec->lock);
-	int idx0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16) - 1;
+	int idx0 = -1;
 	int idx1 = -1;
-	int pic0, pic1, res = ENOMSG;
-	if (idx0 >= 0 && dec->next_deblock_addr[pic0 = dec->get_frame_queue[0][idx0]] == INT_MAX) {
+	int pic0 = -1;
+	int pic1 = -1;
+	int res = ENOMSG;
+	int lowest_poc = INT_MAX;
+	for (int i = 0; i < 16; ++i) {
+		int queued = dec->get_frame_queue[0][i];
+		if (queued < 0)
+			continue;
+		if (dec->next_deblock_addr[queued] != INT_MAX)
+			continue;
+		int poc = dec->FieldOrderCnt[0][queued];
+		if (idx0 >= 0 && poc >= lowest_poc)
+			continue;
+		idx0 = i;
+		pic0 = queued;
+		lowest_poc = poc;
+	}
+	if (idx0 >= 0) {
 		if (dec->ssps.BitDepth_Y != 0) {
-			int32_t base_poc = dec->FieldOrderCnt[0][pic0];
+			int32_t base_poc = lowest_poc;
 			for (int i = 0; i < 16; ++i) {
 				int queued = dec->get_frame_queue[1][i];
 				if (queued < 0)

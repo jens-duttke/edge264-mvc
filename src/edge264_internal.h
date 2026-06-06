@@ -1105,10 +1105,16 @@ static const int8_t shz_mask[48] = {
 /**
  * Helper functions
  */
-#ifndef min
-	static always_inline int min(int a, int b) { return (a < b) ? a : b; }
-	static always_inline int max(int a, int b) { return (a > b) ? a : b; }
-#endif
+// MinGW's <stdlib.h> (included above) defines untyped min/max macros;
+// guarding with #ifndef would silently substitute them for the typed
+// helpers below and break every caller that relies on the unsigned ->
+// int round-trip, most damagingly the se(v) sign mapping in get_se16
+// (negative values then compare unsigned and clamp to the upper bound,
+// corrupting QPs, deblocking offsets and POCs on Windows builds).
+#undef min
+#undef max
+static always_inline int min(int a, int b) { return (a < b) ? a : b; }
+static always_inline int max(int a, int b) { return (a > b) ? a : b; }
 static always_inline unsigned minu(unsigned a, unsigned b) { return (a < b) ? a : b; }
 static always_inline unsigned maxu(unsigned a, unsigned b) { return (a > b) ? a : b; }
 // min on values that may wrap around (PicOrderCnt)

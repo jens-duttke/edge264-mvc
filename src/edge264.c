@@ -406,10 +406,25 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 	if (dec->n_threads)
 		pthread_mutex_lock(&dec->lock);
 	int idx0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16) - 1;
-	int idx1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16) - 1;
+	int idx1 = -1;
 	int pic0, pic1, res = ENOMSG;
-	if (idx0 >= 0 && dec->next_deblock_addr[pic0 = dec->get_frame_queue[0][idx0]] == INT_MAX &&
-		(dec->ssps.BitDepth_Y == 0 || (idx1 >= 0 && dec->next_deblock_addr[pic1 = dec->get_frame_queue[1][idx1]] == INT_MAX))) {
+	if (idx0 >= 0 && dec->next_deblock_addr[pic0 = dec->get_frame_queue[0][idx0]] == INT_MAX) {
+		if (dec->ssps.BitDepth_Y != 0) {
+			int32_t base_poc = dec->FieldOrderCnt[0][pic0];
+			for (int i = 0; i < 16; ++i) {
+				int queued = dec->get_frame_queue[1][i];
+				if (queued < 0)
+					continue;
+				if (dec->next_deblock_addr[queued] != INT_MAX)
+					continue;
+				if (dec->FieldOrderCnt[0][queued] != base_poc)
+					continue;
+				idx1 = i;
+				pic1 = queued;
+				break;
+			}
+		}
+		if (dec->ssps.BitDepth_Y == 0 || idx1 >= 0) {
 		dec->get_frame_queue[0][idx0] = -1;
 		memcpy(out, &dec->out, sizeof(*out)); // GCC-14 crashes on dec->out = format
 		int top = dec->out.frame_crop_offsets[0];
@@ -444,6 +459,7 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		res = 0;
 		if (!borrow)
 			dec->output_frames &= ~(uintptr_t)out->return_arg;
+		}
 	}
 	if (dec->n_threads)
 		pthread_mutex_unlock(&dec->lock);

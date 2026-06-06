@@ -2003,8 +2003,19 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 	}
 	
 	// check if the SPS can be committed
-	if (!rbsp_end(&dec->gb, 1))
-		ret = EBADMSG;
+	if (!rbsp_end(&dec->gb, 1)) {
+		// Remuxed 3D Blu-ray subset SPS NALs are occasionally non-conformant,
+		// carrying a couple of stray bits before rbsp_trailing_bits. Every
+		// syntax element above has already been parsed and bounds-checked, so
+		// accept the subset SPS as long as the leftover slack is confined to
+		// the NAL's trailing bytes (matching the leniency of reference
+		// decoders); a larger gap means the bit position is genuinely off and
+		// the SPS is dropped. The cast turns an over-read (negative) into a
+		// large unsigned value, so it is rejected too.
+		int bits_to_end = (int)(dec->gb.end - dec->gb.CPB) * 8 + SIZE_BIT * 2 - 2 - ctz(dec->gb.lsb_cache);
+		if (dec->nal_unit_type != 15 || (unsigned)bits_to_end > 16)
+			ret = EBADMSG;
+	}
 	if (ret == 0) {
 		
 		// compute the resulting frame format

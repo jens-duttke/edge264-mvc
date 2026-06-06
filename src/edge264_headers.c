@@ -1994,12 +1994,18 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 	
 	// additional stuff for subset_seq_parameter_set
 	if (dec->nal_unit_type == 15) {
+		// The base VUI's max_dec_frame_buffering describes the base view alone;
+		// the MVC DPB holds both views, so floor it at the MVC-doubled level
+		// limit (MaxDpbFrames was already doubled via << mvc). Some encoders
+		// signal only the base-view value here, which undersizes the joint DPB
+		// and trips the C.4.5 fullness checks during decode.
+		sps.max_dec_frame_buffering = max(sps.max_dec_frame_buffering, MaxDpbFrames);
 		if (profile_idc != 118 && profile_idc != 128 && profile_idc != 134 ||
 			(get_u1(&dec->gb), parse_seq_parameter_set_mvc_extension(dec, profile_idc)))
 			return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP); // we shouldn't parse any further thus exit now
 		if (get_u1(&dec->gb))
 			parse_mvc_vui_parameters_extension(dec, &sps);
-		get_u1(&dec->gb);
+		get_u1(&dec->gb); // additional_extension2_flag
 	}
 	
 	// check if the SPS can be committed

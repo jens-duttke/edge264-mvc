@@ -57,6 +57,10 @@ typedef struct Edge264Frame {
 	int16_t stride_mb;
 	int32_t FrameId;
 	int32_t FrameId_mvc; // second view
+	int32_t Poc;
+	int32_t Poc_mvc; // second view
+	int64_t DisplayPoc;
+	int64_t DisplayPoc_mvc; // second view
 	int16_t frame_crop_offsets[4]; // {top,right,bottom,left}, useful to derive the original frame with 16x16 macroblocks
 	void *return_arg;
 } Edge264Frame;

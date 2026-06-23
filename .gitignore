@@ -22,3 +22,8 @@
 !tests/liveness/*.264
 !tests/liveness/*.txt
 !tests/liveness/*.md
+!tests/asan_check.c
+!tests/asan
+!tests/asan/*.264
+!tests/asan/*.txt
+!tests/asan/*.md

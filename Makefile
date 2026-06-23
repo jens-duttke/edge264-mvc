@@ -377,7 +377,7 @@ uninstall:
 # ==============================================================================
 .PHONY: clean clear
 clean clear:
-	$(Q)rm -f edge264_test edge264_test.exe edge264_test.js edge264_test.wasm edge264_check edge264_check.exe edge264_check.js edge264_check.wasm conformance_check conformance_check.exe liveness_check liveness_check.exe edge264*.o libedge264.a edge264.$(MAJOR).dll edge264.js edge264.wasm libedge264.$(MAJOR).dylib libedge264-universal.$(MAJOR).dylib libedge264.so libedge264.so.$(MAJOR)
+	$(Q)rm -f edge264_test edge264_test.exe edge264_test.js edge264_test.wasm edge264_check edge264_check.exe edge264_check.js edge264_check.wasm conformance_check conformance_check.exe liveness_check liveness_check.exe asan_check asan_check.exe edge264*.o libedge264.a edge264.$(MAJOR).dll edge264.js edge264.wasm libedge264.$(MAJOR).dylib libedge264-universal.$(MAJOR).dylib libedge264.so libedge264.so.$(MAJOR)
 
 
 # ==============================================================================
@@ -425,6 +425,21 @@ check-liveness: liveness_check$(EXE)
 
 liveness_check$(EXE): tests/liveness_check.c edge264.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/liveness_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
+
+# Sanitizer regression over the crafted-SEI fixtures (tests/asan/). Build with a
+# sanitizer to instrument it, e.g. `make SANITIZE=address check-asan` (or
+# address,undefined). The harness decodes each fixture with a log callback
+# (parse_sei only runs in the logging path) under a timeout, catching the
+# crafted-bitstream memory-safety (M2) and unbounded-loop (M5) regressions a
+# hash/liveness run cannot. Standalone (not part of `check`): the sanitizer
+# build is heavier and opt-in. Run with SANITIZE empty it just decodes the
+# fixtures uninstrumented (the OOB read is then a benign, undetected read).
+.PHONY: check-asan
+check-asan: asan_check$(EXE)
+	$(Q)ASAN_OPTIONS=detect_leaks=0 timeout 90 ./asan_check$(EXE) run tests/asan/manifest.txt tests/asan
+
+asan_check$(EXE): tests/asan_check.c edge264.h $(LIBNAME)
+	$(Q)$(CCLD) -I. tests/asan_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
 
 .PHONY: gentests
 gentests: $(TESTS_264)

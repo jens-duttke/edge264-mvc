@@ -132,7 +132,10 @@ int ADD_VARIANT(parse_sei)(Edge264Decoder *dec, Edge264UnrefCb unref_cb, void *u
 		(dec->gb.lsb_cache & (dec->gb.lsb_cache - 1)) ||
 		dec->gb.CPB < dec->gb.end) // if CPB >= end then all future refills will yield 0
 	{
-		int byte, payloadType = 0, payloadSize = 0;
+		// unsigned: payloadType/payloadSize are ff_byte sums (H.264 7.3.2.3.1)
+		// with no upper bound; signed overflow on a crafted run is UB and could
+		// make payloadType negative, defeating the `<= 205` dispatch guard below.
+		unsigned byte, payloadType = 0, payloadSize = 0;
 		do {
 			byte = get_uv(&dec->gb, 8);
 			payloadType += byte;
@@ -142,7 +145,7 @@ int ADD_VARIANT(parse_sei)(Edge264Decoder *dec, Edge264UnrefCb unref_cb, void *u
 			payloadSize += byte;
 		} while (byte == 255);
 		log_dec(dec, "  - payloadType: %s (%u)\n",
-			payloadType_names[payloadType], payloadType);
+			payloadType <= 205 ? payloadType_names[payloadType] : "Reserved", payloadType);
 		Edge264GetBits start = dec->gb;
 		int sei_ret = ENOTSUP;
 		if (payloadType <= 205 && parse_sei_message[payloadType])
@@ -152,7 +155,10 @@ int ADD_VARIANT(parse_sei)(Edge264Decoder *dec, Edge264UnrefCb unref_cb, void *u
 			nal_ret = EBADMSG;
 		if (sei_ret) {
 			dec->gb = start;
-			while (payloadSize-- > 0)
+			// stop at end-of-NAL: payloadSize is attacker-controlled and uncapped,
+			// so without this a crafted ~INT_MAX payloadSize spins billions of
+			// no-op get_uv calls past the buffer (CPU-burn DoS).
+			while (payloadSize-- > 0 && dec->gb.CPB < dec->gb.end)
 				get_uv(&dec->gb, 8);
 		} else {
 			int skip = (SIZE_BIT - 1 - ctz(dec->gb.lsb_cache)) & 7;

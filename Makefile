@@ -377,7 +377,7 @@ uninstall:
 # ==============================================================================
 .PHONY: clean clear
 clean clear:
-	$(Q)rm -f edge264_test edge264_test.exe edge264_test.js edge264_test.wasm edge264_check edge264_check.exe edge264_check.js edge264_check.wasm edge264*.o libedge264.a edge264.$(MAJOR).dll edge264.js edge264.wasm libedge264.$(MAJOR).dylib libedge264-universal.$(MAJOR).dylib libedge264.so libedge264.so.$(MAJOR)
+	$(Q)rm -f edge264_test edge264_test.exe edge264_test.js edge264_test.wasm edge264_check edge264_check.exe edge264_check.js edge264_check.wasm conformance_check conformance_check.exe edge264*.o libedge264.a edge264.$(MAJOR).dll edge264.js edge264.wasm libedge264.$(MAJOR).dylib libedge264-universal.$(MAJOR).dylib libedge264.so libedge264.so.$(MAJOR)
 
 
 # ==============================================================================
@@ -389,10 +389,22 @@ ifeq ($(OS),wasm)
 	$(Q)$(shell which node) --experimental-wasm-relaxed-simd edge264_check$(EXE)
 else
 	$(Q)./edge264_check$(EXE)
+	$(Q)$(MAKE) --no-print-directory check-conformance
 endif
 
 edge264_check$(EXE): src/edge264_check.c edge264.h src/edge264_internal.h $(LIBNAME)
 	$(Q)$(CCLD) src/edge264_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
+
+# Committed decode-regression over the bundled JVT conformance fixtures
+# (tests/conformance/). Run by `check` on every non-wasm target; also
+# runnable standalone. Needs no reference YUVs - the manifest carries
+# the expected per-view hashes, so a fresh clone runs it fully offline.
+.PHONY: check-conformance
+check-conformance: conformance_check$(EXE)
+	$(Q)./conformance_check$(EXE) run tests/conformance/manifest.txt tests/conformance
+
+conformance_check$(EXE): tests/conformance_check.c edge264.h $(LIBNAME)
+	$(Q)$(CCLD) -I. tests/conformance_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
 
 .PHONY: gentests
 gentests: $(TESTS_264)

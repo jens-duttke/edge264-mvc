@@ -1954,7 +1954,13 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 	int max_num_ref_frames = get_ue16(&dec->gb, 16);
 	int gaps_in_frame_num_value_allowed_flag = get_u1(&dec->gb);
 	sps.pic_width_in_mbs = get_ue16(&dec->gb, 1022) + 1;
-	int pic_height_in_map_units = get_ue16(&dec->gb, 527 << sps.frame_mbs_only_flag) + 1;
+	// frame_mbs_only_flag is not parsed until the next line, so the historical
+	// bound "527 << sps.frame_mbs_only_flag" always evaluated with the zero-
+	// initialized flag (== 527), wrongly clamping tall *progressive* streams
+	// (flag == 1, where pic_height_in_map_units maps 1:1 to MB rows) at 528 rows
+	// / 8448px and then mis-sizing the frame buffers. Use the looser progressive
+	// bound 527 << 1; interlaced (flag == 0) is rejected as ENOTSUP just below.
+	int pic_height_in_map_units = get_ue16(&dec->gb, 527 << 1) + 1;
 	sps.frame_mbs_only_flag = get_u1(&dec->gb);
 	if (!sps.frame_mbs_only_flag)
 		ret = ENOTSUP;

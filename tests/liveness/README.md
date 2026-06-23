@@ -17,3 +17,13 @@ asserts it delivers the expected number of base-view frames without stalling.
   non-existing frames. edge264 used to abort on assert(sref_slots > 0); it now
   rejects the non-conformant frame with EBADMSG (ffmpeg likewise only reports an
   error). Expected 0 delivered frames; a regressed assert aborts the harness.
+
+- tall_progressive.264: a synthetic single progressive IDR of 1x540 MBs
+  (16x8640px), generated with tests/gen_avc.py. Its height exceeds the 528-row
+  ceiling that the SPS parser wrongly imposed by evaluating the bound
+  "527 << frame_mbs_only_flag" before frame_mbs_only_flag is read (so it was
+  always 527 << 0). The clamp mis-sized the frame and the DPB never delivered
+  the picture, leaving the decoder spinning on ENOBUFS. ffmpeg decodes the full
+  16x8640 frame, and the fixed decoder's output is byte-identical to ffmpeg's
+  (207360-byte YUV420p); edge264 must deliver that 1 frame, not stall.
+  Regresses bug L2 (edge264_headers.c parse_seq_parameter_set height bound).

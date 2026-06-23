@@ -4,3 +4,8 @@
 # base frame alone (9 total) instead of deadlocking. Regression (M1) => stall.
 mvc_unpaired_base 9
 dpb_frame_num_gap 0
+# tall_progressive: a 1x540-MB (16x8640px) progressive IDR. The SPS height bound
+# "527 << frame_mbs_only_flag" is read before the flag is parsed (always 527),
+# clamping progressive height at 528 rows and stalling the DPB. ffmpeg decodes
+# the full frame; edge264 must emit it (1 frame) too. Regression (L2) => stall.
+tall_progressive 1

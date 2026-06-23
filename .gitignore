@@ -9,3 +9,11 @@
 !*.in
 !tests
 !tests/*.yaml
+!tests/conformance_check.c
+!tests/conformance
+!tests/conformance/2d
+!tests/conformance/mvc
+!tests/conformance/2d/*.264
+!tests/conformance/mvc/*.264
+!tests/conformance/*.txt
+!tests/conformance/*.md

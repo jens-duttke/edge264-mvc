@@ -386,7 +386,15 @@ clean clear:
 .PHONY: check
 check: edge264_check$(EXE)
 ifeq ($(OS),wasm)
-	$(Q)$(shell which node) --experimental-wasm-relaxed-simd edge264_check$(EXE)
+	# Older Node hides relaxed SIMD behind --experimental-wasm-relaxed-simd;
+	# newer Node enables it by default and removed the flag (passing it aborts
+	# with "bad option"). Probe once and only pass the flag when accepted.
+	$(Q)NODE="$(shell which node)"; \
+	  if "$$NODE" --experimental-wasm-relaxed-simd -e '' >/dev/null 2>&1; then \
+	    "$$NODE" --experimental-wasm-relaxed-simd edge264_check$(EXE); \
+	  else \
+	    "$$NODE" edge264_check$(EXE); \
+	  fi
 else
 	$(Q)./edge264_check$(EXE)
 	$(Q)$(MAKE) --no-print-directory check-conformance

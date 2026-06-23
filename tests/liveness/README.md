@@ -11,3 +11,9 @@ asserts it delivers the expected number of base-view frames without stalling.
   9-frame base view of this stream; edge264 must too (emitting the unpairable
   base alone with zeroed _mvc), not deadlock. Regresses bug M1 (edge264.c
   edge264_get_frame MVC pairing) if the liveness valve is removed.
+
+- dpb_frame_num_gap.264: a frame_num gap (8.2.5.2) where every reference slot
+  is already long-term, so no short-term slot can be reclaimed for the inferred
+  non-existing frames. edge264 used to abort on assert(sref_slots > 0); it now
+  rejects the non-conformant frame with EBADMSG (ffmpeg likewise only reports an
+  error). Expected 0 delivered frames; a regressed assert aborts the harness.

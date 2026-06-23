@@ -1093,7 +1093,13 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 	if (__builtin_expect(gap > 1, 0)) {
 		// make enough non-reference slots by dereferencing short-term and non-existing frames
 		int sref_slots = sps->max_num_ref_frames - __builtin_popcount(same_views & dec->prev_long_term_frames & ~dec->prev_short_term_frames);
-		assert(sref_slots > 0);
+		// A frame_num gap needs a short-term slot to hold the inferred
+		// non-existing frames. If every reference slot is already long-term there
+		// is none to reclaim - a non-conformant stream. Reject it gracefully (no
+		// frame has been allocated yet, currPic < 0) instead of aborting on the
+		// old assert(sref_slots > 0) or proceeding into a stalled DPB state.
+		if (sref_slots <= 0)
+			return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
 		int non_existing = min(gap - 1, sref_slots);
 		for (int num_srefs = non_existing + __builtin_popcount(same_views & dec->prev_short_term_frames); num_srefs > sref_slots; num_srefs--) {
 			int unref = 0, lowest = INT_MAX;

@@ -3,3 +3,4 @@
 # so one base frame has no POC-matching dependent. A correct decoder emits that
 # base frame alone (9 total) instead of deadlocking. Regression (M1) => stall.
 mvc_unpaired_base 9
+dpb_frame_num_gap 0

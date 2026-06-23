@@ -1,0 +1,5 @@
+# liveness fixtures: <name> <expected base-view frames>
+# mvc_unpaired_base: MVCDS-4 with one dependent-view (NAL type 20) slice removed,
+# so one base frame has no POC-matching dependent. A correct decoder emits that
+# base frame alone (9 total) instead of deadlocking. Regression (M1) => stall.
+mvc_unpaired_base 9

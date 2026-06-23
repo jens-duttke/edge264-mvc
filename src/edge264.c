@@ -352,12 +352,14 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 	
 	// bump all frames at the end of buffer
 	if (__builtin_expect(buf >= end, 0)) {
+		dec->flushing = 1; // end-of-stream drain: let get_frame emit an unpairable MVC base alone
 		int ret = bump_all_frames(dec);
 		if (dec->n_threads)
 			pthread_mutex_unlock(&dec->lock);
 		return ret ?: ENODATA;
 	}
-	
+	dec->flushing = 0;
+
 	// prefill the bitstream cache while parsing the NAL byte header
 	dec->gb.CPB = buf;
 	dec->gb.end = end;
@@ -453,7 +455,25 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 				break;
 			}
 		}
-		if (dec->ssps.BitDepth_Y == 0 || idx1 >= 0) {
+		// MVC liveness valve: a base frame is normally held until its
+		// POC-matching dependent view is decoded (frames come out POC-paired).
+		// If that dependent is permanently missing (a dropped/corrupt
+		// dependent NAL on a damaged 3D stream), holding the base would
+		// deadlock once the DPB can no longer buffer another frame without
+		// output - the exact fullness condition edge264_decode_NAL uses to
+		// return ENOBUFS. Emit the unpaired base alone (zeroed _mvc, like the
+		// 2D path) so the caller always makes forward progress. In a
+		// well-formed stream the dependent is already queued (idx1 >= 0), so
+		// this never fires.
+		int force_unpaired = 0;
+		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
+			int queued0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
+			int queued1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
+			int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
+			// fullness (would-be ENOBUFS) mid-stream, or end-of-stream drain
+			force_unpaired = dec->flushing || queued0 + queued1 + bumpable > 16;
+		}
+		if (dec->ssps.BitDepth_Y == 0 || idx1 >= 0 || force_unpaired) {
 		dec->get_frame_queue[0][idx0] = -1;
 		memcpy(out, &dec->out, sizeof(*out)); // GCC-14 crashes on dec->out = format
 		int top = dec->out.frame_crop_offsets[0];

@@ -389,6 +389,7 @@ typedef struct Edge264Decoder {
 	int8_t hH; // last decoded timestamp hours, 0..23
 	int8_t mM; // last decoded timestamp minutes, 0..59
 	int8_t sS; // last decoded timestamp seconds, 0..59
+	int8_t flushing; // set while draining at end-of-stream (buf>=end); lets get_frame emit an unpairable MVC base alone instead of deadlocking
 	int32_t FrameNum; // value for the current incomplete frame, unaffected by mmco5
 	int32_t PrevRefFrameNum[2]; // one per view
 	int32_t idr_pic_id; // value for the last slice, used for detecting new frames

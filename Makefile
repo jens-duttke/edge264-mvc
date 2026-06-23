@@ -377,7 +377,7 @@ uninstall:
 # ==============================================================================
 .PHONY: clean clear
 clean clear:
-	$(Q)rm -f edge264_test edge264_test.exe edge264_test.js edge264_test.wasm edge264_check edge264_check.exe edge264_check.js edge264_check.wasm conformance_check conformance_check.exe edge264*.o libedge264.a edge264.$(MAJOR).dll edge264.js edge264.wasm libedge264.$(MAJOR).dylib libedge264-universal.$(MAJOR).dylib libedge264.so libedge264.so.$(MAJOR)
+	$(Q)rm -f edge264_test edge264_test.exe edge264_test.js edge264_test.wasm edge264_check edge264_check.exe edge264_check.js edge264_check.wasm conformance_check conformance_check.exe liveness_check liveness_check.exe edge264*.o libedge264.a edge264.$(MAJOR).dll edge264.js edge264.wasm libedge264.$(MAJOR).dylib libedge264-universal.$(MAJOR).dylib libedge264.so libedge264.so.$(MAJOR)
 
 
 # ==============================================================================
@@ -402,9 +402,21 @@ edge264_check$(EXE): src/edge264_check.c edge264.h src/edge264_internal.h $(LIBN
 .PHONY: check-conformance
 check-conformance: conformance_check$(EXE)
 	$(Q)./conformance_check$(EXE) run tests/conformance/manifest.txt tests/conformance
+	$(Q)$(MAKE) --no-print-directory check-liveness
 
 conformance_check$(EXE): tests/conformance_check.c edge264.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/conformance_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
+
+# Committed liveness regression over the bundled damaged-stream fixtures
+# (tests/liveness/). Decodes each with a progress guard and asserts it delivers
+# the expected base-frame count without stalling - catches decode-deadlock bugs
+# a hash comparison cannot express. Run by `check`; also runnable standalone.
+.PHONY: check-liveness
+check-liveness: liveness_check$(EXE)
+	$(Q)./liveness_check$(EXE) run tests/liveness/manifest.txt tests/liveness
+
+liveness_check$(EXE): tests/liveness_check.c edge264.h $(LIBNAME)
+	$(Q)$(CCLD) -I. tests/liveness_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
 
 .PHONY: gentests
 gentests: $(TESTS_264)

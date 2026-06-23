@@ -17,3 +17,8 @@
 !tests/conformance/mvc/*.264
 !tests/conformance/*.txt
 !tests/conformance/*.md
+!tests/liveness_check.c
+!tests/liveness
+!tests/liveness/*.264
+!tests/liveness/*.txt
+!tests/liveness/*.md

@@ -9,3 +9,10 @@ dpb_frame_num_gap 0
 # clamping progressive height at 528 rows and stalling the DPB. ffmpeg decodes
 # the full frame; edge264 must emit it (1 frame) too. Regression (L2) => stall.
 tall_progressive 1
+# zero_ref_idr: a synthetic (gen_avc.py) single all-intra IDR whose SPS carries
+# max_num_ref_frames=0, yet its IDR is a reference picture (nal_ref_idc>0) and
+# marks itself short-term (8.2.5.1). The lone self-reference exceeded the zero
+# limit and aborted a C.4.5 invariant assert. A correct decoder floors the ref
+# count and emits the frame (1). ffmpeg decodes it; edge264 must too. Regression
+# (zero-ref) => abort (crashes the harness) instead of delivering the frame.
+zero_ref_idr 1

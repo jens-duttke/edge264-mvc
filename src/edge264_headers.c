@@ -1956,7 +1956,17 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 	int mvc = (dec->nal_unit_type == 15);
 	// contrary to H.10.2.1-f we force MaxDpbFrames a multiple of 2 for MVC
 	int MaxDpbFrames = min((MaxDpbMbs[min(level_idc, 63)] / (unsigned)(sps.pic_width_in_mbs * sps.pic_height_in_mbs)) << mvc, 16);
-	sps.max_num_ref_frames = min(max_num_ref_frames, MaxDpbFrames >> mvc);
+	// A reference picture always occupies one DPB slot, so the reference set is
+	// >= 1 whenever any picture is kept for reference. Some encoders (x264 for
+	// single-frame / all-intra clips) signal max_num_ref_frames == 0 yet still
+	// emit a nal_ref_idc>0 IDR, which 8.2.5.1 marks short-term for reference;
+	// that lone self-reference would then exceed a zero limit and abort the
+	// C.4.5 invariant asserts in parse_slice_layer_without_partitioning (and,
+	// via the derived max_dec_frame_buffering below, the fullness assert too).
+	// Floor at 1 so a reference picture fits, matching ffmpeg. Conformant >= 1
+	// values are unchanged, and a stream that truly keeps no reference frame
+	// (every slice nal_ref_idc == 0) never marks one, so the floor is inert.
+	sps.max_num_ref_frames = max(min(max_num_ref_frames, MaxDpbFrames >> mvc), 1);
 	if (movemask(set8(profile_idc) == ((u8x16){44, 86, 100, 110, 122, 244})) &&
 		(constraint_set_flags & 1 << 4)) {
 		sps.max_num_reorder_frames = 0;

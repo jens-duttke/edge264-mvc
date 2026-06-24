@@ -3,3 +3,10 @@
 # so one base frame has no POC-matching dependent. A correct decoder emits that
 # base frame alone (9 total) instead of deadlocking. Regression (M1) => stall.
 mvc_unpaired_base 9
+# zero_ref_idr: a synthetic (gen_avc.py) single all-intra IDR whose SPS carries
+# max_num_ref_frames=0, yet its IDR is a reference picture (nal_ref_idc>0) and
+# marks itself short-term (8.2.5.1). The lone self-reference exceeded the zero
+# limit and aborted a C.4.5 invariant assert. A correct decoder floors the ref
+# count and emits the frame (1). ffmpeg decodes it; edge264 must too. Regression
+# (zero-ref) => abort (crashes the harness) instead of delivering the frame.
+zero_ref_idr 1

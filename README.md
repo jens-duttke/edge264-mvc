@@ -10,37 +10,67 @@ fork integrates those PRs plus additional fixes and verifies the result on real 
 
 ### What's fixed vs upstream master
 
+The fork is **single-thread only** — call `edge264_alloc` with `n_threads = 0`. Upstream's
+experimental multi-thread path is broken (pre-existing, reproducible on pristine upstream even
+for non-MVC streams); on top of that the fork fixes a single-threaded decode hang
+([PR #25](https://github.com/tvlabs/edge264/pull/25) · @intrepidsilence, `ready_tasks == 0`).
+The API is upstream's plus four POC fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`,
+`DisplayPoc_mvc`). The whole set still matches upstream **file by file on the full 231-stream
+JVT conformance corpus** (AVCv1 + FRExt + MVC, bit-exact against reference YUV where provided):
+113 PASS / 114 unsupported / 4 FAIL on both, **zero regressions**.
+
+**MVC / stereo correctness** — the reason this fork exists; verified on three commercial 1080p
+MVC streams with **0 pairing / 0 ordering errors over 2,500+ frame pairs**:
+
 | Fix | Source |
 |---|---|
 | MVC DPB slot aliasing (corrupt dependent view) | [PR #23](https://github.com/tvlabs/edge264/pull/23) · @intrepidsilence |
-| Single-threaded decode hang (`ready_tasks == 0`) | [PR #25](https://github.com/tvlabs/edge264/pull/25) · @intrepidsilence |
-| DPB undersizing (assert / single-thread hang) | this fork |
+| MVC subset-SPS DPB undersizing (assert / single-thread hang) | this fork |
 | Strict subset-SPS trailing bits (remuxed Blu-rays) | this fork |
+| Unpairable MVC base view deadlock (dropped/corrupt dependent NAL) | this fork |
 | Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
 
-### Status
+**Decode robustness on real-world streams** — found by a broad decode audit over a large,
+heterogeneous sample corpus (crashes, hangs and decode failures that the synthetic and
+conformance suites do not exercise). Each carries a committed regression fixture
+([`tests/liveness`](tests/liveness) / [`tests/asan`](tests/asan)) and is **inert on the full
+JVT conformance set** (identical results before and after, zero regressions); each was verified
+against FFmpeg on real captures:
 
-- **Single-thread only** - upstream's experimental multi-thread path is broken (pre-existing,
-  reproducible on pristine upstream even for non-MVC streams). Call `edge264_alloc` with
-  `n_threads = 0`.
-- Verified on three commercial 1080p MVC streams: all decode to correct, POC-paired,
-  display-ordered stereo - **0 pairing / 0 ordering errors over 2,500+ frame pairs**.
-- Builds exactly like upstream (`make`), passes upstream's own `make check` suite, and
-  matches upstream **exactly, file by file, on the full JVT conformance set** (AVCv1 +
-  FRExt + MVC, 231 streams, bit-exact against reference YUV where provided): 113 PASS /
-  114 unsupported / 4 FAIL on both - zero regressions. API is upstream's plus four POC
-  fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`, `DisplayPoc_mvc`).
-- Upstream [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults)
-  is deliberately **not** included: the JVT conformance run shows it breaks 5 High
-  Profile streams with `seq_scaling_matrix_present_flag = 0` (spec mandates flat-16
-  there, and `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade
-  correctly).
-- Unspecified NAL types (0, 24-31) - including the type-24 units some 3D Blu-rays carry
-  ([issue #20](https://github.com/tvlabs/edge264/issues/20)) - return `ENOTSUP` by design,
-  matching upstream's tested contract. Skip them in your decode loop rather than treating
-  them as fatal (this is a caller-side concern, not a library change).
+| Fix | Failure mode it removes |
+|---|---|
+| Floor `max_num_ref_frames` at 1 so a reference IDR fits the DPB | reference IDR didn't fit the DPB (C.4.5 fullness assert) |
+| Floor derived `max_dec_frame_buffering` at the reference count | a resolution-exceeds-signaled-level stream aborted a C.4.5 assert |
+| Read `frame_mbs_only_flag` before bounding `pic_height_in_map_units` | tall progressive frames clamped / stalled |
+| Reject `frame_num` gap with no reclaimable slot (instead of aborting) | a frame-num gap aborted the decoder |
+| Harden SEI parsing against crafted `payloadType` / `payloadSize` | out-of-bounds read / multi-second CPU burn on a crafted SEI |
+| Emit an incomplete final picture at end-of-stream | a capture truncated mid-frame (broadcast TS/M2TS) deadlocked the drain |
+| Recover an orphaned undelivered picture on a flush drain | a corrupt-slice frame stalled the DPB and lost the last picture |
+| Clamp out-of-range RefPicList entries | stack overrun / access violation on a non-conformant ref list |
+| Tolerate a VUI that over-reads past the SPS rbsp | whole stream dropped over a common encoder defect |
+| Tolerate a CABAC slice that over-reads past its NAL when complete | a dense 4K multi-slice CABAC frame stalled mid-stream |
+| Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected → mid-stream stall, 0 frames |
+
+**Build / cross-compile** — the Windows DLL is cross-built with MinGW-w64; wasm via Node:
+
+| Fix | Source |
+|---|---|
+| Route aligned allocations through a MinGW-compatible CRT pair (`_aligned_malloc`/`_aligned_free`) | this fork |
+| Stop MinGW's `stdlib.h` `min`/`max` macros from shadowing the typed helpers | this fork |
+| Probe Node for relaxed-SIMD flag support in the wasm `make check` | this fork |
+
+**Deliberately not included:**
+
+- Upstream [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults): the
+  full JVT conformance run shows it breaks 5 High Profile streams with
+  `seq_scaling_matrix_present_flag = 0` (the spec mandates flat-16 there, and
+  `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade correctly).
+- Unspecified NAL types (0, 24-31) — including the type-24 units some 3D Blu-rays carry
+  ([issue #20](https://github.com/tvlabs/edge264/issues/20)) — return `ENOTSUP` by design,
+  matching upstream's tested contract. Skip them in your decode loop rather than treating them
+  as fatal (a caller-side concern, not a library change).
 
 ### Layout
 

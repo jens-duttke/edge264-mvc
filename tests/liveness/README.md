@@ -42,3 +42,14 @@ a failed target).
   (384-byte YUV420p); edge264 must deliver that 1 frame. Regresses the zero-ref
   fix (edge264_headers.c parse_seq_parameter_set max_num_ref_frames floor) if
   the floor is removed.
+
+- dpb_overflow.264: a synthetic single all-intra IDR (20x20 = 400 MBs / 320x320px),
+  generated with tests/gen_avc.py, whose SPS signals level 1.0 (MaxDpbMbs 396).
+  Because 400 > 396, the inferred MaxDpbFrames = 396/400 = 0 and so the derived
+  max_dec_frame_buffering = 0, yet the IDR is a reference picture occupying one DPB
+  slot. The fullness assert in parse_slice_layer_without_partitioning
+  (edge264_headers.c, C.4.5) then sees 1 > 0 and aborts the process during slice-
+  header parsing, before any macroblock is decoded. ffmpeg decodes the single
+  frame of this over-level clip; edge264 must deliver that 1 frame too. Regresses
+  the DPB-buffering floor (edge264_headers.c parse_seq_parameter_set, where the
+  derived MaxDpbFrames is floored at the reference count) if the floor is removed.

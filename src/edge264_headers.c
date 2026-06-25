@@ -1979,6 +1979,15 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 	// values are unchanged, and a stream that truly keeps no reference frame
 	// (every slice nal_ref_idc == 0) never marks one, so the floor is inert.
 	sps.max_num_ref_frames = max(min(max_num_ref_frames, MaxDpbFrames >> mvc), 1);
+	// A stream whose resolution exceeds its signaled level makes MaxDpbMbs/frame
+	// == 0, so the inferred MaxDpbFrames (and the max_dec_frame_buffering derived
+	// from it below) would be 0 even though the floored reference set needs >= 1
+	// slot - the very first reference picture then trips the C.4.5 fullness assert
+	// during slice-header parsing. Floor the derived DPB size at the reference
+	// count so a kept picture always fits. Inert for conformant streams (there
+	// MaxDpbFrames already covers the references) and matches ffmpeg, which
+	// decodes such over-level clips.
+	MaxDpbFrames = max(MaxDpbFrames, sps.max_num_ref_frames << mvc);
 	if (movemask(set8(profile_idc) == ((u8x16){44, 86, 100, 110, 122, 244})) &&
 		(constraint_set_flags & 1 << 4)) {
 		sps.max_num_reorder_frames = 0;

@@ -16,3 +16,11 @@ tall_progressive 1
 # count and emits the frame (1). ffmpeg decodes it; edge264 must too. Regression
 # (zero-ref) => abort (crashes the harness) instead of delivering the frame.
 zero_ref_idr 1
+# dpb_overflow: a synthetic IDR whose SPS signals level 1.0 (MaxDpbMbs 396) but a
+# 20x20 = 400-MB frame, so the inferred MaxDpbFrames = 396/400 = 0 and thus
+# max_dec_frame_buffering = 0. The lone reference IDR occupies one DPB slot, so
+# 1 > 0 tripped the C.4.5 fullness assert (edge264_headers.c:1245) during slice-
+# header parsing. A correct decoder floors the derived DPB size at the reference
+# count and emits the frame (1). ffmpeg decodes it. Regression (DPB-buffering
+# floor) => abort (crashes the harness).
+dpb_overflow 1

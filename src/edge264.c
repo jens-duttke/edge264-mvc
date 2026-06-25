@@ -430,7 +430,15 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		int queued = dec->get_frame_queue[0][i];
 		if (queued < 0)
 			continue;
-		if (dec->next_deblock_addr[queued] != INT_MAX)
+		// A picture that never completed (e.g. a stream truncated mid-frame, as
+		// real captured TS/M2TS clips often are) keeps next_deblock_addr != INT_MAX
+		// forever. Holding it back is correct mid-stream, but at end-of-stream
+		// (dec->flushing) it would deadlock: bump_all_frames keeps returning
+		// ENOBUFS while a draining caller gets nothing. Emit it anyway while
+		// flushing so the caller always makes forward progress and the decoder
+		// terminates - the same valve the MVC unpaired-base path uses below, and
+		// what ffmpeg does (it conceals the partial picture and terminates).
+		if (dec->next_deblock_addr[queued] != INT_MAX && !dec->flushing)
 			continue;
 		int poc = dec->FieldOrderCnt[0][queued];
 		if (idx0 >= 0 && poc >= lowest_poc)

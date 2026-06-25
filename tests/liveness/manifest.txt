@@ -24,3 +24,13 @@ zero_ref_idr 1
 # count and emits the frame (1). ffmpeg decodes it. Regression (DPB-buffering
 # floor) => abort (crashes the harness).
 dpb_overflow 1
+# incomplete_frame: a synthetic IDR whose SPS declares a 2-MB picture but whose
+# only slice carries just 1 macroblock, so the picture never completes
+# (remaining_mbs > 0, next_deblock_addr stays != INT_MAX). At end-of-stream
+# get_frame used to skip the unfinished picture forever while bump_all_frames
+# kept returning ENOBUFS - a deadlock a draining caller cannot escape. The fix
+# emits the partial picture while flushing (like the MVC unpaired-base valve),
+# so the decoder makes forward progress and delivers it (1). Mirrors real
+# captured TS/M2TS clips truncated mid-frame, which ffmpeg also emits + terminates
+# on. Regression (end-of-stream forward progress) => stall.
+incomplete_frame 1

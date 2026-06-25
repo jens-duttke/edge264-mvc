@@ -53,3 +53,16 @@ a failed target).
   frame of this over-level clip; edge264 must deliver that 1 frame too. Regresses
   the DPB-buffering floor (edge264_headers.c parse_seq_parameter_set, where the
   derived MaxDpbFrames is floored at the reference count) if the floor is removed.
+
+- incomplete_frame.264: a synthetic IDR (30 bytes), generated with tests/gen_avc.py,
+  whose SPS declares a 2-macroblock picture (2x1 MBs) but whose only coded slice
+  carries just 1 macroblock. The picture therefore never completes
+  (remaining_mbs > 0 and next_deblock_addr stays != INT_MAX). edge264_get_frame
+  skips not-yet-deblocked pictures, which is correct mid-stream but at end-of-stream
+  deadlocked: bump_all_frames kept returning ENOBUFS while the draining caller got
+  nothing back, spinning forever. The fix lets get_frame emit such a picture while
+  dec->flushing (the same forward-progress valve the MVC unpaired-base path uses),
+  so the decoder delivers the partial picture (1) and terminates. This is the class
+  of real captured TS/M2TS clips that end mid-frame - ffmpeg conceals the partial
+  picture and terminates likewise. Regresses the end-of-stream forward-progress
+  valve (edge264.c edge264_get_frame) => stall.

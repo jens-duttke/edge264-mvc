@@ -831,7 +831,7 @@ static void parse_ref_pic_list_modification(Edge264Decoder *dec, Edge264SeqParam
 		t->RefPicList[1][0] = t->RefPicList[0][1];
 		t->RefPicList[1][1] = t->RefPicList[0][0];
 	}
-	
+
 	// parse the ref_pic_list_modification() header
 	for (int l = 0; l <= t->slice_type; l++) {
 		unsigned picNumLX = (t->field_pic_flag) ? dec->FrameNum * 2 + 1 : dec->FrameNum;
@@ -871,7 +871,23 @@ static void parse_ref_pic_list_modification(Edge264Decoder *dec, Edge264SeqParam
 			log_dec(dec, "]\n");
 		}
 	}
-	
+
+	// A non-conformant stream can leave RefPicList entries that index no valid
+	// picture - surplus slots when num_ref_idx_active exceeds the available
+	// references, or the basePic == -1 sentinel a list modification falls back to
+	// when it resolves to no existing picture. Either would later index the
+	// picture-keyed 0..31 buffers (the implicit-weight init in initialize_context,
+	// MapPicToList0, ...) out of bounds. Replace every out-of-range referenced
+	// entry with an in-range slot. Inert for conformant streams (all referenced
+	// entries are valid); matches ffmpeg, which does not crash on these.
+	for (int l = 0; l <= t->slice_type; l++) {
+		int valid = (size > 0 && (unsigned)t->RefPicList[l][0] < 32) ? t->RefPicList[l][0] : 0;
+		for (int i = 0; i < t->pps.num_ref_idx_active[l]; i++) {
+			if ((unsigned)t->RefPicList[l][i] >= 32)
+				t->RefPicList[l][i] = valid;
+		}
+	}
+
 	#ifdef LOGS
 		for (int lx = 0; lx <= t->slice_type; lx++) {
 			log_dec(dec, lx == 0 ? "  RefPicLists: [[" : "], [");

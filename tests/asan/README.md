@@ -14,3 +14,15 @@ a log callback. Built with -fsanitize=address; run under a timeout.
   times regardless of the bytes left in the NAL (a multi-second CPU-burn on a
   crafted stream). The fix stops it at end-of-NAL; a regression spins billions
   of iterations and is caught by the timeout wrapper.
+- reflist_oob.264: a 29-byte synthetic stream - a leading non-IDR B slice (so
+  basePic is still the -1 sentinel) with weighted_bipred_idc == 2 (implicit
+  weights), a ref_pic_list_modification that resolves to no existing picture, and
+  num_ref_idx_active larger than the available references. The resulting
+  RefPicList holds out-of-range slots (the -1 basePic and surplus entries), which
+  initialize_context's implicit-weight init then used as indices into the
+  picture-keyed 0..31 stack/array buffers (td.q[pic], MapPicToList0[pic], ...),
+  overrunning them (edge264_headers.c:241). Real over-active-ref captures crash
+  the same way (a level-3 480/720/1080 clip and HDTV samples found in a sweep).
+  The fix clamps every out-of-range referenced RefPicList entry to an in-range
+  slot; ffmpeg decodes such non-conformant streams without crashing. ASAN catches
+  the overrun if the clamp is removed.

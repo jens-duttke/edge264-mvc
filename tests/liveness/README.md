@@ -95,3 +95,19 @@ a failed target).
   delivered. ffmpeg decodes them too. Found on a real 4K capture (VR Inferno.mp4) whose
   4-slice CABAC frames hit this on ~29 of their final slices. Regresses the cabac
   end-of-slice over-read tolerance (edge264_headers.c worker_loop) => mid-stream stall.
+
+- cabac_orphan.264: an IDR followed by 23 pictures (synthetic CABAC,
+  tests/gen_cabac_orphan.py; 1x2 = 2-MB pictures), where picture 1 codes only 1 of its
+  2 macroblocks - its slice ends via end_of_slice mid-picture, so remaining_mbs stays > 0
+  and it never finalizes (the state a corrupt stream leaves when a slice errors mid-frame).
+  The SPS VUI sets max_num_reorder_frames = 0, so each complete picture is output
+  immediately; the held incomplete picture has the lowest pending POC, so it is bumped into
+  the 16-entry output queue but skipped by edge264_get_frame (an unfinished picture is held
+  back mid-stream). The following complete higher-POC pictures ARE delivered, so they keep
+  bumping and shift the unfinished one out of the queue. Orphaned (still in to_get_frames
+  but no longer queued), it made bump_all_frames return ENOBUFS forever at end-of-stream:
+  the decoder delivered 23 of 24 and stalled. The fix finalizes and re-queues such an orphan
+  so the drain terminates and all 24 are delivered - ffmpeg likewise conceals and emits the
+  damaged picture. Found on a real corrupt broadcast capture (3sat HD .ts, 2474/2475).
+  Regresses the flush-drain orphan recovery (edge264_headers.c bump_all_frames) => stall
+  losing the last picture.

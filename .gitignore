@@ -10,6 +10,7 @@
 !tests
 !tests/*.yaml
 !tests/gen_cabac_overread.py
+!tests/gen_cabac_orphan.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

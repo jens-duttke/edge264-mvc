@@ -98,6 +98,33 @@ static int bump_all_frames(Edge264Decoder *dec) {
 	while (bump_frame(dec, 0, 0) | bump_frame(dec, 1, 0));
 	while (dec->busy_tasks)
 		pthread_cond_wait(&dec->task_complete, &dec->lock);
+	// Forward progress on a flush drain: an errored picture that never finalized
+	// (its slice returned EBADMSG, so next_deblock_addr != INT_MAX) was bumped into
+	// the 16-entry output queue but later shifted out by other bumps without being
+	// delivered - the flushing valve in get_frame skips an unfinished picture
+	// mid-stream. Left in to_get_frames yet absent from the queue it is unreachable,
+	// so this used to return ENOBUFS forever and a draining caller stalled. Conceal
+	// it (finalize) and slot it back into the queue so the drain terminates - ffmpeg
+	// likewise emits a damaged picture from such a corrupt stream. Inert for
+	// well-formed streams, where every pending picture is finalized and still queued.
+	unsigned queued = 0;
+	for (int i = 0; i < 16; i++) {
+		if (dec->get_frame_queue[0][i] >= 0)
+			queued |= 1u << dec->get_frame_queue[0][i];
+		if (dec->get_frame_queue[1][i] >= 0)
+			queued |= 1u << dec->get_frame_queue[1][i];
+	}
+	for (unsigned o = dec->to_get_frames & ~queued; o; o &= o - 1) {
+		int i = __builtin_ctz(o);
+		dec->next_deblock_addr[i] = INT_MAX;
+		int v = dec->non_base_frames >> i & 1;
+		for (int j = 0; j < 16; j++) {
+			if (dec->get_frame_queue[v][j] < 0) {
+				dec->get_frame_queue[v][j] = i;
+				break;
+			}
+		}
+	}
 	return dec->to_get_frames | dec->output_frames ? ENOBUFS : 0;
 }
 

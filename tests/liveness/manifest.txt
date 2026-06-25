@@ -56,3 +56,17 @@ vui_overread 1
 # slop on a slice that decoded every macroblock and emits all 24. ffmpeg decodes them too.
 # Regression (cabac end-of-slice over-read tolerance) => mid-stream stall.
 cabac_overread 24
+# cabac_orphan: an IDR then 23 single-MB-per-picture frames (synthetic CABAC,
+# gen_cabac_orphan.py), where picture 1 codes only 1 of its 2 macroblocks (a slice
+# that ends via end_of_slice mid-picture) so it never finalizes - the state a
+# corrupt stream leaves when a slice errors mid-frame. The SPS sets
+# max_num_reorder_frames = 0 so complete pictures are output immediately; the held
+# incomplete picture (lowest POC, skipped by get_frame mid-stream) is bumped into
+# the 16-entry queue and then shifted out by the later bumps without being
+# delivered. Orphaned (in to_get_frames but absent from the queue), it made
+# bump_all_frames spin ENOBUFS forever at end-of-stream, so the decoder delivered
+# 23 of 24 and stalled. The fix finalizes and re-queues the orphan so all 24 come
+# out (ffmpeg conceals + emits the damaged picture too). Found on a real corrupt
+# broadcast capture (3sat HD .ts, 2474/2475). Regression (flush-drain orphan
+# recovery) => stall losing the last picture.
+cabac_orphan 24

@@ -1043,7 +1043,20 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 	t->pps = dec->PPS[pic_parameter_set_id];
 	if (!sps->BitDepth_Y || !t->pps.num_ref_idx_active[0])
 		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG); // exit now if SPS or PPS wasn't initialized
-	
+	// first_mb_in_slice must address a macroblock inside the current picture
+	// (7.4.3: 0..PicSizeInMbs-1). An out-of-range value sets CurrMbAddr (and the
+	// derived mb/sample pointers in initialize_context) past the frame, so the
+	// macroblock loop writes far out of bounds - a hard crash, not a decode
+	// error. This is reachable when a caller feeds two interleaved elementary
+	// streams of different resolutions into one decoder (e.g. a Blu-ray main +
+	// secondary/PiP video): after the smaller stream's SPS becomes active, a
+	// leftover slice from the larger picture carries a first_mb_in_slice beyond
+	// the smaller geometry. Reject it as corrupt instead of dereferencing wild
+	// pointers; matches ffmpeg, which drops such a slice. Inert for conformant
+	// streams, whose first_mb_in_slice is always in range.
+	if (t->first_mb_in_slice >= sps->pic_width_in_mbs * sps->pic_height_in_mbs)
+		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
+
 	// keep frame_num on stack until we can compute FrameNum after all unset_currPic
 	int frame_num = get_uv(&dec->gb, sps->log2_max_frame_num);
 	frame_num = dec->IdrPicFlag ? 0 : frame_num; // enforce condition in 7.4.3

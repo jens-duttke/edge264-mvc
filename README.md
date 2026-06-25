@@ -52,6 +52,7 @@ against FFmpeg on real captures:
 | Tolerate a VUI that over-reads past the SPS rbsp | whole stream dropped over a common encoder defect |
 | Tolerate a CABAC slice that over-reads past its NAL when complete | a dense 4K multi-slice CABAC frame stalled mid-stream |
 | Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected → mid-stream stall, 0 frames |
+| Reject a slice whose `first_mb_in_slice` is outside the current picture | out-of-bounds macroblock write / crash when interleaved multi-resolution streams (e.g. main + secondary/PiP video) reach one decoder |
 
 **Build / cross-compile** — the Windows DLL is cross-built with MinGW-w64; wasm via Node:
 

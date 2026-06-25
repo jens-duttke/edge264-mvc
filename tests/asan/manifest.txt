@@ -1,4 +1,5 @@
-# ASAN crafted-SEI fixtures: <name> (decoded by tests/asan_check.c with a log callback)
+# ASAN crafted-bitstream fixtures: <name> (decoded by tests/asan_check.c with a log callback)
 sei_payloadtype_oob
 sei_payloadsize_dos
 reflist_oob
+slice_first_mb_oob

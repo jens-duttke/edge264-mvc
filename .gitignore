@@ -12,6 +12,7 @@
 !tests/gen_cabac_overread.py
 !tests/gen_cabac_orphan.py
 !tests/gen_cabac_misalign.py
+!tests/gen_slice_first_mb_oob.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

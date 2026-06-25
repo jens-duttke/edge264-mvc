@@ -26,3 +26,19 @@ a log callback. Built with -fsanitize=address; run under a timeout.
   The fix clamps every out-of-range referenced RefPicList entry to an in-range
   slot; ffmpeg decodes such non-conformant streams without crashing. ASAN catches
   the overrun if the clamp is removed.
+- slice_first_mb_oob.264: a 412-byte synthetic stream (built by
+  tests/gen_slice_first_mb_oob.py) - a 2x2-macroblock picture (PicSizeInMbs == 4)
+  whose lone non-IDR I slice declares first_mb_in_slice == 4, one past the picture
+  (7.4.3 requires 0..PicSizeInMbs-1). The decoder used first_mb_in_slice directly
+  as CurrMbAddr / to derive the macroblock and sample pointers in
+  initialize_context with no range check, so the macroblock loop wrote through a
+  pointer past the per-frame buffers (the recovery_bits store in
+  parse_slice_data_cabac, edge264_slice.c:1686). first_mb_in_slice == PicSizeInMbs
+  lands exactly two Edge264Macroblock slots past the mb buffer, inside ASAN's
+  redzone, so the heap-buffer-overflow is caught deterministically. In the wild
+  this is reached when two interleaved elementary streams of different resolutions
+  (a Blu-ray main + secondary/PiP video) are fed to one decoder: once the smaller
+  SPS is active, a leftover slice from the larger picture carries an out-of-range
+  first_mb_in_slice. The fix rejects the slice with EBADMSG before any macroblock
+  is touched; ffmpeg likewise drops it. ASAN catches the overflow if the check is
+  removed.

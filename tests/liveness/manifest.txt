@@ -45,3 +45,14 @@ incomplete_frame 1
 # High clip in a sweep, both flagged "Overread VUI by 8 bits" by ffmpeg too).
 # Regression (VUI-overread SPS tolerance) => EBADMSG / 0 frames.
 vui_overread 1
+# cabac_overread: 24 single-MB I_PCM pictures (synthetic CABAC, gen_cabac_overread.py).
+# Each slice decodes its whole picture, but raw 0xFF bytes after the PCM samples leave the
+# re-initialised cabac engine with offset >= range (end_of_slice = 1) AND a non-zero
+# msb_cache - the look-ahead state a dense final slice leaves when its data fills the NAL.
+# The strict cabac end check then tripped EBADMSG on these COMPLETE slices, so their
+# remaining_mbs was never zeroed and the pictures never finalized. They pile up undelivered
+# until the DPB overflows and the decoder spins ENOBUFS mid-stream (before end-of-stream, so
+# the EOS forward-progress valve cannot mask it). A correct decoder ignores the look-ahead
+# slop on a slice that decoded every macroblock and emits all 24. ffmpeg decodes them too.
+# Regression (cabac end-of-slice over-read tolerance) => mid-stream stall.
+cabac_overread 24

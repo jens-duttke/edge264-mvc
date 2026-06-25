@@ -486,8 +486,17 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 				cabac_init(&c);
 				c.mb_qp_delta_nz = 0;
 				parse_slice_data_cabac(&c);
-				// rbsp_stop_one_bit was consumed in cabac_terminate, and the possibility of cabac_zero_word implies we cannot require reaching end
-				if (c.t.gb.msb_cache || (c.t.gb.lsb_cache & (c.t.gb.lsb_cache - 1)))
+				// rbsp_stop_one_bit was consumed in cabac_terminate, and the possibility of cabac_zero_word implies we cannot require reaching end.
+				// The cached reader also looks ahead past the slice's last byte, so a
+				// slice whose CABAC data fills its NAL leaves msb_cache holding bytes
+				// from beyond the NAL end (e.g. the next start code) - benign once every
+				// macroblock of the picture has been decoded. Only treat a non-clean
+				// trailing state as an error when the slice stopped before completing the
+				// frame (a genuinely truncated/corrupt slice), so a complete final slice
+				// with tight packing is not dropped (which would otherwise leave
+				// remaining_mbs > 0 and deadlock the DPB mid-stream).
+				if ((c.t.gb.msb_cache || (c.t.gb.lsb_cache & (c.t.gb.lsb_cache - 1))) &&
+				    c.CurrMbAddr < c.t.pic_width_in_mbs * c.t.pic_height_in_mbs)
 					ret = EBADMSG; // FIXME error_flag
 			}
 		}

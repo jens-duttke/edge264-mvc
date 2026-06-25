@@ -78,3 +78,20 @@ a failed target).
   (a Main and a High clip) hit this - ffmpeg flags them "Overread VUI by 8 bits" too and
   decodes them. edge264 must deliver the 1 frame. Regresses the VUI-overread SPS tolerance
   (edge264_headers.c parse_seq_parameter_set) => EBADMSG / 0 frames.
+
+- cabac_overread.264: 24 single-macroblock I_PCM pictures, synthesized by
+  tests/gen_cabac_overread.py (a minimal standalone CABAC encoder, since tests/gen_avc.py
+  emits CAVLC only). Each slice decodes its whole picture, but raw 0xFF
+  bytes placed after the PCM samples leave the re-initialised arithmetic engine with
+  offset >= range (so end_of_slice reads 1) AND a non-zero msb_cache. That non-clean
+  trailing is exactly what a dense final CABAC slice leaves when its coded data fills the
+  NAL right up to the next start code (the cached reader looks ahead past the slice's last
+  byte) - benign, since every macroblock decoded. The strict cabac end check used to trip
+  EBADMSG on these COMPLETE slices, so worker_loop never zeroed their remaining_mbs and the
+  pictures never finalized; they accumulate undelivered until the DPB overflows and the
+  decoder spins ENOBUFS *mid-stream* (before end-of-stream, so the end-of-stream
+  forward-progress valve cannot mask it - the decoder delivers 0 frames). The fix ignores
+  the trailing slop on a slice whose CurrMbAddr reached the picture end, so all 24 are
+  delivered. ffmpeg decodes them too. Found on a real 4K capture (VR Inferno.mp4) whose
+  4-slice CABAC frames hit this on ~29 of their final slices. Regresses the cabac
+  end-of-slice over-read tolerance (edge264_headers.c worker_loop) => mid-stream stall.

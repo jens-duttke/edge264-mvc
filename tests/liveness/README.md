@@ -111,3 +111,14 @@ a failed target).
   damaged picture. Found on a real corrupt broadcast capture (3sat HD .ts, 2474/2475).
   Regresses the flush-drain orphan recovery (edge264_headers.c bump_all_frames) => stall
   losing the last picture.
+
+- cabac_misalign.264: 24 single-MB I_PCM pictures (synthetic CABAC, tests/gen_cabac_misalign.py)
+  whose slice headers pad cabac_alignment_one_bit with ZEROS instead of ones. The spec writes
+  that padding as 1s, but it is non-normative - it carries no decodable information and ffmpeg
+  does not verify it, it just byte-aligns and starts the arithmetic engine. edge264's cabac_start
+  used to reject a non-1 padding with EBADMSG and decode 0 macroblocks; the undelivered pictures
+  then piled up until the DPB overflowed into a mid-stream stall. The fix accepts the byte-aligned
+  position regardless, so every picture decodes (the CABAC data is byte-aligned and valid). Found
+  on a real Extended-profile capture (x264.avi) whose every slice was rejected: edge264 stalled at
+  0 frames, now decodes all 2209 byte-identical to ffmpeg. Regresses the cabac_alignment leniency
+  (edge264_bitstream.c cabac_start) => mid-stream stall delivering 0 frames.

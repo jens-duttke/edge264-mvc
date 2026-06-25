@@ -299,7 +299,15 @@ static int cabac_start(Edge264Context *ctx) {
 		extra_bits -= 8;
 	}
 	int shift = extra_bits & 7;
-	int ret = shift > 0 && (ssize_t)ctx->t.gb.msb_cache >> (SIZE_BIT - shift) != -1; // return 1 if not all alignment bits are ones
+	// cabac_alignment_one_bit is non-normative padding: the spec writes it as 1s,
+	// but it carries no decodable information and ffmpeg does not verify it - it
+	// just byte-aligns and starts the arithmetic engine. Verifying the bits are all
+	// 1s here wrongly rejected streams that pad otherwise (every slice returned
+	// EBADMSG, decoded 0 macroblocks, and the undelivered pictures then overflowed
+	// the DPB into a mid-stream stall). Accept the byte-aligned position regardless;
+	// a genuinely misparsed header still fails later (slice-data / end checks, and
+	// the conformance suite). Verified byte-identical to ffmpeg on such a stream.
+	int ret = 0;
 	ctx->t.gb.offset = shld(ctx->t.gb.lsb_cache, ctx->t.gb.msb_cache, shift); // offset and msb_cache are the same memory slot
 	ctx->t.gb.range = (size_t)510 << (SIZE_BIT - 9);
 	ctx->t.gb.offset = (ctx->t.gb.offset < ctx->t.gb.range) ? ctx->t.gb.offset : ctx->t.gb.range; // protection against invalid bitstream

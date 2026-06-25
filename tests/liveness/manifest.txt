@@ -70,3 +70,13 @@ cabac_overread 24
 # broadcast capture (3sat HD .ts, 2474/2475). Regression (flush-drain orphan
 # recovery) => stall losing the last picture.
 cabac_orphan 24
+# cabac_misalign: 24 single-MB I_PCM pictures (synthetic CABAC, gen_cabac_misalign.py)
+# whose slice headers pad cabac_alignment_one_bit with ZEROS instead of ones. That
+# padding is non-normative (ffmpeg does not verify it, just byte-aligns), but
+# edge264's cabac_start rejected a non-1 padding with EBADMSG, decoding 0 macroblocks;
+# the undelivered pictures then piled up until the DPB overflowed into a mid-stream
+# stall. The fix accepts the byte-aligned position regardless, so every picture
+# decodes (the CABAC data is byte-aligned and valid). Found on a real Extended-profile
+# capture (x264.avi) whose every slice was rejected (STALL;0 -> 2209 = ffmpeg,
+# byte-identical). Regression (cabac_alignment leniency) => mid-stream stall, 0 frames.
+cabac_misalign 24

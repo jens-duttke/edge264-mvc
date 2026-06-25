@@ -34,3 +34,14 @@ dpb_overflow 1
 # captured TS/M2TS clips truncated mid-frame, which ffmpeg also emits + terminates
 # on. Regression (end-of-stream forward progress) => stall.
 incomplete_frame 1
+# vui_overread: a synthetic SPS whose VUI over-reads past the SPS rbsp (the SPS
+# NAL's last 2 bytes are trimmed after generation, mimicking a common encoder bug
+# ffmpeg reports as "Overread VUI by N bits" and tolerates). The strict
+# rbsp_trailing_bits check used to reject the whole SPS with EBADMSG, dropping the
+# entire stream (0 frames). Since the VUI is the last, non-normative element and
+# every decoding-relevant field before it is already parsed and bounds-checked,
+# the fix accepts the SPS (reverting the VUI's two values to the inferred
+# defaults) and decodes the IDR (1 frame). Real captures hit this (a Main and a
+# High clip in a sweep, both flagged "Overread VUI by 8 bits" by ffmpeg too).
+# Regression (VUI-overread SPS tolerance) => EBADMSG / 0 frames.
+vui_overread 1

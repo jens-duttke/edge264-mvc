@@ -2043,7 +2043,10 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 			sps.frame_crop_offsets[3], sps.frame_crop_offsets[1], sps.frame_crop_offsets[0], sps.frame_crop_offsets[2]);
 	}
 	
-	if (get_u1(&dec->gb)) {
+	int vui_present = get_u1(&dec->gb);
+	int inferred_max_num_reorder_frames = sps.max_num_reorder_frames;
+	int inferred_max_dec_frame_buffering = sps.max_dec_frame_buffering;
+	if (vui_present) {
 		log_dec(dec, "  vui_parameters:\n");
 		parse_vui_parameters(dec, &sps);
 	} else {
@@ -2080,8 +2083,19 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 		// the SPS is dropped. The cast turns an over-read (negative) into a
 		// large unsigned value, so it is rejected too.
 		int bits_to_end = (int)(dec->gb.end - dec->gb.CPB) * 8 + SIZE_BIT * 2 - 2 - ctz(dec->gb.lsb_cache);
-		if (dec->nal_unit_type != 15 || (unsigned)bits_to_end > 16)
+		if (dec->nal_unit_type == 7 && vui_present) {
+			// A malformed VUI (a common encoder bug ffmpeg reports as "Overread
+			// VUI by N bits" and tolerates) leaves the bit position off at the end
+			// of an otherwise valid SPS. The VUI is the last, non-normative element
+			// and every decoding-relevant field before it has already been parsed
+			// and bounds-checked, so accept the SPS rather than dropping the whole
+			// stream - but revert the VUI's two contributed values to the inferred
+			// defaults so nothing from the over-read leaks into the DPB sizing.
+			sps.max_num_reorder_frames = inferred_max_num_reorder_frames;
+			sps.max_dec_frame_buffering = inferred_max_dec_frame_buffering;
+		} else if (dec->nal_unit_type != 15 || (unsigned)bits_to_end > 16) {
 			ret = EBADMSG;
+		}
 	}
 	if (ret == 0) {
 		

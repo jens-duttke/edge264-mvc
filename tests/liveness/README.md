@@ -66,3 +66,15 @@ a failed target).
   of real captured TS/M2TS clips that end mid-frame - ffmpeg conceals the partial
   picture and terminates likewise. Regresses the end-of-stream forward-progress
   valve (edge264.c edge264_get_frame) => stall.
+
+- vui_overread.264: a synthetic SPS+PPS+IDR (43 bytes) generated with tests/gen_avc.py,
+  with the SPS NAL's last 2 bytes trimmed afterwards so its VUI over-reads past the SPS
+  rbsp - the common encoder bug ffmpeg reports as "Overread VUI by N bits" and decodes
+  through anyway. edge264's strict rbsp_trailing_bits check rejected the whole SPS with
+  EBADMSG, so the entire stream produced 0 frames. The VUI is the last, non-normative
+  element and every decoding-relevant field before it is already parsed and bounds-checked,
+  so the fix accepts the SPS (reverting the VUI's max_num_reorder_frames /
+  max_dec_frame_buffering to the inferred defaults) and decodes the IDR. Two real captures
+  (a Main and a High clip) hit this - ffmpeg flags them "Overread VUI by 8 bits" too and
+  decodes them. edge264 must deliver the 1 frame. Regresses the VUI-overread SPS tolerance
+  (edge264_headers.c parse_seq_parameter_set) => EBADMSG / 0 frames.

@@ -89,7 +89,10 @@ static Result decode_all(const uint8_t *buf, size_t size) {
 	r.base = HASH_INIT;
 	r.dep = HASH_INIT;
 	int64_t prev_disp = INT64_MIN;
-	Edge264Decoder *dec = edge264_alloc(0, NULL, NULL, 0, NULL, NULL, NULL);
+	// Diagnostic hook: EDGE264_THREADS lets this bit-exact oracle run the same
+	// hash comparison under multithreading (default 0 = single-thread).
+	const char *nt = getenv("EDGE264_THREADS");
+	Edge264Decoder *dec = edge264_alloc(nt ? atoi(nt) : 0, NULL, NULL, 0, NULL, NULL, NULL);
 	const uint8_t *nal = buf + 3 + (size > 2 && buf[2] == 0);
 	const uint8_t *end = buf + size;
 	int res;

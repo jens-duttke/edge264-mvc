@@ -287,8 +287,16 @@ void edge264_free(Edge264Decoder **pdec) {
 	if (pdec != NULL && (dec = *pdec) != NULL) {
 		*pdec = NULL;
 		if (dec->n_threads) {
+			// Clean shutdown: signal idle workers to leave their task_ready wait
+			// loop and join them before destroying the sync objects. Cancelling
+			// without joining (and destroying the mutex/conds while threads still
+			// wait on them) is POSIX UB and deadlocks in pthread_cond_destroy.
+			pthread_mutex_lock(&dec->lock);
+			dec->shutdown = 1;
+			pthread_cond_broadcast(&dec->task_ready);
+			pthread_mutex_unlock(&dec->lock);
 			for (int i = 0; i < dec->n_threads; i++)
-				pthread_cancel(dec->threads[i]);
+				pthread_join(dec->threads[i], NULL);
 			pthread_mutex_destroy(&dec->lock);
 			pthread_cond_destroy(&dec->task_ready);
 			pthread_cond_destroy(&dec->task_progress);

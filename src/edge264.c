@@ -459,7 +459,7 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		// ENOBUFS while a draining caller gets nothing. Emit it anyway while
 		// flushing so the caller always makes forward progress and the decoder
 		// terminates - what ffmpeg does (it conceals the partial picture).
-		if (dec->next_deblock_addr[queued] != INT_MAX && !dec->flushing)
+		if (__atomic_load_n(&dec->next_deblock_addr[queued], __ATOMIC_ACQUIRE) != INT_MAX && !dec->flushing)
 			continue;
 		if (idx0 >= 0 && order >= lowest_order)
 			continue;
@@ -494,7 +494,7 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 				int queued = dec->get_frame_queue[1][i];
 				if (queued < 0)
 					continue;
-				if (dec->next_deblock_addr[queued] != INT_MAX)
+				if (__atomic_load_n(&dec->next_deblock_addr[queued], __ATOMIC_ACQUIRE) != INT_MAX)
 					continue;
 				if (dec->FieldOrderCnt[0][queued] != base_poc)
 					continue;

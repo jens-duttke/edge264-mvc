@@ -1177,12 +1177,15 @@ static unsigned refs_to_mask(Edge264Task *t) {
 	return e[0];
 }
 static always_inline unsigned ready_frames(Edge264Decoder *c) {
-	i32x4 last = set32(INT_MAX);
-	i16x8 a = packs32(c->next_deblock_addr_v[0] == last, c->next_deblock_addr_v[1] == last);
-	i16x8 b = packs32(c->next_deblock_addr_v[2] == last, c->next_deblock_addr_v[3] == last);
-	i16x8 d = packs32(c->next_deblock_addr_v[4] == last, c->next_deblock_addr_v[5] == last);
-	i16x8 e = packs32(c->next_deblock_addr_v[6] == last, c->next_deblock_addr_v[7] == last);
-	return movemask(packs16(a, b)) | movemask(packs16(d, e)) << 16;
+	// next_deblock_addr is written without the lock by worker threads (the
+	// deblock frontier and the INT_MAX completion flag), so read every entry
+	// atomically here rather than with a wide vector load: a non-atomic vector
+	// read racing the workers' atomic stores is undefined behaviour and, on a
+	// weakly-ordered target, could observe a torn or stale completion flag.
+	unsigned ready = 0;
+	for (int i = 0; i < 32; i++)
+		ready |= (__atomic_load_n(&c->next_deblock_addr[i], __ATOMIC_ACQUIRE) == INT_MAX) << i;
+	return ready;
 }
 static always_inline unsigned ready_tasks(Edge264Decoder *c) {
 	i32x4 not_ready = ~set32(ready_frames(c));

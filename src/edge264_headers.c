@@ -123,7 +123,7 @@ static int bump_all_frames(Edge264Decoder *dec) {
 	}
 	for (unsigned o = dec->to_get_frames & ~queued; o; o &= o - 1) {
 		int i = __builtin_ctz(o);
-		dec->next_deblock_addr[i] = INT_MAX;
+		__atomic_store_n(&dec->next_deblock_addr[i], INT_MAX, __ATOMIC_RELEASE);
 		int v = dec->non_base_frames >> i & 1;
 		for (int j = 0; j < 16; j++) {
 			if (dec->get_frame_queue[v][j] < 0) {
@@ -573,16 +573,17 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			recover_slice(&c, currPic);
 		
 		// update c.d->next_deblock_addr, considering it might have reached first_mb_in_slice since start
-		if (c.d->next_deblock_addr[currPic] >= c.t.first_mb_in_slice &&
+		// (atomic: written without the lock and read concurrently by other threads)
+		if (__atomic_load_n(&c.d->next_deblock_addr[currPic], __ATOMIC_ACQUIRE) >= c.t.first_mb_in_slice &&
 		    !(c.t.disable_deblocking_filter_idc == 0 && c.t.next_deblock_addr < 0)) {
-			c.d->next_deblock_addr[currPic] = c.CurrMbAddr;
+			__atomic_store_n(&c.d->next_deblock_addr[currPic], c.CurrMbAddr, __ATOMIC_RELEASE);
 			pthread_cond_broadcast(&c.d->task_progress);
 		}
-		
+
 		// deblock the rest of the frame if all mbs have been decoded correctly
 		int remaining_mbs = ret ?: __atomic_sub_fetch(&c.d->remaining_mbs[currPic], c.CurrMbAddr - c.t.first_mb_in_slice, __ATOMIC_ACQ_REL);
 		if (remaining_mbs == 0) {
-			c.t.next_deblock_addr = c.d->next_deblock_addr[currPic];
+			c.t.next_deblock_addr = __atomic_load_n(&c.d->next_deblock_addr[currPic], __ATOMIC_ACQUIRE);
 			c.CurrMbAddr = c.t.pic_width_in_mbs * c.t.pic_height_in_mbs;
 			if ((unsigned)c.t.next_deblock_addr < c.CurrMbAddr) {
 				c.mby = (unsigned)c.t.next_deblock_addr / (unsigned)c.t.pic_width_in_mbs;
@@ -608,7 +609,7 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 					}
 				}
 			}
-			c.d->next_deblock_addr[currPic] = INT_MAX; // signals the frame is complete
+			__atomic_store_n(&c.d->next_deblock_addr[currPic], INT_MAX, __ATOMIC_RELEASE); // signals the frame is complete
 		}
 		
 		// print benchmarking information
@@ -979,9 +980,11 @@ static void initialize_task(Edge264Decoder *dec, Edge264SeqParameterSet *sps, Ed
 	t->FrameId = dec->FrameIds[dec->currPic];
 	t->plane_size_Y = dec->plane_size_Y;
 	t->plane_size_C = dec->plane_size_C;
-	t->next_deblock_idc = (dec->next_deblock_addr[dec->currPic] == t->first_mb_in_slice &&
+	// atomic load: a worker thread may be advancing this frame's deblock frontier concurrently
+	int32_t cur_deblock_addr = __atomic_load_n(&dec->next_deblock_addr[dec->currPic], __ATOMIC_ACQUIRE);
+	t->next_deblock_idc = (cur_deblock_addr == t->first_mb_in_slice &&
 		dec->nal_ref_idc) ? dec->currPic : -1;
-	t->next_deblock_addr = (dec->next_deblock_addr[dec->currPic] == t->first_mb_in_slice ||
+	t->next_deblock_addr = (cur_deblock_addr == t->first_mb_in_slice ||
 		t->disable_deblocking_filter_idc == 2) ? t->first_mb_in_slice : INT_MIN;
 	t->prev_long_term_frames = dec->prev_long_term_frames & ~dec->prev_short_term_frames; // mask of only long-term frames
 	t->mb_buffer = (Edge264Macroblock *)dec->mb_buffers[dec->currPic];
@@ -1220,7 +1223,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 			}
 			dec->FieldOrderCnt[0][i] = dec->FieldOrderCnt[1][i] = PicOrderCnt;
 			dec->remaining_mbs[i] = 0;
-			dec->next_deblock_addr[i] = INT_MAX;
+			__atomic_store_n(&dec->next_deblock_addr[i], INT_MAX, __ATOMIC_RELEASE);
 		}
 	}
 	
@@ -1250,7 +1253,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		dec->FieldOrderCnt[0][currPic] = dec->TopFieldOrderCnt;
 		dec->FieldOrderCnt[1][currPic] = dec->BottomFieldOrderCnt;
 		dec->remaining_mbs[currPic] = sps->pic_width_in_mbs * sps->pic_height_in_mbs;
-		dec->next_deblock_addr[currPic] = 0;
+		__atomic_store_n(&dec->next_deblock_addr[currPic], 0, __ATOMIC_RELEASE);
 		log_dec(dec, "  FrameId: %u\n", dec->FrameIds[currPic]);
 	}
 	

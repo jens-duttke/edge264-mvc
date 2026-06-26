@@ -430,7 +430,7 @@ int main(int argc, char *argv[])
 	const char *file_name = "conformance";
 	int benchmark = 0;
 	int help = 0;
-	int n_threads = 0;
+	int n_threads = -1; // multithreaded by default (auto-detect cores); -V forces single-thread
 	int trace = 0;
 	for (int i = 1; i < argc; i++) {
 		if (argv[i][0] != '-') {
@@ -441,6 +441,7 @@ int main(int argc, char *argv[])
 				case 'd': display = 1; break;
 				case 'f': print_failed = 1; break;
 				case 'm': n_threads = -1; break;
+				case 's': n_threads = 0; break;
 				case 'p': print_passed = 1; break;
 				case 'u': print_unsupported = 1; break;
 				case 'v': trace = 1; break;
@@ -453,14 +454,15 @@ int main(int argc, char *argv[])
 	
 	// print help if any argument was unknown
 	if (help) {
-		printf("Usage: " BOLD "%s [video.264|directory] [-hbdfmpuvVy]" RESET "\n"
+		printf("Usage: " BOLD "%s [video.264|directory] [-hbdfmspuvVy]" RESET "\n"
 			"Decodes a video or all videos inside a directory (./conformance by default),\n"
 			"comparing their outputs with inferred YUV pairs (.yuv and .1.yuv extensions).\n"
 			"-h\tprint this help and exit\n"
 			"-b\tbenchmark decoding time and memory usage\n"
 			"-d\tenable display of the videos (requires SDL2)\n"
 			"-f\tprint names of failed files in directory\n"
-			"-m\tenable multi-threading (experimental)\n"
+			"-m\tmulti-threaded decoding, auto-detecting cores (this is the default)\n"
+			"-s\tforce single-threaded decoding\n"
 			"-p\tprint names of passed files in directory\n"
 			"-u\tprint names of unsupported files in directory\n"
 			"-v\tenable output of headers to file trace.yaml (large)\n"

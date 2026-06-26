@@ -10,10 +10,15 @@ fork integrates those PRs plus additional fixes and verifies the result on real 
 
 ### What's fixed vs upstream master
 
-The fork is **single-thread only** — call `edge264_alloc` with `n_threads = 0`. Upstream's
-experimental multi-thread path is broken (pre-existing, reproducible on pristine upstream even
-for non-MVC streams); on top of that the fork fixes a single-threaded decode hang
-([PR #25](https://github.com/tvlabs/edge264/pull/25) · @intrepidsilence, `ready_tasks == 0`).
+The fork supports **multithreaded decoding**: call `edge264_alloc` with `n_threads = -1` to
+auto-detect cores (the default in `edge264_test`) or a positive thread count, or `n_threads = 0`
+for the single-threaded path. Upstream's experimental multi-thread path was broken (pre-existing,
+reproducible on pristine upstream even for non-MVC streams — a teardown deadlock, out-of-order
+output, an MVC stereo-pairing stall and data races). This fork fixes it so multithreaded output
+is **bit-exact to single-thread on every supported stream of the 231-stream JVT corpus**, hang-free
+under heavy thread oversubscription, and ThreadSanitizer-clean. The fork also keeps PR #25's
+single-threaded decode-hang fix ([PR #25](https://github.com/tvlabs/edge264/pull/25) ·
+@intrepidsilence, `ready_tasks == 0`).
 The API is upstream's plus four POC fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`,
 `DisplayPoc_mvc`). The whole set still matches upstream **file by file on the full 231-stream
 JVT conformance corpus** (AVCv1 + FRExt + MVC, bit-exact against reference YUV where provided):
@@ -53,6 +58,17 @@ against FFmpeg on real captures:
 | Tolerate a CABAC slice that over-reads past its NAL when complete | a dense 4K multi-slice CABAC frame stalled mid-stream |
 | Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected → mid-stream stall, 0 frames |
 | Reject a slice whose `first_mb_in_slice` is outside the current picture | out-of-bounds macroblock write / crash when interleaved multi-resolution streams (e.g. main + secondary/PiP video) reach one decoder |
+
+**Multithreaded decoding** — upstream's background-thread path was unusable; these make it
+bit-exact to single-thread and hang-free, validated over the full JVT corpus and with
+ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
+
+| Fix | Failure mode it removes |
+|---|---|
+| Join worker threads on teardown instead of cancel-and-destroy | `edge264_free` deadlocked in `pthread_cond_destroy` after every multithreaded decode |
+| Hold an MVC base frame until its lagging dependent view is ready | dependent view stranded in its queue → hard stall on MVC streams under thread contention |
+| Emit frames in monotonic display order, waiting on the in-flight earliest | out-of-order output / ballooning `DisplayPoc` across a GOP boundary under multithreading |
+| Make `next_deblock_addr` accesses atomic (acquire/release) | data race on the deblock-frontier / completion flag (benign on x86-64, torn/stale on ARM) |
 
 **Build / cross-compile** — the Windows DLL is cross-built with MinGW-w64; wasm via Node:
 

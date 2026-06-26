@@ -410,7 +410,19 @@ edge264_check$(EXE): src/edge264_check.c edge264.h src/edge264_internal.h $(LIBN
 .PHONY: check-conformance
 check-conformance: conformance_check$(EXE)
 	$(Q)./conformance_check$(EXE) run tests/conformance/manifest.txt tests/conformance
+	$(Q)$(MAKE) --no-print-directory check-conformance-mt
 	$(Q)$(MAKE) --no-print-directory check-liveness
+
+# Multithreaded bit-exactness: decode the same fixtures with background worker
+# threads and assert the per-view hashes still equal the (single-thread / ITU
+# anchored) manifest. Proves the multithreaded path is bit-identical to
+# single-thread output, and a stall would fail here by timeout. Skipped on wasm
+# (single-threaded runtime).
+.PHONY: check-conformance-mt
+check-conformance-mt: conformance_check$(EXE)
+ifneq ($(OS),wasm)
+	$(Q)EDGE264_THREADS=8 ./conformance_check$(EXE) run tests/conformance/manifest.txt tests/conformance
+endif
 
 conformance_check$(EXE): tests/conformance_check.c edge264.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/conformance_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
@@ -422,6 +434,9 @@ conformance_check$(EXE): tests/conformance_check.c edge264.h $(LIBNAME)
 .PHONY: check-liveness
 check-liveness: liveness_check$(EXE)
 	$(Q)./liveness_check$(EXE) run tests/liveness/manifest.txt tests/liveness
+ifneq ($(OS),wasm)
+	$(Q)EDGE264_THREADS=8 ./liveness_check$(EXE) run tests/liveness/manifest.txt tests/liveness
+endif
 
 liveness_check$(EXE): tests/liveness_check.c edge264.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/liveness_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@

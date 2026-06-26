@@ -55,7 +55,11 @@ static uint8_t *map_file(const char *path, size_t *size_out) {
 
 // Returns delivered base-frame count, or -1 if the decoder stalled.
 static int decode_count(const uint8_t *buf, size_t size) {
-	Edge264Decoder *dec = edge264_alloc(0, NULL, NULL, 0, NULL, NULL, NULL);
+	// EDGE264_THREADS lets the liveness suite run the damaged-stream fixtures
+	// under multithreading (default 0), guarding the multithreaded teardown and
+	// MVC-pairing deadlock fixes against regressions.
+	const char *nt = getenv("EDGE264_THREADS");
+	Edge264Decoder *dec = edge264_alloc(nt ? atoi(nt) : 0, NULL, NULL, 0, NULL, NULL, NULL);
 	const uint8_t *nal = buf + 3 + (size > 2 && buf[2] == 0);
 	const uint8_t *end = buf + size;
 	int frames = 0, res;

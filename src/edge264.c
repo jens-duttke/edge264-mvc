@@ -483,11 +483,34 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		// this never fires.
 		int force_unpaired = 0;
 		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
-			int queued0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
-			int queued1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
-			int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
-			// fullness (would-be ENOBUFS) mid-stream, or end-of-stream drain
-			force_unpaired = dec->flushing || queued0 + queued1 + bumpable > 16;
+			// Multithreading completes the base and its dependent view out of
+			// lockstep: the dependent references the base for inter-view
+			// prediction, so its task only starts once the base is done and
+			// finishes slightly later. While it is still in flight, force-
+			// unpairing the base here would hand it out alone and strand the
+			// dependent in get_frame_queue[1] forever (idx0 only ever scans the
+			// base queue) - the exact MVC stall observed under thread
+			// contention. So only force-unpair when the POC-matching dependent
+			// is genuinely absent (a dropped/corrupt dependent NAL); if it is
+			// merely still decoding (present in to_get_frames as a non-base
+			// frame with the same POC), hold the base until the pair can be
+			// emitted together. The dependent decodes into its own buffer and
+			// needs no DPB slot, so it always makes progress and the hold
+			// resolves without deadlock.
+			int dependent_in_flight = 0;
+			for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
+				if (dec->FieldOrderCnt[0][__builtin_ctz(o)] == lowest_poc) {
+					dependent_in_flight = 1;
+					break;
+				}
+			}
+			if (!dependent_in_flight) {
+				int queued0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
+				int queued1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
+				int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
+				// fullness (would-be ENOBUFS) mid-stream, or end-of-stream drain
+				force_unpaired = dec->flushing || queued0 + queued1 + bumpable > 16;
+			}
 		}
 		if (dec->ssps.BitDepth_Y == 0 || idx1 >= 0 || force_unpaired) {
 		dec->get_frame_queue[0][idx0] = -1;

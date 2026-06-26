@@ -515,24 +515,25 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		// this never fires.
 		int force_unpaired = 0;
 		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
-			// Multithreading completes the base and its dependent view out of
-			// lockstep: the dependent references the base for inter-view
-			// prediction, so its task only starts once the base is done and
-			// finishes slightly later. While it is still in flight, force-
-			// unpairing the base here would hand it out alone and strand the
-			// dependent in get_frame_queue[1] forever (idx0 only ever scans the
-			// base queue) - the exact MVC stall observed under thread
-			// contention. So only force-unpair when the POC-matching dependent
-			// is genuinely absent (a dropped/corrupt dependent NAL); if it is
-			// merely still decoding (present in to_get_frames as a non-base
-			// frame with the same POC), hold the base until the pair can be
-			// emitted together. The dependent decodes into its own buffer and
-			// needs no DPB slot, so it always makes progress and the hold
-			// resolves without deadlock.
+			// The base and its dependent view finish out of lockstep under
+			// multithreading: the dependent references the base for inter-view
+			// prediction, so it starts once the base is done and finishes
+			// slightly later. Force-unpairing the base while its dependent is
+			// still decoding would hand it out alone and strand the dependent in
+			// get_frame_queue[1] forever (the scan above only inspects the base
+			// queue). So only force-unpair a base whose dependent is genuinely
+			// absent (a dropped/corrupt dependent NAL); when it is merely still
+			// in flight, hold the base until the pair can be emitted together
+			// (the livelock guard at the end of this function keeps the held base
+			// from starving the workers that finish it). The two views of one
+			// access unit are decoded consecutively, so the dependent carries the
+			// base's FrameId + 1; match on that rather than the POC, which a later
+			// GOP reuses after an IDR reset and would mistake for the missing
+			// dependent, holding an unpaired base forever.
 			int dependent_in_flight = 0;
-			int32_t base_poc = dec->FieldOrderCnt[0][pic0];
+			int32_t base_fid = dec->FrameIds[pic0];
 			for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
-				if (dec->FieldOrderCnt[0][__builtin_ctz(o)] == base_poc) {
+				if (dec->FrameIds[__builtin_ctz(o)] == base_fid + 1) {
 					dependent_in_flight = 1;
 					break;
 				}
@@ -581,6 +582,21 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		if (!borrow)
 			dec->output_frames &= ~(uintptr_t)out->return_arg;
 		}
+	}
+	// Livelock guard: when nothing can be delivered because the next frame is
+	// being held for an in-flight dependency (MVC pairing or display order) and
+	// the output queue is full, the caller spins on ENOBUFS. Returning ENOMSG
+	// immediately lets the parsing thread re-take the lock so fast that it
+	// starves the worker threads, which then never finish the very task the held
+	// frame is waiting on. Yield once to a worker instead; the caller's drain
+	// loop retries and the hold resolves as soon as the dependency completes.
+	// Only fires at fullness, so pipelined non-blocking draining is unaffected.
+	if (res != 0 && dec->n_threads && dec->busy_tasks) {
+		int q0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
+		int q1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
+		int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
+		if (q0 + q1 + bumpable > 16)
+			pthread_cond_wait(&dec->task_complete, &dec->lock);
 	}
 	if (dec->n_threads)
 		pthread_mutex_unlock(&dec->lock);

@@ -433,31 +433,63 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 	int pic0 = -1;
 	int pic1 = -1;
 	int res = ENOMSG;
-	int lowest_poc = INT_MAX;
+	int lowest_order = INT_MAX; // lowest display rank among ready (deliverable) base frames
+	int lowest_any_order = INT_MAX; // lowest display rank among ALL queued base frames, ready or not
+	int lowest_any_pic = -1; // its slot, to test whether it is still being decoded
 	for (int i = 0; i < 16; ++i) {
 		int queued = dec->get_frame_queue[0][i];
 		if (queued < 0)
 			continue;
+		// Order output by the monotonic display rank assigned at bump time, not
+		// the raw POC: POC is reset by every IDR, so across a GOP boundary a new
+		// GOP's low-POC frame would otherwise overtake the previous GOP's frames
+		// still queued (a real reordering seen only under multithreading, where
+		// parse-ahead keeps both GOPs in the queue at once).
+		int order = dec->DispOrder[queued];
+		// Track the lowest-rank queued frame regardless of completion so the
+		// display-order guard below can decide whether to wait for it.
+		if (order < lowest_any_order) {
+			lowest_any_order = order;
+			lowest_any_pic = queued;
+		}
 		// A picture that never completed (e.g. a stream truncated mid-frame, as
 		// real captured TS/M2TS clips often are) keeps next_deblock_addr != INT_MAX
 		// forever. Holding it back is correct mid-stream, but at end-of-stream
 		// (dec->flushing) it would deadlock: bump_all_frames keeps returning
 		// ENOBUFS while a draining caller gets nothing. Emit it anyway while
 		// flushing so the caller always makes forward progress and the decoder
-		// terminates - the same valve the MVC unpaired-base path uses below, and
-		// what ffmpeg does (it conceals the partial picture and terminates).
+		// terminates - what ffmpeg does (it conceals the partial picture).
 		if (dec->next_deblock_addr[queued] != INT_MAX && !dec->flushing)
 			continue;
-		int poc = dec->FieldOrderCnt[0][queued];
-		if (idx0 >= 0 && poc >= lowest_poc)
+		if (idx0 >= 0 && order >= lowest_order)
 			continue;
 		idx0 = i;
 		pic0 = queued;
-		lowest_poc = poc;
+		lowest_order = order;
+	}
+	// Strict display-order output under multithreading: frames finish out of
+	// display order, so the next-to-display queued frame can still be decoding
+	// while a later one is already complete. Single-thread always emits in
+	// display order, so emitting the ready later frame first would reorder the
+	// output (and balloon the unwrapped DisplayPoc). Hold everything until that
+	// earliest frame is itself complete - but only while it is genuinely still
+	// being decoded (a task is in flight for it). A truncated picture that will
+	// never complete has no in-flight task, so it must not block the queue; and
+	// flushing emits whatever is ready so the drain terminates.
+	if (idx0 >= 0 && lowest_any_pic != pic0 && !dec->flushing) {
+		int in_flight = 0;
+		for (unsigned b = dec->busy_tasks; b; b &= b - 1) {
+			if (dec->taskPics[__builtin_ctz(b)] == lowest_any_pic) {
+				in_flight = 1;
+				break;
+			}
+		}
+		if (in_flight)
+			idx0 = -1;
 	}
 	if (idx0 >= 0) {
 		if (dec->ssps.BitDepth_Y != 0) {
-			int32_t base_poc = lowest_poc;
+			int32_t base_poc = dec->FieldOrderCnt[0][pic0]; // pair the dependent view by POC
 			for (int i = 0; i < 16; ++i) {
 				int queued = dec->get_frame_queue[1][i];
 				if (queued < 0)
@@ -498,8 +530,9 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 			// needs no DPB slot, so it always makes progress and the hold
 			// resolves without deadlock.
 			int dependent_in_flight = 0;
+			int32_t base_poc = dec->FieldOrderCnt[0][pic0];
 			for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
-				if (dec->FieldOrderCnt[0][__builtin_ctz(o)] == lowest_poc) {
+				if (dec->FieldOrderCnt[0][__builtin_ctz(o)] == base_poc) {
 					dependent_in_flight = 1;
 					break;
 				}

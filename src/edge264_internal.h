@@ -366,6 +366,7 @@ typedef struct Edge264Decoder {
 	int32_t plane_size_Y;
 	int32_t plane_size_C;
 	int32_t prevFrameId;
+	int32_t next_dispnum; // monotonic display-order counter, assigned to each frame when it is bumped for output
 	uint32_t frame_flip_bits; // bitfield storing target values of bit 0 in mb->recovery_bits for each frame
 	Edge264AllocCb alloc_cb;
 	Edge264FreeCb free_cb;
@@ -415,6 +416,7 @@ typedef struct Edge264Decoder {
 	uint32_t prev_long_term_frames; // state of long_term_frames for both views before current frame
 	int32_t FrameNums[32]; // signed to be used along FieldOrderCnt in initial reference ordering
 	int32_t FrameIds[32]; // unique identifiers for each frame, incremented in decoding order
+	int32_t DispOrder[32]; // monotonic display-order rank, assigned when a frame is bumped for output (see next_dispnum)
 	union { int8_t get_frame_queue[2][16]; i8x16 get_frame_queue_v[2]; }; // FIFO with insertion at 0 for both views, and empty slots having value -1
 	union { int8_t LongTermFrameIdx[32]; i8x16 LongTermFrameIdx_v[2]; };
 	union { int8_t prev_LongTermFrameIdx[32]; i8x16 prev_LongTermFrameIdx_v[2]; }; // state of LongTermFrameIdx before current frame

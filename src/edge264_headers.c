@@ -87,6 +87,13 @@ static int bump_frame(Edge264Decoder *dec, int non_base_view, unsigned ignored) 
 	if (pic < 0)
 		return 0;
 	assert(movemask(dec->get_frame_queue_v[non_base_view])); // get_frame_queue should never be full
+	// Bumping happens on the parsing thread in strict display order (lowest POC
+	// first, prior GOP fully bumped before an IDR's frames), so a counter
+	// captured here gives a globally monotonic display rank. Multithreaded
+	// output then orders by this rank instead of the raw POC, which is not
+	// monotonic across a POC reset (IDR) and would otherwise let a new GOP's
+	// low-POC frame overtake the previous GOP's frames still in the queue.
+	dec->DispOrder[pic] = dec->next_dispnum++;
 	dec->output_frames |= 1 << pic;
 	dec->get_frame_queue_v[non_base_view] = shrd128(set8(pic), dec->get_frame_queue_v[non_base_view], 15);
 	return 1;

@@ -1,14 +1,16 @@
 # edge264-mvc
 
-edge264 is an H.264/AVC cross-platform open-source decoder, focused on **speed** and **ease-of-use**.
+edge264 is a cross-platform, open-source H.264/AVC **software** decoder, focused on **speed** and **ease of use**.
 
-This is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) that makes the
-**MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end: FFmpeg /
-libavcodec drop the MVC dependent view entirely, so this is the only viable open-source
-*software* MVC decoder, but upstream's MVC path had several bugs and the fixing PRs sat open for
-months. The fork integrates those PRs, adds many more MVC-correctness and real-world
-decode-robustness fixes, and implements working **multithreaded decoding** (bit-exact to
-single-thread and validated on the full 231-stream JVT conformance corpus).
+> [!NOTE]
+> This is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) which is used
+> in production by **[Oku3D Media Player](https://oku3d.com/)**, a native 3D media player. It
+> makes the **MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end:
+> FFmpeg / libavcodec drop the MVC dependent view entirely, so this is the only viable
+> open-source *software* MVC decoder, but upstream's MVC path had several bugs and the fixing PRs
+> sat open for months. The fork integrates those PRs, adds many more MVC-correctness and
+> real-world decode-robustness fixes, and implements working **multithreaded decoding** (bit-exact
+> to single-thread and validated on the full 231-stream JVT conformance corpus).
 
 ![](README-benchmark.svg)
 
@@ -17,133 +19,34 @@ on GitHub-hosted runners. `1T` is single-threaded; `MT` is multithreaded (`n_thr
 auto-detected cores) - the speedup is bounded by the runner's few vCPUs, so a many-core machine
 gains more. The other decoders are timed single-threaded as the fair baseline.*
 
-### What's fixed vs upstream master
 
-The fork supports **multithreaded decoding**: call `edge264_alloc` with `n_threads = -1` to
-auto-detect cores (the default in `edge264_test`) or a positive thread count, or `n_threads = 0`
-for the single-threaded path. Upstream's experimental multi-thread path was broken (pre-existing,
-reproducible on pristine upstream even for non-MVC streams - a teardown deadlock, out-of-order
-output, an MVC stereo-pairing stall and data races). This fork fixes it so multithreaded output
-is **bit-exact to single-thread on every supported stream of the 231-stream JVT corpus**, hang-free
-under heavy thread oversubscription, and ThreadSanitizer-clean. The fork also keeps PR #25's
-single-threaded decode-hang fix ([PR #25](https://github.com/tvlabs/edge264/pull/25) ·
-@intrepidsilence, `ready_tasks == 0`).
-The API is upstream's plus four POC fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`,
-`DisplayPoc_mvc`). The whole set still matches upstream **file by file on the full 231-stream
-JVT conformance corpus** (AVCv1 + FRExt + MVC, bit-exact against reference YUV where provided):
-113 PASS / 114 unsupported / 4 FAIL on both, **zero regressions**.
+## Features
 
-**MVC / stereo correctness** - the reason this fork exists; verified on three commercial 1080p
-MVC streams with **0 pairing / 0 ordering errors over 2,500+ frame pairs**:
+edge264 decodes the **Progressive High** and **Stereo High (MVC 3D)** profiles, up to level 6.2. Both the **MVC 3D** path and **multithreaded decoding** are fully functional here; upstream ships the same code but both are broken (see [Relation to upstream edge264](#relation-to-upstream-edge264)).
 
-| Fix | Source |
-|---|---|
-| MVC DPB slot aliasing (corrupt dependent view) | [PR #23](https://github.com/tvlabs/edge264/pull/23) · @intrepidsilence |
-| MVC subset-SPS DPB undersizing (assert / single-thread hang) | this fork |
-| Strict subset-SPS trailing bits (remuxed Blu-rays) | this fork |
-| Unpairable MVC base view deadlock (dropped/corrupt dependent NAL) | this fork |
-| Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
-| Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
-| Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
-
-**Decode robustness on real-world streams** - found by a broad decode audit over a large,
-heterogeneous sample corpus (crashes, hangs and decode failures that the synthetic and
-conformance suites do not exercise). Each carries a committed regression fixture
-([`tests/liveness`](tests/liveness) / [`tests/asan`](tests/asan)) and is **inert on the full
-JVT conformance set** (identical results before and after, zero regressions); each was verified
-against FFmpeg on real captures:
-
-| Fix | Failure mode it removes |
-|---|---|
-| Floor `max_num_ref_frames` at 1 so a reference IDR fits the DPB | reference IDR didn't fit the DPB (C.4.5 fullness assert) |
-| Floor derived `max_dec_frame_buffering` at the reference count | a resolution-exceeds-signaled-level stream aborted a C.4.5 assert |
-| Read `frame_mbs_only_flag` before bounding `pic_height_in_map_units` | tall progressive frames clamped / stalled |
-| Reject `frame_num` gap with no reclaimable slot (instead of aborting) | a frame-num gap aborted the decoder |
-| Harden SEI parsing against crafted `payloadType` / `payloadSize` | out-of-bounds read / multi-second CPU burn on a crafted SEI |
-| Emit an incomplete final picture at end-of-stream | a capture truncated mid-frame (broadcast TS/M2TS) deadlocked the drain |
-| Recover an orphaned undelivered picture on a flush drain | a corrupt-slice frame stalled the DPB and lost the last picture |
-| Clamp out-of-range RefPicList entries | stack overrun / access violation on a non-conformant ref list |
-| Tolerate a VUI that over-reads past the SPS rbsp | whole stream dropped over a common encoder defect |
-| Tolerate a CABAC slice that over-reads past its NAL when complete | a dense 4K multi-slice CABAC frame stalled mid-stream |
-| Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected → mid-stream stall, 0 frames |
-| Reject a slice whose `first_mb_in_slice` is outside the current picture | out-of-bounds macroblock write / crash when interleaved multi-resolution streams (e.g. main + secondary/PiP video) reach one decoder |
-
-**Multithreaded decoding** - upstream's background-thread path was unusable; these make it
-bit-exact to single-thread and hang-free, validated over the full JVT corpus and with
-ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
-
-| Fix | Failure mode it removes |
-|---|---|
-| Join worker threads on teardown instead of cancel-and-destroy | `edge264_free` deadlocked in `pthread_cond_destroy` after every multithreaded decode |
-| Hold an MVC base frame until its lagging dependent view is ready | dependent view stranded in its queue → hard stall on MVC streams under thread contention |
-| Emit frames in monotonic display order, waiting on the in-flight earliest | out-of-order output / ballooning `DisplayPoc` across a GOP boundary under multithreading |
-| Make `next_deblock_addr` accesses atomic (acquire/release) | data race on the deblock-frontier / completion flag (benign on x86-64, torn/stale on ARM) |
-
-**Build / cross-compile** - the Windows DLL is cross-built with MinGW-w64; wasm via Node:
-
-| Fix | Source |
-|---|---|
-| Route aligned allocations through a MinGW-compatible CRT pair (`_aligned_malloc`/`_aligned_free`) | this fork |
-| Stop MinGW's `stdlib.h` `min`/`max` macros from shadowing the typed helpers | this fork |
-| Probe Node for relaxed-SIMD flag support in the wasm `make check` | this fork |
-
-**Deliberately not included:**
-
-- Upstream [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults): the
-  full JVT conformance run shows it breaks 5 High Profile streams with
-  `seq_scaling_matrix_present_flag = 0` (the spec mandates flat-16 there, and
-  `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade correctly).
-- Unspecified NAL types (0, 24-31) - including the type-24 units some 3D Blu-rays carry
-  ([issue #20](https://github.com/tvlabs/edge264/issues/20)) - return `ENOTSUP` by design,
-  matching upstream's tested contract. Skip them in your decode loop rather than treating them
-  as fatal (a caller-side concern, not a library change).
-
-### Layout
-
-`master` carries upstream master plus the patches above. Each fix also lives on its own
-`fix/*`, `pick/*`, or `port/*` branch so it can be submitted upstream individually;
-cherry-picked PRs keep their original authorship.
-
-Used in production by **[Oku3D Media Player](https://oku3d.com/)**, a native 3D media player.
-
-Credits: [@intrepidsilence](https://github.com/intrepidsilence) and
-[@vkapartzianis](https://github.com/vkapartzianis) for the upstream PRs / patches this fork
-builds on, and Thibault Raffaillac (tvlabs) for edge264 itself.
-
----
-
-# edge264
-
-It grew up as a research effort on new software engineering practices, most notably the use of C vector extensions to replace hand-crafted assembly. As such it is slowly but steadily progressing towards production-readiness, with a target release and API-freeze in **2027**.
-
-
-# Features
-
-edge264 supports **Progressive High** and **MVC 3D** profiles, up to level 6.2
-
-Below is an overview of optional features versus Baseline (**BP**), Extended (**XP**), Main (**MP**), High (**HP**) and Stereo High (**SHP**) profiles. 💡 marks planned improvements.
+Below is an overview of optional features versus Baseline (**BP**), Extended (**XP**), Main (**MP**), High (**HP**) and Stereo High (**SHP**) profiles. Features outside the **Progressive High** and **Stereo High** scope (higher bit depths, 4:2:2/4:4:4 chroma, interlaced coding) are intentionally out of scope and well covered by general-purpose decoders such as FFmpeg; edge264's focus is the MVC 3D path that FFmpeg cannot decode.
 
 | Feature | BP | XP | MP | HP | SHP | edge264 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Bit depth | 8 | 8 | 8 | 8 | 8 | 8 💡 |
-| Chroma formats | 4:2:0 | 4:2:0 | 4:2:0 | 4:0:0<br/>4:2:0 | 4:0:0<br/>4:2:0 | 4:2:0 💡 |
+| Bit depth | 8 | 8 | 8 | 8 | 8 | 8 |
+| Chroma formats | 4:2:0 | 4:2:0 | 4:2:0 | 4:0:0<br/>4:2:0 | 4:0:0<br/>4:2:0 | 4:2:0 |
 | Flexible macroblock ordering | ✓ | ✓ | | | | |
 | Arbitrary slice ordering | ✓ | ✓ | | | | ✓ |
 | Redundant slices | ✓ | ✓ | | | | |
 | Data partitioning | | ✓ | | | | |
 | SI/SP slices | | ✓ | | | | |
-| Interlaced coding (PAFF, MBAFF) | | ✓ | ✓ | ✓ | ✓ | 💡 |
+| Interlaced coding (PAFF, MBAFF) | | ✓ | ✓ | ✓ | ✓ | |
 | B slices | | ✓ | ✓ | ✓ | ✓ | ✓ |
 | CABAC entropy coding | | | ✓ | ✓ | ✓ | ✓ |
 | 8x8 IDCT transforms | | | | ✓ | ✓ | ✓ |
 | Custom quantization matrices | | | | ✓ | ✓ | ✓ |
 | Separate Cb/Cr QP control | | | | ✓ | ✓ | ✓ |
-| Separate color planes | | | | | | 💡 |
-| Lossless coding | | | | | | 💡 |
+| Separate color planes | | | | | | |
+| Lossless coding | | | | | | |
 | Max. number of views | 1 | 1 | 1 | 1 | 2 | 2 |
 
 
-# Platforms
+## Platforms
 
 Target system support currently includes **macOS**, **Linux**, **Windows** and **WebAssembly**.
 
@@ -155,7 +58,7 @@ Processor support depends on the compiler used (GNU GCC or LLVM Clang). edge264 
 | GCC | ✓ | ✓ | | |
 
 
-# Building
+## Building
 
 For native builds:
 
@@ -177,7 +80,7 @@ The `VARIANTS` option allows shipping multiple builds inside a single library fi
 make CFLAGS="-march=x86-64" VARIANTS=x86-64-v2,x86-64-v3 BUILDTEST=no
 ```
 
-## CMake integration
+### CMake integration
 
 edge264 ships a `CMakeLists.txt` that wraps its Makefile, so you can
 integrate it into a CMake project without writing any custom build logic.
@@ -190,8 +93,8 @@ project(my_app C)
 
 include(FetchContent)
 FetchContent_Declare(edge264
-  GIT_REPOSITORY https://github.com/yourname/edge264.git
-  GIT_TAG        v1.0  # always pin to a tag or commit hash
+  GIT_REPOSITORY https://github.com/jens-duttke/edge264-mvc.git
+  GIT_TAG        mvc-fixes-2026.06.27  # always pin to a tag or commit hash
 )
 FetchContent_MakeAvailable(edge264)
 
@@ -200,15 +103,7 @@ target_link_libraries(my_app PRIVATE edge264::edge264)
 ```
 
 
-# Testing
-
-A custom test suite is included and regularly updated, to run it:
-
-```sh
-make check
-```
-
-For more advanced testing and display, the program `edge264_test` can browse files in a given directory, decoding each `<video>.264` file and comparing its output with each sibling file `<video>.yuv` if found. On the set of AVCv1, FRExt and MVC [conformance bitstreams](https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/), 109/224 files are decoded without errors, the rest using yet unsupported features.
+## Usage
 
 ```sh
 make
@@ -217,10 +112,7 @@ ffmpeg -i vid.mp4 -vcodec copy -bsf h264_mp4toannexb -an vid.264 # optional, con
 ./edge264_test -d vid.264 # replace -d with -b to benchmark instead of display
 ```
 
-
-# Example code
-
-Here is a complete example that opens an input file in Annex B byte stream format from command line, and dumps its decoded frames in planar YUV order to standard output. See [edge264_test.c](src/edge264_test.c) for a more complete example which can also display frames.
+Here is a complete example that opens an input file in Annex B byte stream format from the command line, and dumps its decoded frames in planar YUV order to standard output. See [edge264_test.c](src/edge264_test.c) for a more complete example which can also display frames.
 
 ```c
 #include <fcntl.h>
@@ -264,7 +156,7 @@ int main(int argc, char *argv[]) {
 ```
 
 
-# API reference
+## API reference
 
 <code>const uint8_t * <b>edge264_find_start_code</b>(buf, end, four_byte)</code>
 
@@ -320,8 +212,8 @@ int main(int argc, char *argv[]) {
 > 	const uint8_t *samples[3]; // Y/Cb/Cr planes
 > 	const uint8_t *samples_mvc[3]; // second view
 > 	const uint8_t *mb_errors; // probabilities (0..100) for each macroblock to be erroneous, NULL if there are no errors, values are spaced by stride_mb in memory
-> 	int8_t pixel_depth_Y; // 0 for 8-bit, 1 for 16-bit
-> 	int8_t pixel_depth_C;
+> 	int8_t bit_depth_Y; // 8
+> 	int8_t bit_depth_C;
 > 	int16_t width_Y;
 > 	int16_t width_C;
 > 	int16_t height_Y;
@@ -329,12 +221,19 @@ int main(int argc, char *argv[]) {
 > 	int16_t stride_Y;
 > 	int16_t stride_C;
 > 	int16_t stride_mb;
-> 	uint32_t FrameId;
-> 	uint32_t FrameId_mvc; // second view
+> 	int32_t FrameId;
+> 	int32_t FrameId_mvc; // second view
+> 	int32_t Poc;
+> 	int32_t Poc_mvc; // second view
+> 	int64_t DisplayPoc;
+> 	int64_t DisplayPoc_mvc; // second view
 > 	int16_t frame_crop_offsets[4]; // {top,right,bottom,left}, useful to derive the original frame with 16x16 macroblocks
 > 	void *return_arg;
 > } Edge264Frame;
 > ```
+
+> [!NOTE]
+> The four `Poc` / `DisplayPoc` fields are this fork's addition to the upstream API: `Poc` / `Poc_mvc` are the per-view picture order counts, and `DisplayPoc` / `DisplayPoc_mvc` their stream-monotonic unwrapped values. MVC frames are returned POC-paired (`samples` + `samples_mvc`), in display order.
 
 <code>void <b>edge264_return_frame</b>(dec, return_arg)</code>
 
@@ -353,35 +252,29 @@ int main(int argc, char *argv[]) {
 > * `Edge264Decoder ** pdec` - pointer to a decoding context, initialized or not
 
 
-# Programming techniques
+## Validation and tests
 
-I started edge264 to experiment on new programming techniques to improve performance and code size over existing decoders, and presented a few of these techniques at [FOSDEM'24](https://fosdem.org/2024/schedule/event/fosdem-2024-2931-innovations-in-h-264-avc-software-decoding-architecture-and-optimization-of-a-block-based-video-decoder-to-reach-10-faster-speed-and-3x-code-reduction-over-the-state-of-the-art-/), [FOSDEM'25](https://fosdem.org/2025/schedule/event/fosdem-2025-5455-more-innovations-in-h-264-avc-software-decoding/) and [FOSDEM'26](https://fosdem.org/2026/schedule/event/ADXJMU-innovations-with-yaml-cabac-simd-in-h264-decoding/).
+`make check` builds the decoder and runs the full test suite:
 
-1. [Single header file](src/edge264_internal.h) - It contains all struct definitions, common constants and enums, SIMD aliases, inline functions and macros, and exported functions for each source file. To understand the code base you should look at this file first.
-2. [Code blocks instead of functions](src/edge264_slice.c) - The main decoding loop is a forward pipeline designed as a DAG loosely resembling hardware decoders, with nodes being non-inlined functions and edges being tail calls. It helps mutualize code branches wherever possible, thus reduces code size to help fit in L1 cache.
-3. [Tree branching](src/edge264_intra.c) - Directional intra modes are implemented with a jump table to the leaves of a tree then unconditional jumps down to the trunk. It allows sharing the bottom code among directional modes, to reduce code size.
-4. ~~Global context register - The pointer to the main structure holding context data is assigned to a register when supported by the compiler (GCC).~~ This technique was dropped as Clang eventually reached on-par performance, so there is little incentive to maintain this hack.
-5. [Default neighboring values](src/edge264_internal.h) (search `unavail_mb`) - Tests for availability of neighbors are replaced with fake neighboring macroblocks around each frame. It reduces the number of conditional tests inside the main decoding loop, thus reduces code size and branch predictor pressure.
-6. [Relative neighboring offsets](src/edge264_internal.h) (look for `A4x4_int8` and related variables) - Access to left/top macroblock values is done with direct offsets in memory instead of copying their values to a buffer beforehand. It helps to reduce the reads and writes in the main decoding loop.
-7. [Parsing uneven block shapes](src/edge264_slice.c) (look at function `parse_P_sub_mb`) - Each Inter macroblock paving specified with mb_type and sub_mb_type is first converted to a bitmask, then iterated on set bits to fetch the correct number of reference indices and motion vectors. This helps to reduce code size and number of conditional blocks.
-8. [Using vector extensions](src/edge264_internal.h) - GCC's vector extensions are used along vector intrinsics to write more compact code. All intrinsics from Intel are aliased with shorter names, which also provides an enumeration of all SIMD instructions used in the decoder.
-9. [Register-saturating SIMD](src/edge264_deblock.c) - Some critical SIMD algorithms use more simultaneous vectors than available registers, effectively saturating the register bank and generating stack spills on purpose. In some cases this is more efficient than splitting the algorithm into smaller bits, and has the additional benefit of scaling well with later CPUs.
-10. [Piston cached bitstream reader](src/edge264_bitstream.c) - The bitstream bits are read in a size_t\[2\] intermediate cache with a trailing set bit to keep track of the number of cached bits, giving access to 32/64 bits per read from the cache, and allowing wide refills from memory.
-11. [On-the-fly SIMD unescaping](src/edge264_bitstream.c) - The input bitstream is unescaped on the fly using vector code, avoiding a full preprocessing pass to remove escape sequences, and thus reducing memory reads/writes.
-12. [Multiarch SIMD programming](src/edge264_internal.h) - Using vector extensions along with aliased intrinsics allows supporting both Intel SSE and ARM NEON with around 80% common code and few #if #else blocks, while keeping state-of-the-art performance for both architectures.
-13. [The Structure of Arrays pattern](src/edge264_internal.h) - The frame buffer is stored with arrays for each distinct field rather than an array of structures, to express operations on frames with bitwise and vector operators (see [AoS and SoA](https://en.wikipedia.org/wiki/AoS_and_SoA)). The task buffer for multithreading also relies on it partially.
-14. [Deferred error checking](src/edge264_headers.c) - Error detection is performed once in each type of NAL unit (search for `return` statements), by clamping all input values to their expected ranges, then expecting `rbsp_trailing_bit` afterwards (with _very high_ probability of catching an error if the stream is corrupted). This design choice is detailed in [A case about parsing errors](https://traffaillac.github.io/parsing.html).
-15. [YAML logging output](src/edge264_headers.c) - The YAML format is used for logging, which makes debugging easier, enables reencoding (used for creation of custom bitstreams) and data analysis.
-16. [CABAC decoding](src/edge264_bitstream.c) - The CABAC internal state is extended to use the full bit range of CPU registers, allowing less frequent renormalization trips to memory, and the batch-decoding of *bypass* bits with a hardware division.
+```sh
+make check
+```
 
+It covers a synthetic suite (tiny generated bitstreams with pixel-exact intra/inter asserts) plus several committed regression suites that edge264 adds on top of upstream:
 
-# Contributing
+- **Conformance** ([`tests/conformance`](tests/conformance)) - decodes a curated subset of real JVT conformance bitstreams and compares each stream's per-view output to a committed hash anchored to the official ITU reference YUVs, together with the MVC structural guarantees (POC pairing, display order). It ships the expected hashes, so a fresh clone runs it fully offline.
+- **Liveness** ([`tests/liveness`](tests/liveness)) - decodes damaged real-world streams (truncated captures, dropped or corrupt NALs) behind a progress guard, asserting the decoder always makes forward progress instead of stalling or deadlocking.
+- **Memory safety** ([`tests/asan`](tests/asan)) - decodes crafted-SEI fixtures under AddressSanitizer (`make SANITIZE=address check-asan`).
+- **Multithreading** - every conformance and liveness fixture is also decoded with background worker threads and asserted bit-exact to the single-threaded output.
 
-Any help is welcome (bug reporting, bug fixing, new tests), although be aware that since it is a solo project, I usually take time to review pull requests!
+On the full set of AVCv1, FRExt and MVC [conformance bitstreams](https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/) (231 streams), edge264 decodes 113 bit-exact against the ITU reference YUVs, 114 use yet-unsupported features, and 4 fail - the same result as upstream, with multithreaded output bit-exact to single-thread on every supported stream.
 
-Bug fixes should preferably provide test streams that can demonstrate fixing said bugs. These streams will be added to the test suite after stripping most image content. Look into the [tests](tests/) directory for examples of custom bitstreams.
+For ad-hoc testing and display, `edge264_test` can browse files in a given directory, decoding each `<video>.264` file and comparing its output with each sibling file `<video>.yuv` if found.
 
-Below is a list of tests that I have added and plan to add to the test suite.
+<details>
+<summary>Test roadmap - implemented tests carry a file name, the rest are planned</summary>
+
+The fork's own tests - MVC conformance, real-world decode robustness, memory safety and multithreading - live in [`tests/conformance`](tests/conformance), [`tests/liveness`](tests/liveness) and [`tests/asan`](tests/asan) (described above) and run under `make check`. The synthetic per-branch matrix below is upstream's roadmap, carried over unchanged.
 
 | General tests | Expected | Test files |
 | --- | --- | --- |
@@ -506,3 +399,105 @@ Below is a list of tests that I have added and plan to add to the test suite.
 | All combinations erroneous/correct and all interval intersections on 2 slices |  |  |
 | All failures of malloc |  |  |
 | All (dis-)allowed bit positions at the end without rbsp_trailing_bit |  |  |
+
+</details>
+
+
+## Design
+
+edge264 was created to experiment with programming techniques that improve performance and reduce code size over existing decoders; several of them were presented at [FOSDEM'24](https://fosdem.org/2024/schedule/event/fosdem-2024-2931-innovations-in-h-264-avc-software-decoding-architecture-and-optimization-of-a-block-based-video-decoder-to-reach-10-faster-speed-and-3x-code-reduction-over-the-state-of-the-art-/), [FOSDEM'25](https://fosdem.org/2025/schedule/event/fosdem-2025-5455-more-innovations-in-h-264-avc-software-decoding/) and [FOSDEM'26](https://fosdem.org/2026/schedule/event/ADXJMU-innovations-with-yaml-cabac-simd-in-h264-decoding/).
+
+1. [Single header file](src/edge264_internal.h) - It contains all struct definitions, common constants and enums, SIMD aliases, inline functions and macros, and exported functions for each source file. To understand the code base you should look at this file first.
+2. [Code blocks instead of functions](src/edge264_slice.c) - The main decoding loop is a forward pipeline designed as a DAG loosely resembling hardware decoders, with nodes being non-inlined functions and edges being tail calls. It helps mutualize code branches wherever possible, thus reduces code size to help fit in L1 cache.
+3. [Tree branching](src/edge264_intra.c) - Directional intra modes are implemented with a jump table to the leaves of a tree then unconditional jumps down to the trunk. It allows sharing the bottom code among directional modes, to reduce code size.
+4. ~~Global context register - The pointer to the main structure holding context data is assigned to a register when supported by the compiler (GCC).~~ This technique was dropped as Clang eventually reached on-par performance, so there is little incentive to maintain this hack.
+5. [Default neighboring values](src/edge264_internal.h) (search `unavail_mb`) - Tests for availability of neighbors are replaced with fake neighboring macroblocks around each frame. It reduces the number of conditional tests inside the main decoding loop, thus reduces code size and branch predictor pressure.
+6. [Relative neighboring offsets](src/edge264_internal.h) (look for `A4x4_int8` and related variables) - Access to left/top macroblock values is done with direct offsets in memory instead of copying their values to a buffer beforehand. It helps to reduce the reads and writes in the main decoding loop.
+7. [Parsing uneven block shapes](src/edge264_slice.c) (look at function `parse_P_sub_mb`) - Each Inter macroblock paving specified with mb_type and sub_mb_type is first converted to a bitmask, then iterated on set bits to fetch the correct number of reference indices and motion vectors. This helps to reduce code size and number of conditional blocks.
+8. [Using vector extensions](src/edge264_internal.h) - GCC's vector extensions are used along vector intrinsics to write more compact code. All intrinsics from Intel are aliased with shorter names, which also provides an enumeration of all SIMD instructions used in the decoder.
+9. [Register-saturating SIMD](src/edge264_deblock.c) - Some critical SIMD algorithms use more simultaneous vectors than available registers, effectively saturating the register bank and generating stack spills on purpose. In some cases this is more efficient than splitting the algorithm into smaller bits, and has the additional benefit of scaling well with later CPUs.
+10. [Piston cached bitstream reader](src/edge264_bitstream.c) - The bitstream bits are read in a size_t\[2\] intermediate cache with a trailing set bit to keep track of the number of cached bits, giving access to 32/64 bits per read from the cache, and allowing wide refills from memory.
+11. [On-the-fly SIMD unescaping](src/edge264_bitstream.c) - The input bitstream is unescaped on the fly using vector code, avoiding a full preprocessing pass to remove escape sequences, and thus reducing memory reads/writes.
+12. [Multiarch SIMD programming](src/edge264_internal.h) - Using vector extensions along with aliased intrinsics allows supporting both Intel SSE and ARM NEON with around 80% common code and few #if #else blocks, while keeping state-of-the-art performance for both architectures.
+13. [The Structure of Arrays pattern](src/edge264_internal.h) - The frame buffer is stored with arrays for each distinct field rather than an array of structures, to express operations on frames with bitwise and vector operators (see [AoS and SoA](https://en.wikipedia.org/wiki/AoS_and_SoA)). The task buffer for multithreading also relies on it partially.
+14. [Deferred error checking](src/edge264_headers.c) - Error detection is performed once in each type of NAL unit (search for `return` statements), by clamping all input values to their expected ranges, then expecting `rbsp_trailing_bit` afterwards (with _very high_ probability of catching an error if the stream is corrupted). This design choice is detailed in [A case about parsing errors](https://traffaillac.github.io/parsing.html).
+15. [YAML logging output](src/edge264_headers.c) - The YAML format is used for logging, which makes debugging easier, enables reencoding (used for creation of custom bitstreams) and data analysis.
+16. [CABAC decoding](src/edge264_bitstream.c) - The CABAC internal state is extended to use the full bit range of CPU registers, allowing less frequent renormalization trips to memory, and the batch-decoding of *bypass* bits with a hardware division.
+
+
+## Relation to upstream edge264
+
+edge264-mvc is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) by Thibault Raffaillac, which grew up as a research effort on new software engineering practices (most notably C vector extensions in place of hand-crafted assembly). `master` tracks upstream master and adds the fixes below; each fix also lives on its own `fix/*`, `pick/*` or `port/*` branch so it can be submitted upstream individually, and cherry-picked PRs keep their original authorship.
+
+Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_threads = -1` to auto-detect cores (the default in `edge264_test`) or a positive thread count, or `n_threads = 0` for the single-threaded path. Upstream's experimental multi-thread path was broken (pre-existing, reproducible on pristine upstream even for non-MVC streams - a teardown deadlock, out-of-order output, an MVC stereo-pairing stall and data races); the fork makes multithreaded output **bit-exact to single-thread on every supported stream of the 231-stream JVT corpus**, hang-free under heavy thread oversubscription, and ThreadSanitizer-clean. It also keeps PR #25's single-threaded decode-hang fix ([PR #25](https://github.com/tvlabs/edge264/pull/25) · @intrepidsilence, `ready_tasks == 0`). The API is upstream's plus four POC fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`, `DisplayPoc_mvc`).
+
+**MVC / stereo correctness** - the reason this fork exists; verified on three commercial 1080p MVC streams with **0 pairing / 0 ordering errors over 2,500+ frame pairs**:
+
+| Fix | Source |
+|---|---|
+| MVC DPB slot aliasing (corrupt dependent view) | [PR #23](https://github.com/tvlabs/edge264/pull/23) · @intrepidsilence |
+| MVC subset-SPS DPB undersizing (assert / single-thread hang) | this fork |
+| Strict subset-SPS trailing bits (remuxed Blu-rays) | this fork |
+| Unpairable MVC base view deadlock (dropped/corrupt dependent NAL) | this fork |
+| Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
+| Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
+| Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
+
+**Decode robustness on real-world streams** - found by a broad decode audit over a large, heterogeneous sample corpus (crashes, hangs and decode failures that the synthetic and conformance suites do not exercise). Each carries a committed regression fixture ([`tests/liveness`](tests/liveness) / [`tests/asan`](tests/asan)) and is **inert on the full JVT conformance set** (identical results before and after, zero regressions); each was verified against FFmpeg on real captures:
+
+| Fix | Failure mode it removes |
+|---|---|
+| Floor `max_num_ref_frames` at 1 so a reference IDR fits the DPB | reference IDR didn't fit the DPB (C.4.5 fullness assert) |
+| Floor derived `max_dec_frame_buffering` at the reference count | a resolution-exceeds-signaled-level stream aborted a C.4.5 assert |
+| Read `frame_mbs_only_flag` before bounding `pic_height_in_map_units` | tall progressive frames clamped / stalled |
+| Reject `frame_num` gap with no reclaimable slot (instead of aborting) | a frame-num gap aborted the decoder |
+| Harden SEI parsing against crafted `payloadType` / `payloadSize` | out-of-bounds read / multi-second CPU burn on a crafted SEI |
+| Emit an incomplete final picture at end-of-stream | a capture truncated mid-frame (broadcast TS/M2TS) deadlocked the drain |
+| Recover an orphaned undelivered picture on a flush drain | a corrupt-slice frame stalled the DPB and lost the last picture |
+| Clamp out-of-range RefPicList entries | stack overrun / access violation on a non-conformant ref list |
+| Tolerate a VUI that over-reads past the SPS rbsp | whole stream dropped over a common encoder defect |
+| Tolerate a CABAC slice that over-reads past its NAL when complete | a dense 4K multi-slice CABAC frame stalled mid-stream |
+| Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected -> mid-stream stall, 0 frames |
+| Reject a slice whose `first_mb_in_slice` is outside the current picture | out-of-bounds macroblock write / crash when interleaved multi-resolution streams (e.g. main + secondary/PiP video) reach one decoder |
+
+**Multithreaded decoding** - upstream's background-thread path was unusable; these make it bit-exact to single-thread and hang-free, validated over the full JVT corpus and with ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
+
+| Fix | Failure mode it removes |
+|---|---|
+| Join worker threads on teardown instead of cancel-and-destroy | `edge264_free` deadlocked in `pthread_cond_destroy` after every multithreaded decode |
+| Hold an MVC base frame until its lagging dependent view is ready | dependent view stranded in its queue -> hard stall on MVC streams under thread contention |
+| Emit frames in monotonic display order, waiting on the in-flight earliest | out-of-order output / ballooning `DisplayPoc` across a GOP boundary under multithreading |
+| Make `next_deblock_addr` accesses atomic (acquire/release) | data race on the deblock-frontier / completion flag (benign on x86-64, torn/stale on ARM) |
+
+**Build / cross-compile** - the Windows DLL is cross-built with MinGW-w64; wasm via Node:
+
+| Fix | Source |
+|---|---|
+| Route aligned allocations through a MinGW-compatible CRT pair (`_aligned_malloc`/`_aligned_free`) | this fork |
+| Stop MinGW's `stdlib.h` `min`/`max` macros from shadowing the typed helpers | this fork |
+| Probe Node for relaxed-SIMD flag support in the wasm `make check` | this fork |
+
+**Deliberately not included:**
+
+- Upstream [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults): the
+  full JVT conformance run shows it breaks 5 High Profile streams with
+  `seq_scaling_matrix_present_flag = 0` (the spec mandates flat-16 there, and
+  `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade correctly).
+- Unspecified NAL types (0, 24-31) - including the type-24 units some 3D Blu-rays carry
+  ([issue #20](https://github.com/tvlabs/edge264/issues/20)) - return `ENOTSUP` by design,
+  matching upstream's tested contract. Skip them in your decode loop rather than treating them
+  as fatal (a caller-side concern, not a library change).
+
+Credits: [@intrepidsilence](https://github.com/intrepidsilence) and [@vkapartzianis](https://github.com/vkapartzianis) for the upstream PRs / patches this fork builds on, and Thibault Raffaillac (tvlabs) for edge264 itself.
+
+
+## Contributing
+
+Any help is welcome - bug reports, bug fixes and new tests. Reviews can take a while.
+
+Bug fixes should preferably come with a test stream that demonstrates the fix; these are added to the test suite after stripping most of the image content. See the [tests](tests/) directory for examples of custom bitstreams.
+
+
+## License
+
+edge264-mvc is distributed under the [BSD 3-Clause license](LICENSE_BSD.txt).

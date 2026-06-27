@@ -3,12 +3,12 @@
 edge264 is a cross-platform, open-source H.264/AVC **software** decoder, focused on **speed** and **ease of use**.
 
 > [!NOTE]
-> This is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) which is used
+> This is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264), used
 > in production by **[Oku3D Media Player](https://oku3d.com/)**, a native 3D media player. It
 > makes the **MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end:
 > FFmpeg / libavcodec drop the MVC dependent view entirely, so this is the only viable
-> open-source *software* MVC decoder, but upstream's MVC path had several bugs and the fixing PRs
-> sat open for months. The fork integrates those PRs, adds many more MVC-correctness and
+> open-source *software* MVC decoder, but stock edge264's MVC path had several bugs and the fixing PRs
+> sat open for months. edge264-mvc integrates those PRs, adds many more MVC-correctness and
 > real-world decode-robustness fixes, and implements working **multithreaded decoding** (bit-exact
 > to single-thread and validated on the full 231-stream JVT conformance corpus).
 
@@ -23,7 +23,7 @@ runner's few vCPUs, so a many-core machine gains more.*
 
 ## Features
 
-edge264 decodes the **Progressive High** and **Stereo High (MVC 3D)** profiles, up to level 6.2. Both the **MVC 3D** path and **multithreaded decoding** are fully functional here; upstream ships the same code but both are broken (see [Relation to upstream edge264](#relation-to-upstream-edge264)).
+edge264 decodes the **Progressive High** and **Stereo High (MVC 3D)** profiles, up to level 6.2. Both the **MVC 3D** path and **multithreaded decoding** are fully functional here; stock edge264 ships the same code but both are broken (see [Relation to edge264](#relation-to-edge264)).
 
 Below is an overview of optional features versus Baseline (**BP**), Extended (**XP**), Main (**MP**), High (**HP**) and Stereo High (**SHP**) profiles. Features outside the **Progressive High** and **Stereo High** scope (higher bit depths, 4:2:2/4:4:4 chroma, interlaced coding) are intentionally out of scope and well covered by general-purpose decoders such as FFmpeg; edge264's focus is the MVC 3D path that FFmpeg cannot decode.
 
@@ -234,7 +234,7 @@ int main(int argc, char *argv[]) {
 > ```
 
 > [!NOTE]
-> The four `Poc` / `DisplayPoc` fields are this fork's addition to the upstream API: `Poc` / `Poc_mvc` are the per-view picture order counts, and `DisplayPoc` / `DisplayPoc_mvc` their stream-monotonic unwrapped values. MVC frames are returned POC-paired (`samples` + `samples_mvc`), in display order.
+> The four `Poc` / `DisplayPoc` fields are edge264-mvc's addition to the original edge264 API: `Poc` / `Poc_mvc` are the per-view picture order counts, and `DisplayPoc` / `DisplayPoc_mvc` their stream-monotonic unwrapped values. MVC frames are returned POC-paired (`samples` + `samples_mvc`), in display order.
 
 <code>void <b>edge264_return_frame</b>(dec, return_arg)</code>
 
@@ -261,21 +261,21 @@ int main(int argc, char *argv[]) {
 make check
 ```
 
-It covers a synthetic suite (tiny generated bitstreams with pixel-exact intra/inter asserts) plus several committed regression suites that edge264 adds on top of upstream:
+It covers a synthetic suite (tiny generated bitstreams with pixel-exact intra/inter asserts) plus several committed regression suites that edge264-mvc adds on top of stock edge264:
 
 - **Conformance** ([`tests/conformance`](tests/conformance)) - decodes a curated subset of real JVT conformance bitstreams and compares each stream's per-view output to a committed hash anchored to the official ITU reference YUVs, together with the MVC structural guarantees (POC pairing, display order). It ships the expected hashes, so a fresh clone runs it fully offline.
 - **Liveness** ([`tests/liveness`](tests/liveness)) - decodes damaged real-world streams (truncated captures, dropped or corrupt NALs) behind a progress guard, asserting the decoder always makes forward progress instead of stalling or deadlocking.
 - **Memory safety** ([`tests/asan`](tests/asan)) - decodes crafted-SEI fixtures under AddressSanitizer (`make SANITIZE=address check-asan`).
 - **Multithreading** - every conformance and liveness fixture is also decoded with background worker threads and asserted bit-exact to the single-threaded output.
 
-On the full set of AVCv1, FRExt and MVC [conformance bitstreams](https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/) (231 streams), edge264 decodes 113 bit-exact against the ITU reference YUVs, 114 use yet-unsupported features, and 4 fail - the same result as upstream, with multithreaded output bit-exact to single-thread on every supported stream.
+On the full set of AVCv1, FRExt and MVC [conformance bitstreams](https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/) (231 streams), edge264 decodes 113 bit-exact against the ITU reference YUVs, 114 use yet-unsupported features, and 4 fail - the same result as stock edge264, with multithreaded output bit-exact to single-thread on every supported stream.
 
 For ad-hoc testing and display, `edge264_test` can browse files in a given directory, decoding each `<video>.264` file and comparing its output with each sibling file `<video>.yuv` if found.
 
 <details>
 <summary>Test roadmap - implemented tests carry a file name, the rest are planned</summary>
 
-The fork's own tests - MVC conformance, real-world decode robustness, memory safety and multithreading - live in [`tests/conformance`](tests/conformance), [`tests/liveness`](tests/liveness) and [`tests/asan`](tests/asan) (described above) and run under `make check`. The synthetic per-branch matrix below is upstream's roadmap; the fork has begun filling in the MVC rows it has fixtures for (see [`tests/conformance/mvc-synthetic`](tests/conformance/mvc-synthetic)).
+edge264-mvc's own tests - MVC conformance, real-world decode robustness, memory safety and multithreading - live in [`tests/conformance`](tests/conformance), [`tests/liveness`](tests/liveness) and [`tests/asan`](tests/asan) (described above) and run under `make check`. The synthetic per-branch matrix below is the original edge264's roadmap; edge264-mvc has begun filling in the MVC rows it has fixtures for (see [`tests/conformance/mvc-synthetic`](tests/conformance/mvc-synthetic)).
 
 | General tests | Expected | Test files |
 | --- | --- | --- |
@@ -426,22 +426,22 @@ edge264 was created to experiment with programming techniques that improve perfo
 16. [CABAC decoding](src/edge264_bitstream.c) - The CABAC internal state is extended to use the full bit range of CPU registers, allowing less frequent renormalization trips to memory, and the batch-decoding of *bypass* bits with a hardware division.
 
 
-## Relation to upstream edge264
+## Relation to edge264
 
-edge264-mvc is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) by Thibault Raffaillac, which grew up as a research effort on new software engineering practices (most notably C vector extensions in place of hand-crafted assembly). `master` tracks upstream master and adds the fixes below; each fix also lives on its own `fix/*`, `pick/*` or `port/*` branch so it can be submitted upstream individually, and cherry-picked PRs keep their original authorship.
+edge264-mvc is a standalone decoder derived from [tvlabs/edge264](https://github.com/tvlabs/edge264) by Thibault Raffaillac, which grew up as a research effort on new software engineering practices (most notably C vector extensions in place of hand-crafted assembly). `main` adds the fixes below on top of the edge264 codebase; each fix also lives on its own `fix/*`, `pick/*` or `port/*` branch, and cherry-picked PRs keep their original authorship.
 
-Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_threads = -1` to auto-detect cores (the default in `edge264_test`) or a positive thread count, or `n_threads = 0` for the single-threaded path. Upstream's experimental multi-thread path was broken (pre-existing, reproducible on pristine upstream even for non-MVC streams - a teardown deadlock, out-of-order output, an MVC stereo-pairing stall and data races); the fork makes multithreaded output **bit-exact to single-thread on every supported stream of the 231-stream JVT corpus**, hang-free under heavy thread oversubscription, and ThreadSanitizer-clean. It also keeps PR #25's single-threaded decode-hang fix ([PR #25](https://github.com/tvlabs/edge264/pull/25) · @intrepidsilence, `ready_tasks == 0`). The API is upstream's plus four POC fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`, `DisplayPoc_mvc`).
+Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_threads = -1` to auto-detect cores (the default in `edge264_test`) or a positive thread count, or `n_threads = 0` for the single-threaded path. Stock edge264's experimental multi-thread path was broken (pre-existing, reproducible on pristine edge264 even for non-MVC streams - a teardown deadlock, out-of-order output, an MVC stereo-pairing stall and data races); edge264-mvc makes multithreaded output **bit-exact to single-thread on every supported stream of the 231-stream JVT corpus**, hang-free under heavy thread oversubscription, and ThreadSanitizer-clean. It also keeps PR #25's single-threaded decode-hang fix ([PR #25](https://github.com/tvlabs/edge264/pull/25) · @intrepidsilence, `ready_tasks == 0`). The API is the original edge264's plus four POC fields on `Edge264Frame` (`Poc`, `Poc_mvc`, `DisplayPoc`, `DisplayPoc_mvc`).
 
-**MVC / stereo correctness** - the reason this fork exists; verified on three commercial 1080p MVC streams with **0 pairing / 0 ordering errors over 2,500+ frame pairs**:
+**MVC / stereo correctness** - the reason this project exists; verified on three commercial 1080p MVC streams with **0 pairing / 0 ordering errors over 2,500+ frame pairs**:
 
 | Fix | Source |
 |---|---|
 | MVC DPB slot aliasing (corrupt dependent view) | [PR #23](https://github.com/tvlabs/edge264/pull/23) · @intrepidsilence |
-| MVC subset-SPS DPB undersizing (assert / single-thread hang) | this fork |
-| Strict subset-SPS trailing bits (remuxed Blu-rays) | this fork |
-| Unpairable MVC base view deadlock (dropped/corrupt dependent NAL) | this fork |
-| Orphan MVC dependent view deadlock (dropped/corrupt base NAL) | this fork |
-| MVC DPB stall on small-resolution streams (0 frames, ENOBUFS spin) | this fork |
+| MVC subset-SPS DPB undersizing (assert / single-thread hang) | edge264-mvc |
+| Strict subset-SPS trailing bits (remuxed Blu-rays) | edge264-mvc |
+| Unpairable MVC base view deadlock (dropped/corrupt dependent NAL) | edge264-mvc |
+| Orphan MVC dependent view deadlock (dropped/corrupt base NAL) | edge264-mvc |
+| MVC DPB stall on small-resolution streams (0 frames, ENOBUFS spin) | edge264-mvc |
 | Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
@@ -463,7 +463,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected -> mid-stream stall, 0 frames |
 | Reject a slice whose `first_mb_in_slice` is outside the current picture | out-of-bounds macroblock write / crash when interleaved multi-resolution streams (e.g. main + secondary/PiP video) reach one decoder |
 
-**Multithreaded decoding** - upstream's background-thread path was unusable; these make it bit-exact to single-thread and hang-free, validated over the full JVT corpus and with ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
+**Multithreaded decoding** - stock edge264's background-thread path was unusable; these make it bit-exact to single-thread and hang-free, validated over the full JVT corpus and with ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
 
 | Fix | Failure mode it removes |
 |---|---|
@@ -476,22 +476,22 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 
 | Fix | Source |
 |---|---|
-| Route aligned allocations through a MinGW-compatible CRT pair (`_aligned_malloc`/`_aligned_free`) | this fork |
-| Stop MinGW's `stdlib.h` `min`/`max` macros from shadowing the typed helpers | this fork |
-| Probe Node for relaxed-SIMD flag support in the wasm `make check` | this fork |
+| Route aligned allocations through a MinGW-compatible CRT pair (`_aligned_malloc`/`_aligned_free`) | edge264-mvc |
+| Stop MinGW's `stdlib.h` `min`/`max` macros from shadowing the typed helpers | edge264-mvc |
+| Probe Node for relaxed-SIMD flag support in the wasm `make check` | edge264-mvc |
 
 **Deliberately not included:**
 
-- Upstream [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults): the
+- [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults): the
   full JVT conformance run shows it breaks 5 High Profile streams with
   `seq_scaling_matrix_present_flag = 0` (the spec mandates flat-16 there, and
   `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade correctly).
 - Unspecified NAL types (0, 24-31) - including the type-24 units some 3D Blu-rays carry
   ([issue #20](https://github.com/tvlabs/edge264/issues/20)) - return `ENOTSUP` by design,
-  matching upstream's tested contract. Skip them in your decode loop rather than treating them
+  matching stock edge264's tested contract. Skip them in your decode loop rather than treating them
   as fatal (a caller-side concern, not a library change).
 
-Credits: [@intrepidsilence](https://github.com/intrepidsilence) and [@vkapartzianis](https://github.com/vkapartzianis) for the upstream PRs / patches this fork builds on, and Thibault Raffaillac (tvlabs) for edge264 itself.
+Credits: [@intrepidsilence](https://github.com/intrepidsilence) and [@vkapartzianis](https://github.com/vkapartzianis) for the edge264 PRs / patches this project builds on, and Thibault Raffaillac (tvlabs) for edge264 itself.
 
 
 ## Contributing

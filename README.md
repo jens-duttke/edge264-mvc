@@ -1,12 +1,21 @@
 # edge264-mvc
 
-A maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) that makes the
-**MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end.
+edge264 is an H.264/AVC cross-platform open-source decoder, focused on **speed** and **ease-of-use**.
 
-**Why this fork exists:** edge264 is the only viable open-source *software* MVC decoder -
-FFmpeg / libavcodec do not decode MVC at all (they drop the dependent view entirely). But
-upstream's MVC path has several bugs, and the fixing PRs have sat open for 3+ months. This
-fork integrates those PRs plus additional fixes and verifies the result on real 3D streams.
+This is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264) that makes the
+**MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end: FFmpeg /
+libavcodec drop the MVC dependent view entirely, so this is the only viable open-source
+*software* MVC decoder, but upstream's MVC path had several bugs and the fixing PRs sat open for
+months. The fork integrates those PRs, adds many more MVC-correctness and real-world
+decode-robustness fixes, and implements working **multithreaded decoding** (bit-exact to
+single-thread and validated on the full 231-stream JVT conformance corpus).
+
+![](README-benchmark.svg)
+
+*Benchmark computed by a median of 5 runs of [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4),
+on GitHub-hosted runners. `1T` is single-threaded; `MT` is multithreaded (`n_threads = -1`,
+auto-detected cores) - the speedup is bounded by the runner's few vCPUs, so a many-core machine
+gains more. The other decoders are timed single-threaded as the fair baseline.*
 
 ### What's fixed vs upstream master
 
@@ -105,16 +114,7 @@ builds on, and Thibault Raffaillac (tvlabs) for edge264 itself.
 
 # edge264
 
-edge264 is an H.264/AVC cross-platform open-source decoder, focused on **speed** and **ease-of-use**.
-
 It grew up as a research effort on new software engineering practices, most notably the use of C vector extensions to replace hand-crafted assembly. As such it is slowly but steadily progressing towards production-readiness, with a target release and API-freeze in **2027**.
-
-![](README-benchmark.svg)
-
-*Benchmark computed by a median of 5 runs of [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4),
-on GitHub-hosted runners. `1T` is single-threaded; `MT` is multithreaded (`n_threads = -1`,
-auto-detected cores) - the speedup is bounded by the runner's few vCPUs, so a many-core machine
-gains more. The other decoders are timed single-threaded as the fair baseline.*
 
 
 # Features

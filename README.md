@@ -111,7 +111,10 @@ It grew up as a research effort on new software engineering practices, most nota
 
 ![](README-benchmark.svg)
 
-*Benchmark computed by a median of 5 runs of [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4).*
+*Benchmark computed by a median of 5 runs of [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4),
+on GitHub-hosted runners. `1T` is single-threaded; `MT` is multithreaded (`n_threads = -1`,
+auto-detected cores) — the speedup is bounded by the runner's few vCPUs, so a many-core machine
+gains more. The other decoders are timed single-threaded as the fair baseline.*
 
 
 # Features

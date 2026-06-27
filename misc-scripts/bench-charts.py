@@ -19,7 +19,7 @@ d = datetime.datetime.today()
 # generate output chart
 x = np.arange(len(rnames))
 width = 1 / (len(cnames) + 1)
-fig, ax = plt.subplots(figsize=(6, 4), layout="constrained")
+fig, ax = plt.subplots(figsize=(max(6, 0.9 * len(cnames) + 1.5), 4), layout="constrained")
 for c, cname in enumerate(cnames):
 	rects = ax.bar(x + c * width, [r[cname] for r in data.values()], width * 0.9, label=cname, zorder=3)
 	ax.bar_label(rects, fmt="{:.1f}", padding=3)
@@ -30,5 +30,6 @@ ax.set_ylim(0, 1.08 * max(max(r.values()) for r in data.values()))
 ax.tick_params(colors="#555")
 ax.spines[:].set_color("#555")
 ax.grid(axis="y", color="#aaa", linestyle="--", linewidth=0.7, zorder=0)
-ax.legend(facecolor="#222", edgecolor="#aaa", labelcolor="#fff", fontsize=10)
+ax.legend(facecolor="#222", edgecolor="#aaa", labelcolor="#fff", fontsize=10,
+	loc="upper left", bbox_to_anchor=(1.01, 1.0))
 plt.savefig(sys.argv[2])

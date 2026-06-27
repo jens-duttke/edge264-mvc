@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y nasm ffmpeg clang cmake
       - id: cache-video
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: video.264
           key: video
@@ -61,7 +61,7 @@ jobs:
           results="{\"x86-64\":${RESULTS_X64},\"arm64\":${RESULTS_ARM64}}"
           echo "${results}"
           python3 ./misc-scripts/bench-charts.py "${results}" README-benchmark.svg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           path: README-benchmark.svg
       - run: |

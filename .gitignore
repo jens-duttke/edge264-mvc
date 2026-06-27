@@ -17,8 +17,13 @@
 !tests/conformance
 !tests/conformance/2d
 !tests/conformance/mvc
+!tests/conformance/mvc-synthetic
 !tests/conformance/2d/*.264
 !tests/conformance/mvc/*.264
+!tests/conformance/mvc-synthetic/*.264
+!tests/conformance/mvc-synthetic/*.yaml
+!tests/conformance/mvc-synthetic/*.md
+!tests/conformance/mvc-synthetic/*.py
 !tests/conformance/*.txt
 !tests/conformance/*.md
 !tests/liveness_check.c

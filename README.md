@@ -275,7 +275,7 @@ For ad-hoc testing and display, `edge264_test` can browse files in a given direc
 <details>
 <summary>Test roadmap - implemented tests carry a file name, the rest are planned</summary>
 
-The fork's own tests - MVC conformance, real-world decode robustness, memory safety and multithreading - live in [`tests/conformance`](tests/conformance), [`tests/liveness`](tests/liveness) and [`tests/asan`](tests/asan) (described above) and run under `make check`. The synthetic per-branch matrix below is upstream's roadmap, carried over unchanged.
+The fork's own tests - MVC conformance, real-world decode robustness, memory safety and multithreading - live in [`tests/conformance`](tests/conformance), [`tests/liveness`](tests/liveness) and [`tests/asan`](tests/asan) (described above) and run under `make check`. The synthetic per-branch matrix below is upstream's roadmap; the fork has begun filling in the MVC rows it has fixtures for (see [`tests/conformance/mvc-synthetic`](tests/conformance/mvc-synthetic)).
 
 | General tests | Expected | Test files |
 | --- | --- | --- |
@@ -388,8 +388,8 @@ The fork's own tests - MVC conformance, real-world decode robustness, memory saf
 | SSPS with additional_extension2_flag=1 and more trailing data |  |  |
 | Gap in frame_num of 16 frames on both views |  |  |
 | Specifying extra_frames=1 |  |  |
-| Receiving a non-base view before its base |  |  |
-| A stream sending non-base views after a few frames have been output |  |  |
+| Receiving a non-base view before its base | Paired, 2 frames | mvc-synthetic/mvc_dep_before_base |
+| A stream sending non-base views after a few frames have been output | 2D then stereo, 4 frames | mvc-synthetic/mvc_late_dependent |
 
 | Error recovery tests | Expected | Test files |
 | --- | --- | --- |

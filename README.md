@@ -13,7 +13,7 @@ fork integrates those PRs plus additional fixes and verifies the result on real 
 The fork supports **multithreaded decoding**: call `edge264_alloc` with `n_threads = -1` to
 auto-detect cores (the default in `edge264_test`) or a positive thread count, or `n_threads = 0`
 for the single-threaded path. Upstream's experimental multi-thread path was broken (pre-existing,
-reproducible on pristine upstream even for non-MVC streams — a teardown deadlock, out-of-order
+reproducible on pristine upstream even for non-MVC streams - a teardown deadlock, out-of-order
 output, an MVC stereo-pairing stall and data races). This fork fixes it so multithreaded output
 is **bit-exact to single-thread on every supported stream of the 231-stream JVT corpus**, hang-free
 under heavy thread oversubscription, and ThreadSanitizer-clean. The fork also keeps PR #25's
@@ -24,7 +24,7 @@ The API is upstream's plus four POC fields on `Edge264Frame` (`Poc`, `Poc_mvc`, 
 JVT conformance corpus** (AVCv1 + FRExt + MVC, bit-exact against reference YUV where provided):
 113 PASS / 114 unsupported / 4 FAIL on both, **zero regressions**.
 
-**MVC / stereo correctness** — the reason this fork exists; verified on three commercial 1080p
+**MVC / stereo correctness** - the reason this fork exists; verified on three commercial 1080p
 MVC streams with **0 pairing / 0 ordering errors over 2,500+ frame pairs**:
 
 | Fix | Source |
@@ -37,7 +37,7 @@ MVC streams with **0 pairing / 0 ordering errors over 2,500+ frame pairs**:
 | Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
 
-**Decode robustness on real-world streams** — found by a broad decode audit over a large,
+**Decode robustness on real-world streams** - found by a broad decode audit over a large,
 heterogeneous sample corpus (crashes, hangs and decode failures that the synthetic and
 conformance suites do not exercise). Each carries a committed regression fixture
 ([`tests/liveness`](tests/liveness) / [`tests/asan`](tests/asan)) and is **inert on the full
@@ -59,7 +59,7 @@ against FFmpeg on real captures:
 | Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected → mid-stream stall, 0 frames |
 | Reject a slice whose `first_mb_in_slice` is outside the current picture | out-of-bounds macroblock write / crash when interleaved multi-resolution streams (e.g. main + secondary/PiP video) reach one decoder |
 
-**Multithreaded decoding** — upstream's background-thread path was unusable; these make it
+**Multithreaded decoding** - upstream's background-thread path was unusable; these make it
 bit-exact to single-thread and hang-free, validated over the full JVT corpus and with
 ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
 
@@ -70,7 +70,7 @@ ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
 | Emit frames in monotonic display order, waiting on the in-flight earliest | out-of-order output / ballooning `DisplayPoc` across a GOP boundary under multithreading |
 | Make `next_deblock_addr` accesses atomic (acquire/release) | data race on the deblock-frontier / completion flag (benign on x86-64, torn/stale on ARM) |
 
-**Build / cross-compile** — the Windows DLL is cross-built with MinGW-w64; wasm via Node:
+**Build / cross-compile** - the Windows DLL is cross-built with MinGW-w64; wasm via Node:
 
 | Fix | Source |
 |---|---|
@@ -84,8 +84,8 @@ ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
   full JVT conformance run shows it breaks 5 High Profile streams with
   `seq_scaling_matrix_present_flag = 0` (the spec mandates flat-16 there, and
   `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade correctly).
-- Unspecified NAL types (0, 24-31) — including the type-24 units some 3D Blu-rays carry
-  ([issue #20](https://github.com/tvlabs/edge264/issues/20)) — return `ENOTSUP` by design,
+- Unspecified NAL types (0, 24-31) - including the type-24 units some 3D Blu-rays carry
+  ([issue #20](https://github.com/tvlabs/edge264/issues/20)) - return `ENOTSUP` by design,
   matching upstream's tested contract. Skip them in your decode loop rather than treating them
   as fatal (a caller-side concern, not a library change).
 
@@ -113,7 +113,7 @@ It grew up as a research effort on new software engineering practices, most nota
 
 *Benchmark computed by a median of 5 runs of [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4),
 on GitHub-hosted runners. `1T` is single-threaded; `MT` is multithreaded (`n_threads = -1`,
-auto-detected cores) — the speedup is bounded by the runner's few vCPUs, so a many-core machine
+auto-detected cores) - the speedup is bounded by the runner's few vCPUs, so a many-core machine
 gains more. The other decoders are timed single-threaded as the fair baseline.*
 
 

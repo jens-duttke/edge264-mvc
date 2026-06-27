@@ -95,7 +95,7 @@ project(my_app C)
 include(FetchContent)
 FetchContent_Declare(edge264
   GIT_REPOSITORY https://github.com/jens-duttke/edge264-mvc.git
-  GIT_TAG        mvc-fixes-2026.06.27  # always pin to a tag or commit hash
+  GIT_TAG        v2026.06.27  # always pin to a tag or commit hash
 )
 FetchContent_MakeAvailable(edge264)
 

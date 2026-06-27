@@ -52,14 +52,14 @@ def libavc_time(cores):
 def openh264_time():
 	return float(run(["h264dec", sys.argv[1]], capture_output=True).stderr.split(b"\n")[6].split()[2])
 
-cols = ["edge264-GCC-1T", "edge264-GCC-MT", "edge264-Clang-1T", "edge264-Clang-MT",
+cols = ["edge264-mvc-GCC-1T", "edge264-mvc-GCC-MT", "edge264-mvc-Clang-1T", "edge264-mvc-Clang-MT",
 	"FFmpeg-1T", "FFmpeg-MT", "LibAVC-1T", "LibAVC-MT", "OpenH264"]
 samples = {c: [] for c in cols}
 for _ in range(int(sys.argv[2])):
-	samples["edge264-GCC-1T"].append(edge264_time("edge264_test-gcc", "-sby"))
-	samples["edge264-GCC-MT"].append(edge264_time("edge264_test-gcc", "-mby"))
-	samples["edge264-Clang-1T"].append(edge264_time("edge264_test-clang", "-sby"))
-	samples["edge264-Clang-MT"].append(edge264_time("edge264_test-clang", "-mby"))
+	samples["edge264-mvc-GCC-1T"].append(edge264_time("edge264_test-gcc", "-sby"))
+	samples["edge264-mvc-GCC-MT"].append(edge264_time("edge264_test-gcc", "-mby"))
+	samples["edge264-mvc-Clang-1T"].append(edge264_time("edge264_test-clang", "-sby"))
+	samples["edge264-mvc-Clang-MT"].append(edge264_time("edge264_test-clang", "-mby"))
 	samples["FFmpeg-1T"].append(ffmpeg_time(1))
 	samples["FFmpeg-MT"].append(ffmpeg_time(0))
 	samples["LibAVC-1T"].append(libavc_time(1))

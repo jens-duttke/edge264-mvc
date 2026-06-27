@@ -17,7 +17,6 @@ cnames = list(tuple(data.values())[0].keys())
 d = datetime.datetime.today()
 
 # generate output chart
-x = np.arange(len(rnames))
 width = 1 / (len(cnames) + 1)
 fig, ax = plt.subplots(figsize=(max(6, 0.9 * len(cnames) + 1.5), 4), layout="constrained")
 # Pair the single-/multi-thread bars of each decoder under one hue: 1T is a
@@ -41,14 +40,27 @@ for cname in cnames:
 palette = matplotlib.colormaps["tab10"].colors
 base_color = {b: palette[i % len(palette)] for i, b in enumerate(bases)}
 
+# x-offset of each bar within an architecture group, inserting a small gap
+# whenever the decoder/compiler changes so every 1T/MT pair stands as a group
+group_gap = width * 0.6
+centers, off, prev = [], 0.0, None
+for cname in cnames:
+	b = base_kind(cname)[0]
+	if prev is not None and b != prev:
+		off += group_gap
+	centers.append(off)
+	off, prev = off + width, b
+centers = np.array(centers)
+x = np.arange(len(rnames)) * (centers[-1] + width * 2) # space the architecture groups apart
+
 for c, cname in enumerate(cnames):
 	b, kind = base_kind(cname)
 	strong = base_color[b]
 	color = tint(strong, 0.55) if kind == "1T" else strong
-	rects = ax.bar(x + c * width, [r[cname] for r in data.values()], width * 0.9,
+	rects = ax.bar(x + centers[c], [r[cname] for r in data.values()], width * 0.9,
 		label=cname, color=color, edgecolor=strong, linewidth=0.6, zorder=3)
 	ax.bar_label(rects, fmt="{:.1f}", padding=3)
-ax.set_xticks(x + 0.5 - width, rnames)
+ax.set_xticks(x + centers[-1] / 2, rnames)
 ax.set_ylabel("Seconds", color="#555", fontsize=10)
 ax.set_title(d.strftime("Decoding time measured on %d/%m/%Y (lower is better)"), color="#555")
 ax.set_ylim(0, 1.08 * max(max(r.values()) for r in data.values()))

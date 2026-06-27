@@ -91,3 +91,12 @@ cabac_misalign 24
 # first access unit's stereo pair (1) and terminates. ffmpeg ignores the dependent
 # view of such an access unit too. Regression (orphan-dependent valve) => stall.
 mvc_orphan_dependent 1
+# mvc_smallres_dpb_stall: a 1x1-macroblock two-view MVC stream of 20 access units
+# (gen_avc.py from tests/gen_mvc_smallres_stall.py). A tiny picture infers a large
+# reorder/DPB window (MaxDpbMbs / PicSizeInMbs, capped at 16), so the per-view
+# fullness bump (bump_frame) queues a base into get_frame_queue[0] while its
+# already-decoded dependent still sits unbumped in to_get_frames; the scan there
+# misses it and the dependent-in-flight guard then holds the base, so the DPB fills
+# and the decoder spins ENOBUFS at 0 frames. The fix bumps the decoded dependent
+# into get_frame_queue[1] so the pair is emitted together. Regression => stall, 0.
+mvc_smallres_dpb_stall 20

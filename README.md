@@ -441,6 +441,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Strict subset-SPS trailing bits (remuxed Blu-rays) | this fork |
 | Unpairable MVC base view deadlock (dropped/corrupt dependent NAL) | this fork |
 | Orphan MVC dependent view deadlock (dropped/corrupt base NAL) | this fork |
+| MVC DPB stall on small-resolution streams (0 frames, ENOBUFS spin) | this fork |
 | Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |

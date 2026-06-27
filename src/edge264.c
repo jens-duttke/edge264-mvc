@@ -513,6 +513,34 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		// 2D path) so the caller always makes forward progress. In a
 		// well-formed stream the dependent is already queued (idx1 >= 0), so
 		// this never fires.
+		// The fullness/reorder bump (bump_frame) queues only the current slice's
+		// view, so a base can reach get_frame_queue[0] while its already-decoded
+		// dependent still sits unbumped in to_get_frames - the scan above only
+		// inspects get_frame_queue[1] and misses it, and the dependent-in-flight
+		// guard below would then hold the base forever even though the pair is
+		// ready. This stalls small-resolution MVC streams long enough to fill the
+		// DPB before end-of-stream (a tiny picture infers a large reorder window,
+		// so the per-view bump fires well before the views are queued together).
+		// Bump that decoded dependent into queue[1] now, mirroring bump_frame, so
+		// the pair is emitted together. The two views of an access unit decode
+		// consecutively (the dependent carries the base's FrameId + 1); require it
+		// fully decoded so a dependent still in flight under multithreading is left
+		// to the hold path below instead.
+		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
+			int32_t base_fid = dec->FrameIds[pic0];
+			for (unsigned o = dec->to_get_frames & ~dec->output_frames & dec->non_base_frames; o; o &= o - 1) {
+				int d = __builtin_ctz(o);
+				if (dec->FrameIds[d] != base_fid + 1)
+					continue;
+				if (__atomic_load_n(&dec->next_deblock_addr[d], __ATOMIC_ACQUIRE) == INT_MAX) {
+					dec->output_frames |= 1 << d;
+					dec->get_frame_queue_v[1] = shrd128(set8(d), dec->get_frame_queue_v[1], 15);
+					idx1 = 0;
+					pic1 = d;
+				}
+				break;
+			}
+		}
 		int force_unpaired = 0;
 		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
 			// The base and its dependent view finish out of lockstep under

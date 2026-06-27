@@ -1,0 +1,1054 @@
+--- # Small-resolution MVC DPB-fill stall (1x1 MB, two views, 20 access units).
+# A tiny picture infers a large reorder window, so the per-view fullness bump
+# queues a base while its decoded dependent is still unbumped; pre-fix the
+# decoder stalls at 0 frames, post-fix it delivers all 20 stereo pairs.
+# Residual-free (every sample = 128 by spec).
+
+- nal_ref_idc: 3
+  nal_unit_type: 7
+  profile_idc: 66
+  constraint_set_flags: [0,0,0,0,0,0]
+  level_idc: 1.0
+  log2_max_frame_num: 6
+  pic_order_cnt_type: 0
+  log2_max_pic_order_cnt_lsb: 6
+  max_num_ref_frames: 2
+  gaps_in_frame_num_value_allowed_flag: 0
+  pic_size_in_mbs: {width: 1, height: 1}
+  frame_mbs_only_flag: 1
+  direct_8x8_inference_flag: 0
+
+- nal_ref_idc: 3
+  nal_unit_type: 8
+  pic_parameter_set_id: 0
+  entropy_coding_mode_flag: 0
+  bottom_field_pic_order_in_frame_present_flag: 0
+  num_slice_groups: 1
+  num_ref_idx_default_active: {l0: 1, l1: 1}
+  weighted_pred_flag: 0
+  weighted_bipred_idc: 0
+  pic_init_qp: 0
+  chroma_qp_index_offset: 0
+  deblocking_filter_control_present_flag: 0
+  constrained_intra_pred_flag: 0
+  redundant_pic_cnt_present_flag: 0
+
+- nal_ref_idc: 3
+  nal_unit_type: 15
+  profile_idc: 128
+  constraint_set_flags: [0,0,0,0,0,0]
+  level_idc: 1.0
+  chroma_format_idc: 1
+  bit_depth: {luma: 8, chroma: 8}
+  qpprime_y_zero_transform_bypass_flag: 0
+  log2_max_frame_num: 6
+  pic_order_cnt_type: 0
+  log2_max_pic_order_cnt_lsb: 6
+  max_num_ref_frames: 2
+  gaps_in_frame_num_value_allowed_flag: 0
+  pic_size_in_mbs: {width: 1, height: 1}
+  frame_mbs_only_flag: 1
+  direct_8x8_inference_flag: 0
+  view_ids: [0,1]
+  num_anchor_refs: {l0: 0, l1: 0}
+  num_non_anchor_refs: {l0: 0, l1: 0}
+  level_values_signalled:
+    - idc: 1.0
+      operation_points: [{temporal_id: 0, target_views: [0,1], num_views: 2}]
+
+- nal_ref_idc: 3
+  nal_unit_type: 8
+  pic_parameter_set_id: 1
+  entropy_coding_mode_flag: 0
+  bottom_field_pic_order_in_frame_present_flag: 0
+  num_slice_groups: 1
+  num_ref_idx_default_active: {l0: 1, l1: 1}
+  weighted_pred_flag: 0
+  weighted_bipred_idc: 0
+  pic_init_qp: 0
+  chroma_qp_index_offset: 0
+  deblocking_filter_control_present_flag: 0
+  constrained_intra_pred_flag: 0
+  redundant_pic_cnt_present_flag: 0
+
+# --- AU 0 ---
+- nal_ref_idc: 3
+  nal_unit_type: 14
+  non_idr_flag: 0
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 1
+  inter_view_flag: 1
+
+- nal_ref_idc: 3
+  nal_unit_type: 5
+  first_mb_in_slice: 0
+  slice_type: 2
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 0}
+  idr_pic_id: 0
+  pic_order_cnt: {type: 0, bits: 6, absolute: 0}
+  no_output_of_prior_pics_flag: 0
+  long_term_reference_flag: 0
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_type: 0
+    rem_intra4x4_pred_modes: [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1]
+    intra_chroma_pred_mode: 0
+    coded_block_pattern: 0
+
+- nal_ref_idc: 3
+  nal_unit_type: 20
+  non_idr_flag: 0
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 1
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 2
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 0}
+  idr_pic_id: 0
+  pic_order_cnt: {type: 0, bits: 6, absolute: 0}
+  no_output_of_prior_pics_flag: 0
+  long_term_reference_flag: 0
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_type: 0
+    rem_intra4x4_pred_modes: [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1]
+    intra_chroma_pred_mode: 0
+    coded_block_pattern: 0
+
+# --- AU 1 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 1}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 1}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 1}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 1}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 2 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 2}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 2}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 2}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 2}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 3 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 3}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 3}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 3}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 3}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 4 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 4}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 4}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 4}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 4}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 5 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 5}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 5}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 5}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 5}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 6 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 6}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 6}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 6}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 6}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 7 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 7}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 7}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 7}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 7}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 8 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 8}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 8}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 8}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 8}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 9 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 9}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 9}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 9}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 9}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 10 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 10}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 10}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 10}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 10}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 11 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 11}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 11}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 11}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 11}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 12 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 12}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 12}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 12}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 12}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 13 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 13}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 13}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 13}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 13}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 14 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 14}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 14}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 14}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 14}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 15 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 15}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 15}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 15}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 15}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 16 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 16}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 16}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 16}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 16}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 17 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 17}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 17}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 17}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 17}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 18 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 18}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 18}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 18}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 18}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+
+# --- AU 19 ---
+- nal_ref_idc: 2
+  nal_unit_type: 14
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 0
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 1
+
+- nal_ref_idc: 2
+  nal_unit_type: 1
+  first_mb_in_slice: 0
+  slice_type: 0
+  pic_parameter_set_id: 0
+  frame_num: {bits: 6, absolute: 19}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 19}
+  num_ref_idx_active: {override_flag: 0, l0: 1}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 0
+    ref_idx: {}
+    mvds: [[0,0],]
+    coded_block_pattern: 0
+
+- nal_ref_idc: 2
+  nal_unit_type: 20
+  non_idr_flag: 1
+  priority_id: 0
+  view_id: 1
+  temporal_id: 0
+  anchor_pic_flag: 0
+  inter_view_flag: 0
+  first_mb_in_slice: 0
+  slice_type: 1
+  pic_parameter_set_id: 1
+  frame_num: {bits: 6, absolute: 19}
+  pic_order_cnt: {type: 0, bits: 6, absolute: 19}
+  direct_spatial_mv_pred_flag: 0
+  num_ref_idx_active: {override_flag: 1, l0: 2, l1: 2}
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_skip_run: 0
+    mb_type: 3
+    ref_idx: {"0":0,"4":1}
+    mvds: [[0,0],[0,0]]
+    coded_block_pattern: 0
+

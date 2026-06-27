@@ -80,3 +80,14 @@ cabac_orphan 24
 # capture (x264.avi) whose every slice was rejected (STALL;0 -> 2209 = ffmpeg,
 # byte-identical). Regression (cabac_alignment leniency) => mid-stream stall, 0 frames.
 cabac_misalign 24
+# mvc_orphan_dependent: a 2-access-unit MVC stream (gen_avc.py) whose second access
+# unit carries only the dependent view (NAL type 20); its base view is absent (a
+# dropped/corrupt base NAL on a damaged 3D stream). The mirror of mvc_unpaired_base
+# above: there the dependent was missing, here the base is. The dependent has no base
+# to pair with and is never scanned for output (only base frames drive get_frame), so
+# it lingered in the output queue until the DPB filled and the decoder spun ENOBUFS at
+# end-of-stream. The fix drops the orphan dependent - clearing it from to_get_frames
+# AND output_frames (both set when the frame was bumped) - so the decoder emits the
+# first access unit's stereo pair (1) and terminates. ffmpeg ignores the dependent
+# view of such an access unit too. Regression (orphan-dependent valve) => stall.
+mvc_orphan_dependent 1

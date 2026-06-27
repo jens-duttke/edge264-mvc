@@ -29,6 +29,7 @@
 !tests/liveness_check.c
 !tests/liveness
 !tests/liveness/*.264
+!tests/liveness/*.yaml
 !tests/liveness/*.txt
 !tests/liveness/*.md
 !tests/asan_check.c

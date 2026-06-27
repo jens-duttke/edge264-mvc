@@ -583,6 +583,51 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 			dec->output_frames &= ~(uintptr_t)out->return_arg;
 		}
 	}
+	// MVC orphan-dependent liveness valve: the mirror of the unpaired-base valve
+	// above. A dependent view whose base is permanently missing (a dropped or
+	// corrupt base-view NAL on a damaged 3D stream) is bumped into
+	// get_frame_queue[1] but never scanned for output - only base frames drive
+	// the idx0 loop - so it lingers until the DPB fills and the decoder spins
+	// ENOBUFS forever. ffmpeg ignores the dependent view of such an access unit
+	// entirely; we likewise drop the orphan (free its slot, emit nothing) so a
+	// draining caller always makes forward progress. Runs only when nothing else
+	// was delivered (res != 0), and drops only a dependent whose base - a
+	// base-view frame at its FrameId - 1, the consecutive-decode pairing
+	// invariant - is absent from every live slot (decoded-but-unoutput in
+	// to_get_frames, or still in flight). The base of an access unit is always
+	// decoded before its dependent, so a well-formed dependent's base is live
+	// until the pair is emitted together (a display-order / in-flight hold keeps
+	// it live too); this therefore never fires on a conformant stream.
+	int dropped_orphan = 0;
+	if (res != 0 && dec->ssps.BitDepth_Y != 0) {
+		uint32_t inflight = 0;
+		for (unsigned b = dec->busy_tasks; b; b &= b - 1)
+			inflight |= 1u << dec->taskPics[__builtin_ctz(b)];
+		uint32_t live_bases = (dec->to_get_frames | inflight) & ~dec->non_base_frames;
+		for (int i = 0; i < 16; ++i) {
+			int dep = dec->get_frame_queue[1][i];
+			if (dep < 0)
+				continue;
+			int32_t base_fid = dec->FrameIds[dep] - 1;
+			int has_base = 0;
+			for (unsigned o = live_bases; o; o &= o - 1) {
+				if (dec->FrameIds[__builtin_ctz(o)] == base_fid) {
+					has_base = 1;
+					break;
+				}
+			}
+			if (!has_base) {
+				// free the orphan everywhere a delivered frame is cleared: the
+				// output queue, to_get_frames, and output_frames (set when the
+				// frame was bumped, headers.c bump_frame) - bump_all_frames keeps
+				// returning ENOBUFS at end-of-stream while either bit is set.
+				dec->get_frame_queue[1][i] = -1;
+				dec->to_get_frames &= ~(1u << dep);
+				dec->output_frames &= ~(1u << dep);
+				dropped_orphan = 1;
+			}
+		}
+	}
 	// Livelock guard: when nothing can be delivered because the next frame is
 	// being held for an in-flight dependency (MVC pairing or display order) and
 	// the output queue is full, the caller spins on ENOBUFS. Returning ENOMSG
@@ -591,7 +636,7 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 	// frame is waiting on. Yield once to a worker instead; the caller's drain
 	// loop retries and the hold resolves as soon as the dependency completes.
 	// Only fires at fullness, so pipelined non-blocking draining is unaffected.
-	if (res != 0 && dec->n_threads && dec->busy_tasks) {
+	if (res != 0 && !dropped_orphan && dec->n_threads && dec->busy_tasks) {
 		int q0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
 		int q1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
 		int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));

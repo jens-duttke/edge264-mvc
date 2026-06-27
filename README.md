@@ -376,7 +376,7 @@ The fork's own tests - MVC conformance, real-world decode robustness, memory saf
 | All wrong combinations of non_idr_flag with nal_unit_type=1/5 and nal_ref_idc=0/1 |  |  |
 | nal_unit_type=14 then filler unit then nal_unit_type=1/5 |  |  |
 | An nal_unit_type=5 view paired with a non_idr_flag=0 P view, or a non_idr_flag=1 view |  |  |
-| Missing a base or non-base view |  |  |
+| Missing a base or non-base view | No stall: lone base emitted, orphan dependent dropped | mvc_unpaired_base, mvc_orphan_dependent |
 | Receiving a SSPS yet only base views then |  |  |
 | 16 ref base views while non base are non-refs |  |  |
 | A SSPS with different pic_width_in_mbs/pic_height_in_mbs/chroma_format_idc than its SPS |  |  |
@@ -440,6 +440,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | MVC subset-SPS DPB undersizing (assert / single-thread hang) | this fork |
 | Strict subset-SPS trailing bits (remuxed Blu-rays) | this fork |
 | Unpairable MVC base view deadlock (dropped/corrupt dependent NAL) | this fork |
+| Orphan MVC dependent view deadlock (dropped/corrupt base NAL) | this fork |
 | Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |

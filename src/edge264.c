@@ -325,6 +325,18 @@ void edge264_free(Edge264Decoder **pdec) {
 
 
 
+// Frees a decoder-owned copy of a slice NAL once its worker thread is done with
+// it. Installed as the task's unref_cb in the multithreaded path (see
+// edge264_decode_NAL) - workers decode slices asynchronously after decode_NAL
+// returns, so the slice bytes must outlive the caller's buffer. The argument is
+// the allocation base (front padding included), released with aligned_free to
+// match aligned_malloc (plain free on an _aligned_malloc pointer corrupts the
+// heap on Windows).
+static void internal_unref_nal(int ret, void *nal_base) {
+	(void)ret;
+	aligned_free(nal_base);
+}
+
 /**
  * Maximum buffer size is 2^(SIZE_BIT-1)-1, and pointer comparisons are coded
  * to allow wrapping around memory, so the buffer may be close to end of memory
@@ -381,6 +393,38 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 	}
 	dec->flushing = 0;
 
+	// In the multithreaded path, slice NALs (types 1, 5, 20) are decoded by a
+	// worker thread *after* this call returns, so their bytes must outlive the
+	// caller's buffer. The unref_cb contract documents this, but it is subtle
+	// and easy to miss - a caller that reuses or frees its NAL buffer right
+	// after decode_NAL (correct for single-thread, where decoding is synchronous)
+	// silently corrupts the in-flight slice, desynchronising CABAC and stalling
+	// the DPB. Copy the slice into decoder-owned memory and free it from the
+	// task's unref_cb when the worker is done; the caller's buffer is then free
+	// the moment decode_NAL returns, regardless of how the caller manages it.
+	// The copy must reproduce the buffer environment the bitstream reader relies
+	// on (and which the caller's buffer provides for free): the reader does an
+	// unaligned load from CPB-2 (so the two bytes before the NAL must be readable
+	// and must not spoof a 00 00 0x escape - emulate the 00 00 01 start-code end),
+	// and aligned 16-byte loads around `end` (so the allocation must be 16-byte
+	// aligned and extend past `end`). Hence: 16-byte front pad ending in 00 00 01,
+	// then the NAL, then >=16-byte trailing pad, 16-aligned.
+	uint8_t *nal_base = NULL;
+	if (dec->n_threads && (0x100022 & 1 << (buf[0] & 0x1f))) { // slice types 1, 5, 20
+		size_t nal_len = end - buf;
+		size_t cap = (16 + nal_len + 32 + 15) & ~(size_t)15;
+		if ((nal_base = aligned_malloc(16, cap)) == NULL) {
+			pthread_mutex_unlock(&dec->lock);
+			return ENOMEM;
+		}
+		memset(nal_base, 0, 16);
+		nal_base[15] = 1; // buf[-1]=01, buf[-2]=00, buf[-3]=00 -> a 00 00 01 start code
+		memcpy(nal_base + 16, buf, nal_len);
+		memset(nal_base + 16 + nal_len, 0, cap - 16 - nal_len); // trailing pad for read-ahead
+		buf = nal_base + 16;
+		end = buf + nal_len;
+	}
+
 	// prefill the bitstream cache while parsing the NAL byte header
 	dec->gb.CPB = buf;
 	dec->gb.end = end;
@@ -398,12 +442,19 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 			dec->nal_ref_idc,
 			dec->nal_unit_type, nal_unit_type_names[dec->nal_unit_type], unsup_if(!parser));
 	}
-	int ret = parser(dec, unref_cb, unref_arg);
+	// For a copied slice, the task owns the copy and frees it via internal_unref_nal
+	// when the worker finishes; otherwise the caller's unref_cb/arg flow through.
+	int ret = parser(dec, nal_base ? internal_unref_nal : unref_cb, nal_base ? (void *)nal_base : unref_arg);
 	// printf("nal_unit_type=%d, ret=%d\n\n", dec->nal_unit_type, ret);
-	
-	// on non-slice successful return we release the NAL buffer
-	if (unref_cb && ret == 0 && !(0x100022 & 1 << dec->nal_unit_type)) // 1, 5 or 20
+
+	// Release the caller's NAL buffer on success: non-slices always, and copied
+	// slices too (we hold our own copy, so the caller buffer is already free).
+	if (unref_cb && ret == 0 && (nal_base || !(0x100022 & 1 << dec->nal_unit_type))) // 1, 5 or 20
 		unref_cb(ret, unref_arg);
+	// A copied slice that created no task (error / ENOBUFS re-feed) has no owner
+	// for the copy - free it here so it does not leak.
+	if (nal_base && ret != 0)
+		aligned_free(nal_base);
 	if (dec->n_threads)
 		pthread_mutex_unlock(&dec->lock);
 	return ret;

@@ -233,11 +233,19 @@ Edge264Decoder *edge264_alloc(int n_threads, Edge264LogCb log_cb, void *log_arg,
 	// get the number of logical cores if requested
 	if (n_threads < 0) {
 		#ifdef _WIN32
-			int n_cpus = atoi(getenv("NUMBER_OF_PROCESSORS"));
+			const char *env = getenv("NUMBER_OF_PROCESSORS");
+			int n_cpus = env != NULL ? atoi(env) : 0;
 		#else
 			int n_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 		#endif
-		n_threads = min(n_cpus, 16);
+		// reason: persist the *resolved* count - edge264_free's join loop uses
+		// dec->n_threads as its bound (`i < dec->n_threads`). Leaving the raw -1
+		// set above joined zero workers, then destroyed the sync objects and
+		// freed dec under still-live threads -> access violation at teardown on
+		// the Windows/MinGW build (UB everywhere; Linux happened to survive it).
+		// A failed detection (<=0) falls back to single-threaded.
+		n_threads = n_cpus > 0 ? min(n_cpus, 16) : 0;
+		dec->n_threads = n_threads;
 	}
 	
 	// if multithreading is disabled we are done, otherwise initialize all

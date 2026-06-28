@@ -417,11 +417,15 @@ check-conformance: conformance_check$(EXE)
 # threads and assert the per-view hashes still equal the (single-thread / ITU
 # anchored) manifest. Proves the multithreaded path is bit-identical to
 # single-thread output, and a stall would fail here by timeout. Skipped on wasm
-# (single-threaded runtime).
+# (single-threaded runtime). The EDGE264_THREADS=-1 pass also exercises the
+# auto-detect (logical-core) spawn+teardown path: it must persist its resolved
+# count so edge264_free joins every worker before freeing (a -1 left in
+# dec->n_threads skips the join -> teardown access violation, esp. on Windows).
 .PHONY: check-conformance-mt
 check-conformance-mt: conformance_check$(EXE)
 ifneq ($(OS),wasm)
 	$(Q)EDGE264_THREADS=8 ./conformance_check$(EXE) run tests/conformance/manifest.txt tests/conformance
+	$(Q)EDGE264_THREADS=-1 ./conformance_check$(EXE) run tests/conformance/manifest.txt tests/conformance
 endif
 
 conformance_check$(EXE): tests/conformance_check.c edge264.h $(LIBNAME)
@@ -436,6 +440,7 @@ check-liveness: liveness_check$(EXE)
 	$(Q)./liveness_check$(EXE) run tests/liveness/manifest.txt tests/liveness
 ifneq ($(OS),wasm)
 	$(Q)EDGE264_THREADS=8 ./liveness_check$(EXE) run tests/liveness/manifest.txt tests/liveness
+	$(Q)EDGE264_THREADS=-1 ./liveness_check$(EXE) run tests/liveness/manifest.txt tests/liveness
 endif
 
 liveness_check$(EXE): tests/liveness_check.c edge264.h $(LIBNAME)

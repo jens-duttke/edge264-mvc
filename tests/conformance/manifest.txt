@@ -78,3 +78,7 @@ mvc/MVCSPS-1 9 1 01d24c8cf48614798c486c9b409631d4 3fea8e4bc1b7c3cc5c76c8c046846f
 mvc-synthetic/mvc_base 2 1 db3681d9568edf2599f4c9f5e2cf4ce4 db3681d9568edf2599f4c9f5e2cf4ce4
 mvc-synthetic/mvc_dep_before_base 2 1 db3681d9568edf2599f4c9f5e2cf4ce4 db3681d9568edf2599f4c9f5e2cf4ce4
 mvc-synthetic/mvc_late_dependent 4 1 a048378e15cb9b259ead3cfae1ebfce4 db3681d9568edf2599f4c9f5e2cf4ce4
+# Trailing 1 = paced consumer: also decode draining only when the DPB reports
+# full, which holds frames into the dependent-view frame_num gap; without the
+# (FrameNum, POC) pairing fix the decoder aborts here, run forked so it FAILs cleanly.
+mvc-synthetic/mvc_dependent_frame_num_gap 12 1 20fc95a352de8b25f2685fdbf0debce4 20fc95a352de8b25f2685fdbf0debce4 1

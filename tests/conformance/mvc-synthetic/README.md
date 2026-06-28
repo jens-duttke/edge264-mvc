@@ -58,6 +58,24 @@ decoder reproduces that hash. Run it from the repo root:
   whereas the fork delivers all 4. It pins the fork's forward-progress /
   stereo-pairing fix for a changing view layout.
 
+- **mvc_dependent_frame_num_gap** (12 frames) - a genuine **fork regression
+  guard** for access-unit view pairing. Every non-anchor dependent view is
+  non-reference, so the dependent view's `PrevRefFrameNum` never advances; the
+  last access unit's reference dependent then carries a large `frame_num` gap,
+  and the decoder infers gap-fill frames between the base and its dependent
+  (8.2.5.2), so the dependent's FrameId lands several past `base + 1`. The two
+  views still share a `FrameNum` and a POC. The last AU also has the lowest
+  non-zero POC, so a *paced* consumer (drain only when the DPB reports full)
+  force-bumps it while its dependent is not yet queued - exactly where the old
+  decode-order "`base + 1`" pairing shortcut misresolved the pair. Pairing by
+  (`FrameNum`, POC) fixes it; without the fix the held, mispaired frames overflow
+  the DPB and the decoder aborts. This fixture is flagged paced in the manifest
+  (trailing `1`) and the harness runs paced fixtures in a forked child, so that
+  abort is reported as a clean FAIL rather than dumping core. Unlike the JVT MVC
+  vectors and the other fixtures here, the bug needs DPB pressure, which no
+  published vector and no aggressive-drain test reproduces. Profile 128, level
+  3.0, `gaps_in_frame_num_value_allowed_flag = 1`.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:
@@ -69,3 +87,13 @@ After an intentional, reviewed change to decoded output:
 
 Keep the printed line only if its comment reads `pair_err=0 order_err=0`, then
 copy it (without the trailing `# ...`) into `../manifest.txt`.
+
+`mvc_dependent_frame_num_gap.yaml` is itself produced by a generator (the others
+are hand-written); regenerate it before the `gen_avc.py` step with:
+
+    python3 tests/gen_gap_stream.py 12 10 0 \
+            tests/conformance/mvc-synthetic/mvc_dependent_frame_num_gap.yaml
+
+It is a *paced* fixture, so append a trailing ` 1` to its manifest line by hand
+(`emit` prints only the five base fields) and keep its `(frames, frames)` entry
+in `ground_truth.py` in sync.

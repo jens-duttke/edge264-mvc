@@ -445,6 +445,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Export per-view POC / monotonic display POC | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Stereo view desync (wrong base/dependent pairing) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis |
 | Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
+| MVC view mispairing at a mid-stream IDR (dependent view dropped each GOP) | edge264-mvc |
 
 **Decode robustness on real-world streams** - found by a broad decode audit over a large, heterogeneous sample corpus (crashes, hangs and decode failures that the synthetic and conformance suites do not exercise). Each carries a committed regression fixture ([`tests/liveness`](tests/liveness) / [`tests/asan`](tests/asan)) and is **inert on the full JVT conformance set** (identical results before and after, zero regressions); each was verified against FFmpeg on real captures:
 

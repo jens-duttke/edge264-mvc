@@ -586,15 +586,15 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		// DPB before end-of-stream (a tiny picture infers a large reorder window,
 		// so the per-view bump fires well before the views are queued together).
 		// Bump that decoded dependent into queue[1] now, mirroring bump_frame, so
-		// the pair is emitted together. The two views of an access unit decode
-		// consecutively (the dependent carries the base's FrameId + 1); require it
-		// fully decoded so a dependent still in flight under multithreading is left
-		// to the hold path below instead.
+		// the pair is emitted together. The two views of one access unit share both
+		// a FrameNum and a POC (match on both, see the dependent-in-flight note
+		// below); require it fully decoded so a dependent still in flight under
+		// multithreading is left to the hold path below instead.
 		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
-			int32_t base_fid = dec->FrameIds[pic0];
+			int32_t base_fn = dec->FrameNums[pic0], base_poc = dec->FieldOrderCnt[0][pic0];
 			for (unsigned o = dec->to_get_frames & ~dec->output_frames & dec->non_base_frames; o; o &= o - 1) {
 				int d = __builtin_ctz(o);
-				if (dec->FrameIds[d] != base_fid + 1)
+				if (dec->FrameNums[d] != base_fn || dec->FieldOrderCnt[0][d] != base_poc)
 					continue;
 				if (__atomic_load_n(&dec->next_deblock_addr[d], __ATOMIC_ACQUIRE) == INT_MAX) {
 					dec->output_frames |= 1 << d;
@@ -618,14 +618,18 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 			// in flight, hold the base until the pair can be emitted together
 			// (the livelock guard at the end of this function keeps the held base
 			// from starving the workers that finish it). The two views of one
-			// access unit are decoded consecutively, so the dependent carries the
-			// base's FrameId + 1; match on that rather than the POC, which a later
-			// GOP reuses after an IDR reset and would mistake for the missing
-			// dependent, holding an unpaired base forever.
+			// access unit share both a FrameNum and a POC; match on the pair rather
+			// than the POC alone (which a later GOP reuses after an IDR reset), the
+			// FrameNum alone (which non-reference B frames share with their reference,
+			// so a base could mis-pair to the wrong view's dependent), or the
+			// decode-order "base's FrameId + 1" (which breaks at an IDR: frame_num-gap
+			// fill frames decode between the base and its dependent, pushing the
+			// dependent several FrameIds past the base and stranding it forever).
 			int dependent_in_flight = 0;
-			int32_t base_fid = dec->FrameIds[pic0];
+			int32_t base_fn = dec->FrameNums[pic0], base_poc = dec->FieldOrderCnt[0][pic0];
 			for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
-				if (dec->FrameIds[__builtin_ctz(o)] == base_fid + 1) {
+				int d = __builtin_ctz(o);
+				if (dec->FrameNums[d] == base_fn && dec->FieldOrderCnt[0][d] == base_poc) {
 					dependent_in_flight = 1;
 					break;
 				}
@@ -684,7 +688,7 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 	// entirely; we likewise drop the orphan (free its slot, emit nothing) so a
 	// draining caller always makes forward progress. Runs only when nothing else
 	// was delivered (res != 0), and drops only a dependent whose base - a
-	// base-view frame at its FrameId - 1, the consecutive-decode pairing
+	// base-view frame sharing its FrameNum and POC, the access-unit pairing
 	// invariant - is absent from every live slot (decoded-but-unoutput in
 	// to_get_frames, or still in flight). The base of an access unit is always
 	// decoded before its dependent, so a well-formed dependent's base is live
@@ -700,10 +704,11 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 			int dep = dec->get_frame_queue[1][i];
 			if (dep < 0)
 				continue;
-			int32_t base_fid = dec->FrameIds[dep] - 1;
+			int32_t base_fn = dec->FrameNums[dep], base_poc = dec->FieldOrderCnt[0][dep];
 			int has_base = 0;
 			for (unsigned o = live_bases; o; o &= o - 1) {
-				if (dec->FrameIds[__builtin_ctz(o)] == base_fid) {
+				int b = __builtin_ctz(o);
+				if (dec->FrameNums[b] == base_fn && dec->FieldOrderCnt[0][b] == base_poc) {
 					has_base = 1;
 					break;
 				}

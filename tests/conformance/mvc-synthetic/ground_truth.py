@@ -44,10 +44,14 @@ def gt(n_views_frames):
 #                         (its hashes MUST equal mvc_base's: reordering NAL units
 #                          within an access unit cannot change decoded output)
 #   mvc_late_dependent  - 2 base-only AUs then 2 stereo AUs     -> 4 base, 2 dep
+#   mvc_dependent_frame_num_gap - 12 stereo AUs (a dependent-view frame_num gap
+#                         shifts the last AU's dependent FrameId; all views still
+#                         decode, so all 12 are stereo)            -> 12 base, 12 dep
 EXPECTED = {
-    "mvc-synthetic/mvc_base":            (2, 2),
-    "mvc-synthetic/mvc_dep_before_base": (2, 2),
-    "mvc-synthetic/mvc_late_dependent":  (4, 2),
+    "mvc-synthetic/mvc_base":                   (2, 2),
+    "mvc-synthetic/mvc_dep_before_base":        (2, 2),
+    "mvc-synthetic/mvc_late_dependent":         (4, 2),
+    "mvc-synthetic/mvc_dependent_frame_num_gap": (12, 12),
 }
 
 def main():

@@ -238,15 +238,20 @@ Edge264Decoder *edge264_alloc(int n_threads, Edge264LogCb log_cb, void *log_arg,
 		#else
 			int n_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 		#endif
-		// reason: persist the *resolved* count - edge264_free's join loop uses
-		// dec->n_threads as its bound (`i < dec->n_threads`). Leaving the raw -1
-		// set above joined zero workers, then destroyed the sync objects and
-		// freed dec under still-live threads -> access violation at teardown on
-		// the Windows/MinGW build (UB everywhere; Linux happened to survive it).
-		// A failed detection (<=0) falls back to single-threaded.
-		n_threads = n_cpus > 0 ? min(n_cpus, 16) : 0;
-		dec->n_threads = n_threads;
+		n_threads = n_cpus > 0 ? n_cpus : 0; // a failed detection -> single-threaded
 	}
+	// reason: clamp to the fixed-size worker pool and persist the result, because
+	// edge264_free's join loop uses dec->n_threads as its bound (`i < dec->n_threads`).
+	// Leaving a raw value here - the -1 auto-detect sentinel, or an explicit request
+	// larger than the pool - makes the spawn loop write pthread handles past
+	// dec->threads[] straight into the adjacent mutex/condvars, and the join loop
+	// walk the same overrun; both corrupt teardown (the -1 case surfaced as a
+	// Windows/MinGW access violation that glibc happened to tolerate). Derive the
+	// bound from the array size so the cap can never drift from it.
+	int max_threads = sizeof(dec->threads) / sizeof(dec->threads[0]);
+	if (n_threads > max_threads)
+		n_threads = max_threads;
+	dec->n_threads = n_threads;
 	
 	// if multithreading is disabled we are done, otherwise initialize all
 	if (n_threads == 0)

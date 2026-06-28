@@ -472,6 +472,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Emit frames in monotonic display order, waiting on the in-flight earliest | out-of-order output / ballooning `DisplayPoc` across a GOP boundary under multithreading |
 | Make `next_deblock_addr` accesses atomic (acquire/release) | data race on the deblock-frontier / completion flag (benign on x86-64, torn/stale on ARM) |
 | Persist the auto-detected logical-core count so teardown joins every worker | `edge264_alloc(-1)` left the raw `-1` in the join-loop bound, so `edge264_free` joined no workers and freed the decoder under still-live threads (teardown access violation, surfaced on the Windows/MinGW build) |
+| Clamp the requested worker count to the fixed-size thread pool | an explicit `n_threads` above 16 overran the internal 16-slot `threads` array in the spawn and join loops |
 
 **Build / cross-compile** - the Windows DLL is cross-built with MinGW-w64; wasm via Node:
 

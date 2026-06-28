@@ -475,6 +475,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Persist the auto-detected logical-core count so teardown joins every worker | `edge264_alloc(-1)` left the raw `-1` in the join-loop bound, so `edge264_free` joined no workers and freed the decoder under still-live threads (teardown access violation, surfaced on the Windows/MinGW build) |
 | Clamp the requested worker count to the fixed-size thread pool | an explicit `n_threads` above 16 overran the internal 16-slot `threads` array in the spawn and join loops |
 | Copy slice NALs into decoder-owned memory so worker threads outlive the caller's buffer | a caller that reused or freed its NAL buffer once `decode_NAL` returned (correct single-threaded, where decoding is synchronous) corrupted the slice still being decoded by a background worker - CABAC desync, then a DPB stall, on real multi-slice MVC streams |
+| Run pending tasks' unref callbacks on teardown | a slice NAL copied for an asynchronous worker but not yet taken by one leaked when `edge264_free` stopped the workers (only the flush path drained them) |
 
 **Build / cross-compile** - the Windows DLL is cross-built with MinGW-w64; wasm via Node:
 

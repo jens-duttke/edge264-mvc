@@ -310,6 +310,15 @@ void edge264_free(Edge264Decoder **pdec) {
 			pthread_mutex_unlock(&dec->lock);
 			for (int i = 0; i < dec->n_threads; i++)
 				pthread_join(dec->threads[i], NULL);
+			// Workers exit at shutdown without running tasks that were created but
+			// not yet taken (pending_tasks); unlike the flush path, which waits on
+			// busy_tasks, nothing drains them. Call each pending task's unref_cb so
+			// a copied slice NAL (internal_unref_nal) is freed, not leaked here.
+			for (unsigned p = dec->pending_tasks; p; p &= p - 1) {
+				int task_id = __builtin_ctz(p);
+				if (dec->tasks[task_id].unref_cb)
+					dec->tasks[task_id].unref_cb(ECANCELED, dec->tasks[task_id].unref_arg);
+			}
 			pthread_mutex_destroy(&dec->lock);
 			pthread_cond_destroy(&dec->task_ready);
 			pthread_cond_destroy(&dec->task_progress);

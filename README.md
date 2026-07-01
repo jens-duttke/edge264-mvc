@@ -454,6 +454,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Floor `max_num_ref_frames` at 1 so a reference IDR fits the DPB | reference IDR didn't fit the DPB (C.4.5 fullness assert) |
 | Floor derived `max_dec_frame_buffering` at the reference count | a resolution-exceeds-signaled-level stream aborted a C.4.5 assert |
 | Keep the signaled `max_num_ref_frames` on an over-level stream (bound by DPB capacity, not the level) | a frame-exceeds-signaled-level stream clamped its reference set below the count its own slices use - silently wrong inter prediction (single-thread) and a nondeterministic multithreaded decode |
+| Report an FMO PPS (`num_slice_groups > 1`) as `ENOTSUP` instead of a decode error | the unparsed slice-group map left the bit position mid-syntax, so the PPS misfired `EBADMSG` - a valid but unsupported stream looked corrupt instead of cleanly skippable |
 | Read `frame_mbs_only_flag` before bounding `pic_height_in_map_units` | tall progressive frames clamped / stalled |
 | Reject `frame_num` gap with no reclaimable slot (instead of aborting) | a frame-num gap aborted the decoder |
 | Harden SEI parsing against crafted `payloadType` / `payloadSize` | out-of-bounds read / multi-second CPU burn on a crafted SEI |

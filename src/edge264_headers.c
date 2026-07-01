@@ -1542,7 +1542,16 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264Decoder *dec,  Edge264UnrefCb un
 		pps.entropy_coding_mode_flag, pps.entropy_coding_mode_flag ? "CABAC" : "CAVLC",
 		pps.bottom_field_pic_order_in_frame_present_flag,
 		num_slice_groups, unsup_if(num_slice_groups > 1));
-	
+	// FMO (multiple slice groups) is unsupported, and the slice_group_map syntax
+	// that follows here is deliberately not parsed. Bail out now: leaving the bit
+	// position mid-map would make the rbsp_end check at the end of this function
+	// misfire EBADMSG (a hard decode error, reported as a FAIL) instead of the
+	// intended ENOTSUP. Returning unsupported cleanly lets a caller skip the
+	// stream rather than treat it as corrupt (matching the SPS's early ENOTSUP
+	// exits for other unsupported feature sets).
+	if (num_slice_groups > 1)
+		return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP);
+
 	// (num_ref_idx_active[0] != 0) is used as indicator that the PPS is initialised.
 	pps.num_ref_idx_active[0] = get_ue16(&dec->gb, 31) + 1;
 	pps.num_ref_idx_active[1] = get_ue16(&dec->gb, 31) + 1;

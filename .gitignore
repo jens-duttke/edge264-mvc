@@ -9,6 +9,7 @@
 !*.in
 !tests
 !tests/*.yaml
+!tests/*.264
 !tests/gen_cabac_overread.py
 !tests/gen_cabac_orphan.py
 !tests/gen_cabac_misalign.py

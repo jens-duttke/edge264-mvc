@@ -439,6 +439,7 @@ int main(int argc, char *argv[]) {
 	test("unsupp-nals", NULL, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
 	test("supp-nals", NULL, NULL, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, 0, 0, ENODATA});
 	test("unsupp-nals", NULL, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
+	test("fmo-unsupp", NULL, NULL, (uint8_t[]){0, ENOTSUP, ENODATA}); // FMO PPS -> ENOTSUP, not EBADMSG
 	test("max-logs", max_logs_logger, NULL, (uint8_t[]){0, ENODATA});
 	test("finish-frame", NULL, finish_frame_post, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, ENODATA});
 	test("nal-ref-idc-0", NULL, NULL, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, 0, 0, ENODATA});

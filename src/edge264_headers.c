@@ -2058,7 +2058,19 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 	// Floor at 1 so a reference picture fits, matching ffmpeg. Conformant >= 1
 	// values are unchanged, and a stream that truly keeps no reference frame
 	// (every slice nal_ref_idc == 0) never marks one, so the floor is inert.
-	sps.max_num_ref_frames = max(min(max_num_ref_frames, MaxDpbFrames >> mvc), 1);
+	// Bound the reference set by the *physical* DPB capacity (16 slots, 8 per view
+	// for MVC), NOT by the level-derived MaxDpbFrames. A stream whose frame size
+	// exceeds its signaled level (non-conformant, but common in real-world encodes
+	// and remuxes) yields a MaxDpbFrames smaller than its own signaled
+	// max_num_ref_frames; clamping the reference count down to that made the
+	// sliding-window marking (8.2.5.3) retire pictures the slices still reference,
+	// silently corrupting inter prediction - and, under multithreading, racing on
+	// the prematurely reused DPB slot (nondeterministic output). ffmpeg honours the
+	// signaled value regardless of level, so we do too. Conformant streams are
+	// unchanged: there MaxDpbFrames already covers max_num_ref_frames, so the old
+	// min(., MaxDpbFrames >> mvc) and the new min(., 16 >> mvc) both return the
+	// signaled value (which parsing already bounded to <= 16).
+	sps.max_num_ref_frames = max(min(max_num_ref_frames, 16 >> mvc), 1);
 	// A stream whose resolution exceeds its signaled level makes MaxDpbMbs/frame
 	// == 0, so the inferred MaxDpbFrames (and the max_dec_frame_buffering derived
 	// from it below) would be 0 even though the floored reference set needs >= 1

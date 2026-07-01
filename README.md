@@ -447,12 +447,13 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Jittery playback (decode- vs display-order) | [issue #27](https://github.com/tvlabs/edge264/issues/27) · @vkapartzianis ([issue #16](https://github.com/tvlabs/edge264/issues/16)) |
 | MVC view mispairing at a mid-stream IDR (dependent view dropped each GOP) | edge264-mvc |
 
-**Decode robustness on real-world streams** - found by a broad decode audit over a large, heterogeneous sample corpus (crashes, hangs and decode failures that the synthetic and conformance suites do not exercise). Each carries a committed regression fixture ([`tests/liveness`](tests/liveness) / [`tests/asan`](tests/asan)) and is **inert on the full JVT conformance set** (identical results before and after, zero regressions); each was verified against FFmpeg on real captures:
+**Decode robustness on real-world streams** - found by a broad decode audit over a large, heterogeneous sample corpus (crashes, hangs, wrong output and decode failures that the synthetic and conformance suites do not exercise). Each carries a committed regression fixture ([`tests/liveness`](tests/liveness), [`tests/asan`](tests/asan) or [`tests/conformance`](tests/conformance)) and is **inert on the full JVT conformance set** (identical results before and after, zero regressions); each was verified against FFmpeg on real captures:
 
 | Fix | Failure mode it removes |
 |---|---|
 | Floor `max_num_ref_frames` at 1 so a reference IDR fits the DPB | reference IDR didn't fit the DPB (C.4.5 fullness assert) |
 | Floor derived `max_dec_frame_buffering` at the reference count | a resolution-exceeds-signaled-level stream aborted a C.4.5 assert |
+| Keep the signaled `max_num_ref_frames` on an over-level stream (bound by DPB capacity, not the level) | a frame-exceeds-signaled-level stream clamped its reference set below the count its own slices use - silently wrong inter prediction (single-thread) and a nondeterministic multithreaded decode |
 | Read `frame_mbs_only_flag` before bounding `pic_height_in_map_units` | tall progressive frames clamped / stalled |
 | Reject `frame_num` gap with no reclaimable slot (instead of aborting) | a frame-num gap aborted the decoder |
 | Harden SEI parsing against crafted `payloadType` / `payloadSize` | out-of-bounds read / multi-second CPU burn on a crafted SEI |

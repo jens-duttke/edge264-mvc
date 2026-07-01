@@ -64,6 +64,14 @@
 2d/freh12_b 100 0 1f5369c38c1bf6f6ee2054f0a4ece6c7 -
 2d/freh1_b 100 0 0e992f845ad013e0fd624a0d6ad3af31 -
 2d/freh2_b 100 0 76d61201b1d4f91f1094eeb67c39cea2 -
+# Synthetic 2D robustness fixture (x264 + a level_idc downgrade, not an ITU vector;
+# see 2d-synthetic/README.md). over_level_dpb declares a level too low for its frame
+# size, so the level-derived MaxDpbFrames (2) is smaller than its signaled
+# max_num_ref_frames (4); the base hash is anchored to FFmpeg's decode, which honours
+# the signaled reference count. Without the over-level ref/DPB fix the sliding window
+# retires still-referenced frames and the decoder produces wrong pixels here (and races
+# under multithreading), so this line FAILs on the unfixed decoder.
+2d-synthetic/over_level_dpb 24 0 724c936c63e448f1dcdc17408198af00 -
 mvc/MVCDS-4 9 1 4b450245d8756f326571edeb914bb783 3713ff32768c93a46ec0f09f175a4fc1
 mvc/MVCDS-5 9 1 4b450245d8756f326571edeb914bb783 8116a281859da53e2bff6cf2e56655ff
 mvc/MVCDS-6 9 1 4b450245d8756f326571edeb914bb783 359a35ef5600e7c6c94789a2a4d2447b

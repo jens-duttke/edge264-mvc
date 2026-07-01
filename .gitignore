@@ -26,6 +26,9 @@
 !tests/conformance/mvc-synthetic/*.yaml
 !tests/conformance/mvc-synthetic/*.md
 !tests/conformance/mvc-synthetic/*.py
+!tests/conformance/2d-synthetic
+!tests/conformance/2d-synthetic/*.264
+!tests/conformance/2d-synthetic/*.md
 !tests/conformance/*.txt
 !tests/conformance/*.md
 !tests/liveness_check.c

@@ -484,6 +484,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Route aligned allocations through a MinGW-compatible CRT pair (`_aligned_malloc`/`_aligned_free`) | edge264-mvc |
 | Stop MinGW's `stdlib.h` `min`/`max` macros from shadowing the typed helpers | edge264-mvc |
 | Probe Node for relaxed-SIMD flag support in the wasm `make check` | edge264-mvc |
+| Guard the multithreaded ref-dependency mask against empty `RefPicList` slots on the portable non-SIMD path | [issue #28](https://github.com/tvlabs/edge264/issues/28) |
 
 **Deliberately not included:**
 

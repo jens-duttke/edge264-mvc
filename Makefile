@@ -190,15 +190,18 @@ ifneq ($(SANITIZE),)
 endif
 
 # ---- Base architecture flags -------------------------------------------------
-# -march=native is only injected for native builds (OS == HOST_OS).
-# For cross-compilation the user is responsible for providing an explicit -march
-# (or -arch on Apple clang) via CFLAGS.
+# -march=native is only injected for native builds (OS == HOST_OS), paired with
+# -mtune=generic: for this hand-written-SIMD codebase GCC's per-microarch cost
+# model (e.g. -mtune=znver4, implied by -march=native) schedules measurably slower
+# code than generic tuning (~5-6% single-thread on Zen4/GCC), while -march=native
+# still selects the host ISA. For cross-compilation the user is responsible for
+# providing an explicit -march (or -arch on Apple clang) via CFLAGS.
 ifeq ($(OS),macos)
-  _BASE_ARCH := $(if $(findstring $(OS),$(HOST_OS)),-march=native)
+  _BASE_ARCH := $(if $(findstring $(OS),$(HOST_OS)),-march=native -mtune=generic)
 else ifeq ($(OS),linux)
-  _BASE_ARCH := $(if $(findstring $(OS),$(HOST_OS)),-march=native)
+  _BASE_ARCH := $(if $(findstring $(OS),$(HOST_OS)),-march=native -mtune=generic)
 else ifeq ($(OS),windows)
-  _BASE_ARCH := $(if $(findstring $(OS),$(HOST_OS)),-march=native)
+  _BASE_ARCH := $(if $(findstring $(OS),$(HOST_OS)),-march=native -mtune=generic)
 else ifeq ($(OS),android)
   # The NDK clang already targets the right architecture via its triple;
   # -march=native would describe the host CPU, not the Android device.

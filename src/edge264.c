@@ -569,7 +569,17 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 					continue;
 				if (__atomic_load_n(&dec->next_deblock_addr[queued], __ATOMIC_ACQUIRE) != INT_MAX)
 					continue;
-				if (dec->FieldOrderCnt[0][queued] != base_poc)
+				// Match on (FrameNum, POC), not POC alone: two access units in
+				// different sequences (POC is reset by an IDR) can share a POC, so
+				// get_frame_queue[1] can hold two same-POC dependent views at once.
+				// Their queue order is not fixed under multithreading (parse-ahead
+				// keeps both sequences in flight), so a POC-only match pairs a base
+				// with whichever same-POC dependent sits at the lower index -
+				// non-deterministically swapping the two views' dependent halves.
+				// The two views of one access unit share a FrameNum and a POC (as
+				// the hold/bump scans below already require), so match on both.
+				if (dec->FieldOrderCnt[0][queued] != base_poc ||
+					dec->FrameNums[queued] != dec->FrameNums[pic0])
 					continue;
 				idx1 = i;
 				pic1 = queued;

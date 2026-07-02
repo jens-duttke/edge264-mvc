@@ -47,11 +47,18 @@ def gt(n_views_frames):
 #   mvc_dependent_frame_num_gap - 12 stereo AUs (a dependent-view frame_num gap
 #                         shifts the last AU's dependent FrameId; all views still
 #                         decode, so all 12 are stereo)            -> 12 base, 12 dep
+#   mvc_same_poc_pairing - 320 stereo AUs across many short IDR sequences with a
+#                         4-bit POC lsb, so frames of different sequences share a
+#                         full POC with different frame_num; under a paced consumer
+#                         the pre-fix POC-only pairing scan strands the mispaired
+#                         same-POC dependent and overflows the DPB. All 320 decode
+#                         to 128 once paired correctly.               -> 320 base, 320 dep
 EXPECTED = {
     "mvc-synthetic/mvc_base":                   (2, 2),
     "mvc-synthetic/mvc_dep_before_base":        (2, 2),
     "mvc-synthetic/mvc_late_dependent":         (4, 2),
     "mvc-synthetic/mvc_dependent_frame_num_gap": (12, 12),
+    "mvc-synthetic/mvc_same_poc_pairing":       (320, 320),
 }
 
 def main():

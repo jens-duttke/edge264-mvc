@@ -90,3 +90,4 @@ mvc-synthetic/mvc_late_dependent 4 1 a048378e15cb9b259ead3cfae1ebfce4 db3681d956
 # full, which holds frames into the dependent-view frame_num gap; without the
 # (FrameNum, POC) pairing fix the decoder aborts here, run forked so it FAILs cleanly.
 mvc-synthetic/mvc_dependent_frame_num_gap 12 1 20fc95a352de8b25f2685fdbf0debce4 20fc95a352de8b25f2685fdbf0debce4 1
+mvc-synthetic/mvc_same_poc_pairing 320 1 304d38b6a717a325d5ef60a801e09ce4 304d38b6a717a325d5ef60a801e09ce4 1

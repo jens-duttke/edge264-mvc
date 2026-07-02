@@ -76,6 +76,23 @@ decoder reproduces that hash. Run it from the repo root:
   published vector and no aggressive-drain test reproduces. Profile 128, level
   3.0, `gaps_in_frame_num_value_allowed_flag = 1`.
 
+- **mvc_same_poc_pairing** (320 frames) - a **fork regression guard** for the
+  *primary* dependent-view pairing scan in `edge264_get_frame`. Structurally derived
+  from a real 3D-Blu-ray menu clip - **headers only, all-128, no picture data**: many
+  short IDR sequences with a 4-bit POC lsb (`log2_max_pic_order_cnt_lsb = 4`) make
+  frames of different sequences share a full POC while carrying different `frame_num`,
+  so `get_frame_queue[1]` holds two same-POC dependent views at once. A small
+  `max_dec_frame_buffering = 4` force-bumps a base under a *paced* consumer while its
+  same-POC dependent is still queued; the pre-fix scan matched on POC **alone** and
+  paired the base with the wrong same-POC dependent, stranding frames until the DPB
+  overflows and the decoder aborts. Matching on (`FrameNum`, POC) - as the hold/bump
+  scans already do - fixes it. Under multithreading the same mispair swaps two frames'
+  dependent halves non-deterministically; the paced DPB overflow is the deterministic,
+  all-128-detectable manifestation guarded here. Flagged paced in the manifest.
+  Profile 128, level 4.1, `max_num_reorder_frames = 1`, `max_dec_frame_buffering = 4`.
+  Its `.yaml` is produced by `tests/gen_same_poc_stream.py` (the embedded per-frame
+  header structure is technical decode metadata, not picture content).
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

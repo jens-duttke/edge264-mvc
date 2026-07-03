@@ -181,6 +181,7 @@ typedef struct {
 	int8_t dpb_output_delay_length; // 1..32
 	int8_t time_offset_length; // 0..31
 	int8_t pic_struct_present_flag; // 0..1
+	int8_t seq_scaling_matrix_present_flag; // 0..1, selects the PPS scaling-list fall-back rule set (Table 7-2)
 	uint16_t pic_width_in_mbs; // 1..1023
 	int16_t pic_height_in_mbs; // 1..1055
 	int16_t offset_for_non_ref_pic; // -32768..32767, pic_order_cnt_type==1

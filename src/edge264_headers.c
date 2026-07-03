@@ -962,14 +962,36 @@ static void initialize_task(Edge264Decoder *dec, Edge264SeqParameterSet *sps, Ed
 	t->pic_width_in_mbs = sps->pic_width_in_mbs;
 	t->pic_height_in_mbs = sps->pic_height_in_mbs;
 	if (t->pps.pic_scaling_matrix_present_flag) {
-		t->pps.weightScale4x4_v[0] = ifelse_mask(t->pps.weightScale4x4_v[0] == 0, sps->weightScale4x4_v[0], t->pps.weightScale4x4_v[0]);
-		t->pps.weightScale4x4_v[1] = ifelse_mask(t->pps.weightScale4x4_v[1] == 0, sps->weightScale4x4_v[0], t->pps.weightScale4x4_v[1]);
-		t->pps.weightScale4x4_v[2] = ifelse_mask(t->pps.weightScale4x4_v[2] == 0, sps->weightScale4x4_v[0], t->pps.weightScale4x4_v[2]);
-		t->pps.weightScale4x4_v[3] = ifelse_mask(t->pps.weightScale4x4_v[3] == 0, sps->weightScale4x4_v[3], t->pps.weightScale4x4_v[3]);
-		t->pps.weightScale4x4_v[4] = ifelse_mask(t->pps.weightScale4x4_v[4] == 0, sps->weightScale4x4_v[3], t->pps.weightScale4x4_v[4]);
-		t->pps.weightScale4x4_v[5] = ifelse_mask(t->pps.weightScale4x4_v[5] == 0, sps->weightScale4x4_v[3], t->pps.weightScale4x4_v[5]);
+		// An absent PPS scaling list is left as zero by parse_scaling_lists; it
+		// falls back per Table 7-2 to rule set B (inherit the SPS lists) when the
+		// SPS carries a scaling matrix, else to rule set A (the Default matrices
+		// of tables 7-3/7-4). Falling back to the SPS's Flat_4x4_16 in the rule-A
+		// case silently mis-dequantises any stream that declares a PPS scaling
+		// matrix over a scaling-matrix-less SPS.
+		i8x16 fb0, fb3;
+		const i8x16 *fb8;
+		i8x16 def8[8];
+		if (sps->seq_scaling_matrix_present_flag) {
+			fb0 = sps->weightScale4x4_v[0];
+			fb3 = sps->weightScale4x4_v[3];
+			fb8 = sps->weightScale8x8_v; // indexed by i & 7 -> SPS lists 6 (intra) and 7 (inter)
+		} else {
+			fb0 = Default_4x4_Intra;
+			fb3 = Default_4x4_Inter;
+			for (int i = 0; i < 4; i++) {
+				def8[i] = Default_8x8_Intra[i];
+				def8[4 + i] = Default_8x8_Inter[i];
+			}
+			fb8 = def8;
+		}
+		t->pps.weightScale4x4_v[0] = ifelse_mask(t->pps.weightScale4x4_v[0] == 0, fb0, t->pps.weightScale4x4_v[0]);
+		t->pps.weightScale4x4_v[1] = ifelse_mask(t->pps.weightScale4x4_v[1] == 0, fb0, t->pps.weightScale4x4_v[1]);
+		t->pps.weightScale4x4_v[2] = ifelse_mask(t->pps.weightScale4x4_v[2] == 0, fb0, t->pps.weightScale4x4_v[2]);
+		t->pps.weightScale4x4_v[3] = ifelse_mask(t->pps.weightScale4x4_v[3] == 0, fb3, t->pps.weightScale4x4_v[3]);
+		t->pps.weightScale4x4_v[4] = ifelse_mask(t->pps.weightScale4x4_v[4] == 0, fb3, t->pps.weightScale4x4_v[4]);
+		t->pps.weightScale4x4_v[5] = ifelse_mask(t->pps.weightScale4x4_v[5] == 0, fb3, t->pps.weightScale4x4_v[5]);
 		for (unsigned i = 0; i < 24; i++)
-			t->pps.weightScale8x8_v[i] = ifelse_mask(t->pps.weightScale8x8_v[i] == 0, sps->weightScale8x8_v[i & 7], t->pps.weightScale8x8_v[i]);
+			t->pps.weightScale8x8_v[i] = ifelse_mask(t->pps.weightScale8x8_v[i] == 0, fb8[i & 7], t->pps.weightScale8x8_v[i]);
 	} else {
 		memcpy(t->pps.weightScale4x4_v, sps->weightScale4x4_v, 96);
 		memcpy(t->pps.weightScale8x8_v, sps->weightScale8x8_v, 384);
@@ -1991,7 +2013,8 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 			"  qpprime_y_zero_transform_bypass_flag: %u%s\n",
 			sps.BitDepth_Y, sps.BitDepth_C, unsup_if(sps.BitDepth_Y + sps.BitDepth_Y != 16),
 			sps.qpprime_y_zero_transform_bypass_flag, unsup_if(sps.qpprime_y_zero_transform_bypass_flag));
-		if (get_u1(&dec->gb)) { // seq_scaling_matrix_present_flag
+		sps.seq_scaling_matrix_present_flag = get_u1(&dec->gb);
+		if (sps.seq_scaling_matrix_present_flag) {
 			sps.weightScale4x4_v[0] = Default_4x4_Intra;
 			sps.weightScale4x4_v[3] = Default_4x4_Inter;
 			for (int i = 0; i < 4; i++) {

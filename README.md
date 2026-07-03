@@ -466,6 +466,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Tolerate a CABAC slice that over-reads past its NAL when complete | a dense 4K multi-slice CABAC frame stalled mid-stream |
 | Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected -> mid-stream stall, 0 frames |
 | Reject a slice whose `first_mb_in_slice` is outside the current picture | out-of-bounds macroblock write / crash when interleaved multi-resolution streams (e.g. main + secondary/PiP video) reach one decoder |
+| Fall back to the Default scaling matrices (Fall-Back Rule Set A, Table 7-2) when a PPS declares `pic_scaling_matrix_present_flag = 1` with absent lists over a `seq_scaling_matrix_present_flag = 0` SPS | the absent PPS lists inherited the SPS's `Flat_16` instead of the spec-mandated `Default_4x4`/`Default_8x8` weighting, so a High Profile stream using this (legal, common) combination dequantized every coefficient wrong - whole-picture colour-block corruption that a commercial 3D Blu-ray's MVC stream showed in **both** views (the base view is mis-decoded in the plain AVC path, and the dependent view inherits it through inter-view prediction) |
 
 **Multithreaded decoding** - stock edge264's background-thread path was unusable; these make it bit-exact to single-thread and hang-free, validated over the full JVT corpus and with ThreadSanitizer. All are inert in the single-threaded path (`n_threads = 0`):
 
@@ -494,8 +495,11 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 
 - [PR #26](https://github.com/tvlabs/edge264/pull/26) (scaling-matrix defaults): the
   full JVT conformance run shows it breaks 5 High Profile streams with
-  `seq_scaling_matrix_present_flag = 0` (the spec mandates flat-16 there, and
-  `parse_scaling_lists` already implements the Fall-Back Rule Set A cascade correctly).
+  `seq_scaling_matrix_present_flag = 0` (the spec mandates flat-16 for the SPS's own
+  lists there, and `parse_scaling_lists` already implements the value cascade correctly).
+  Note this is a different case from the genuine PPS fall-back bug fixed above: PR #26
+  wrongly changed the *SPS* flat-16 default, whereas the fix above corrects which
+  fall-back rule set (A vs B) applies when a *PPS* declares its own scaling matrix.
 - Unspecified NAL types (0, 24-31) - including the type-24 units some 3D Blu-rays carry
   ([issue #20](https://github.com/tvlabs/edge264/issues/20)) - return `ENOTSUP` by design,
   matching stock edge264's tested contract. Skip them in your decode loop rather than treating them

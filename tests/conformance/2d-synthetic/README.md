@@ -38,3 +38,34 @@ so the bug triggers. Reproduce:
 Without the fix this fixture's line FAILs (wrong base hash, and nondeterministic
 under `EDGE264_THREADS`); with it, single- and multi-thread both match the
 FFmpeg-anchored hash.
+
+## `pps_scaling_fallback.264`
+
+Guards the PPS scaling-list fall-back fix (H.264 Table 7-2). A PPS that sets
+`pic_scaling_matrix_present_flag = 1` with **every** `pic_scaling_list_present_flag[i] = 0`
+over an SPS with `seq_scaling_matrix_present_flag = 0` must derive its scaling
+lists from **Fall-Back Rule Set A** - the `Default_4x4_Intra/Inter` and
+`Default_8x8_Intra/Inter` matrices (tables 7-3/7-4), *not* the flat-16 lists the
+SPS carries. edge264 used to inherit the SPS's `Flat_16` for the absent lists
+(rule set B), so every coefficient dequantized with the wrong weighting -
+whole-picture colour-block corruption on any stream using this legal, common PPS
+shape (observed on a commercial 3D Blu-ray, in the plain AVC base view and,
+through inter-view prediction, the dependent view). This is the mirror image of
+the (rejected) upstream PR #26, which wrongly changed the *SPS* flat-16 default;
+here it is the *PPS* fall-back that was wrong. FFmpeg (the reference) applies
+rule set A.
+
+128x96, High, CABAC, 8x8 transform, B-frames, 6 frames. x264 does not emit this
+shape, so it is produced by encoding a flat-CQM stream and bit-patching the PPS
+(set the flag to 1, insert the eight absent-list flags), which leaves the encoded
+coefficients dequantized under rule A instead of flat-16:
+
+    ffmpeg -f lavfi -i testsrc2=size=128x96:rate=25 -frames:v 6 \
+      -c:v libx264 -profile:v high -preset veryslow -pix_fmt yuv420p \
+      -x264-params 8x8dct=1:cabac=1:bframes=1:keyint=6:no-scenecut=1:cqm=flat \
+      -f h264 syn.264
+    # then flip PPS pic_scaling_matrix_present_flag 0->1 and insert 8 zero
+    # pic_scaling_list_present_flag bits (see patch_pps_scaling.py in the fix notes)
+
+Without the fix this line FAILs (the base hash equals the flat-16 decode, i.e. the
+un-patched stream's output); with it, it matches the FFmpeg-anchored rule-A hash.

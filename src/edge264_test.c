@@ -136,6 +136,7 @@ static int print_failed = 0;
 static int print_passed = 0;
 static int print_unsupported = 0;
 static int enable_yuv = 1;
+static int skip_unsupported = 0;
 static const char *moveup = "";
 FILE *trace_file = NULL;
 static Edge264Decoder *d;
@@ -358,11 +359,13 @@ static int decode_file(const char *name0)
 		
 		// decode the entire file and FAIL on any error
 		nal += 3 + (nal[2] == 0); // skip the [0]001 delimiter
-		int res;
+		int res, stuck = 0;
 		do {
 			const uint8_t *end = edge264_find_start_code(nal, end0, 0);
 			res = edge264_decode_NAL(d, nal, end, NULL, NULL);
+			int drained = 0;
 			while (!edge264_get_frame(d, &out, 0)) {
+				drained++;
 				if (conf[0] != NULL && check_frame()) {
 					res = EBADMSG;
 					break;
@@ -374,7 +377,22 @@ static int decode_file(const char *name0)
 			}
 			if (res != ENOBUFS)
 				nal = end + 3;
-		} while (res == 0 || res == ENOBUFS);
+			// Progress guard (the caller contract requires one so ENOBUFS cannot
+			// spin forever). A DPB that fills a few NALs before end-of-stream can
+			// reject the next NAL with ENOBUFS while get_frame drains nothing - the
+			// pending frames only come out once the flush sentinel (buf >= end) sets
+			// `flushing`. The normal loop reaches that only when nal hits end0, which
+			// it never does here (nal is pinned on the un-accepted NAL), so force the
+			// sentinel after a stall. Inert on well-formed streams (every ENOBUFS
+			// there drains at least one frame, resetting the counter).
+			stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
+			if (stuck > 64) { nal = end0; stuck = 0; }
+			// -k: mirror a real player's decode loop by skipping an unsupported
+			// NAL (ENOTSUP) and continuing, instead of stopping at the first one.
+			// Real 3D Blu-rays carry per-access-unit unspecified NALs (type 24)
+			// that edge264 reports ENOTSUP by design; without this the tool halts
+			// at the first one and never reaches the dependent view.
+		} while (res == 0 || res == ENOBUFS || (res == ENOTSUP && skip_unsupported));
 		edge264_flush(d);
 		if (res == ENOBUFS || (res == ENODATA && conf[0] != NULL && conf[0] != end1))
 			res = EBADMSG;
@@ -440,6 +458,7 @@ int main(int argc, char *argv[])
 				case 'b': benchmark = 1; break;
 				case 'd': display = 1; break;
 				case 'f': print_failed = 1; break;
+				case 'k': skip_unsupported = 1; break;
 				case 'm': n_threads = -1; break;
 				case 's': n_threads = 0; break;
 				case 'p': print_passed = 1; break;
@@ -454,13 +473,15 @@ int main(int argc, char *argv[])
 	
 	// print help if any argument was unknown
 	if (help) {
-		printf("Usage: " BOLD "%s [video.264|directory] [-hbdfmspuvVy]" RESET "\n"
+		printf("Usage: " BOLD "%s [video.264|directory] [-hbdfkmspuvVy]" RESET "\n"
 			"Decodes a video or all videos inside a directory (./conformance by default),\n"
 			"comparing their outputs with inferred YUV pairs (.yuv and .1.yuv extensions).\n"
 			"-h\tprint this help and exit\n"
 			"-b\tbenchmark decoding time and memory usage\n"
 			"-d\tenable display of the videos (requires SDL2)\n"
 			"-f\tprint names of failed files in directory\n"
+			"-k\tkeep decoding past unsupported NALs instead of stopping (e.g. the\n"
+			"\ttype-24 units real 3D Blu-rays carry, which a player skips)\n"
 			"-m\tmulti-threaded decoding, auto-detecting cores (this is the default)\n"
 			"-s\tforce single-threaded decoding\n"
 			"-p\tprint names of passed files in directory\n"

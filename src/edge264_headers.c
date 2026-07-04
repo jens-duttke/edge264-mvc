@@ -135,6 +135,58 @@ static int bump_all_frames(Edge264Decoder *dec) {
 	return dec->to_get_frames | dec->output_frames ? ENOBUFS : 0;
 }
 
+/**
+ * Deterministic parse-side counterpart of get_frame's unpaired-base pairing
+ * valve. get_frame bumps a parsed-but-unqueued dependent view lazily when its
+ * base reaches the front of the output queue, gated on the dependent being
+ * fully decoded. Under multithreading that gate depends on worker timing, and
+ * the bump's output_frames side effect feeds back into the parse-side DPB
+ * fullness/reorder triggers (they count to_get_frames & ~output_frames), so
+ * the whole bump sequence - and with it the output order - becomes run-to-run
+ * non-deterministic on real MVC streams. Do the same catch-up eagerly here on
+ * the parsing thread after every NAL: walk the queued bases in display-rank
+ * order and queue each one's parsed dependent (decoded or not - readiness is
+ * checked at emission), stopping at the first base whose dependent is not yet
+ * parsed, exactly where a single-threaded draining caller's valve would stop.
+ * This keeps the trigger inputs a pure function of the parse history, so
+ * single-thread and multithreaded runs bump and emit in the same order, and
+ * the consumer-side valve never fires on a well-formed stream.
+ */
+static void catch_up_dependent_bumps(Edge264Decoder *dec) {
+	if (dec->ssps.BitDepth_Y == 0)
+		return;
+	unsigned done = 0;
+	for (;;) {
+		int front = -1;
+		int lowest = INT_MAX;
+		for (int i = 0; i < 16; i++) {
+			int q = dec->get_frame_queue[0][i];
+			if (q >= 0 && !(done & 1 << q) && dec->DispOrder[q] < lowest)
+				lowest = dec->DispOrder[front = q];
+		}
+		if (front < 0)
+			return;
+		done |= 1 << front;
+		// the two views of one access unit share a FrameNum and a POC
+		int dep = -1;
+		for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
+			int d = __builtin_ctz(o);
+			if (dec->FrameNums[d] == dec->FrameNums[front] &&
+				dec->FieldOrderCnt[0][d] == dec->FieldOrderCnt[0][front]) {
+				dep = d;
+				break;
+			}
+		}
+		if (dep < 0)
+			return; // not parsed yet - a single-threaded draining caller would hold here
+		if (!(dec->output_frames & 1 << dep)) {
+			assert(movemask(dec->get_frame_queue_v[1])); // get_frame_queue should never be full
+			dec->output_frames |= 1 << dep;
+			dec->get_frame_queue_v[1] = shrd128(set8(dep), dec->get_frame_queue_v[1], 15);
+		}
+	}
+}
+
 static void flush_frames(Edge264Decoder *dec) {
 	// FIXME interrupt all threads then wait until they are back to wait
 	assert(!(dec->n_threads == 0 && dec->busy_tasks));
@@ -1354,6 +1406,15 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 			bump_frame(dec, non_base_view, 0);
 		dec->to_get_frames |= 1 << dec->currPic;
 		if (max_bump < 0) {
+			// This immediate-output path bypasses bump_frame, so it must consume a
+			// display rank the same way: DispOrder[currPic] otherwise keeps the
+			// rank of the slot's previous occupant, which under multithreading can
+			// undercut the ranks of frames still queued and reorder the output
+			// (single-thread drains the queue promptly, hiding the stale rank).
+			// This picture precedes every queued frame still waiting for a rank
+			// (max_bump < 0 means all lower-POC waiting frames were just bumped),
+			// so the next counter value is its correct rank.
+			dec->DispOrder[dec->currPic] = dec->next_dispnum++;
 			dec->output_frames |= 1 << dec->currPic;
 			dec->get_frame_queue_v[non_base_view] = shrd128(set8(dec->currPic), dec->get_frame_queue_v[non_base_view], 15);
 		} else if (__builtin_popcount(dec->to_get_frames & ~dec->output_frames) > sps->max_num_reorder_frames) {

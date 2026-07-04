@@ -137,6 +137,9 @@ static int print_passed = 0;
 static int print_unsupported = 0;
 static int enable_yuv = 1;
 static int skip_unsupported = 0;
+static int dump = 0; // 0 off, 1 base view, 2 side-by-side (base|dependent)
+static int y4m_started = 0; // whether the Y4M stream header was written (per file)
+static FILE *msg; // human-readable output: stdout normally, stderr while dumping YUV to stdout
 static const char *moveup = "";
 FILE *trace_file = NULL;
 static Edge264Decoder *d;
@@ -201,6 +204,53 @@ static int draw_frame()
 		}
 	}
 	return 0;
+}
+
+
+
+/**
+ * Write the decoded frame to stdout as a YUV4MPEG2 (Y4M) stream, for piping to
+ * an encoder (e.g. ffmpeg | libx264). The self-describing Y4M header carries the
+ * dimensions and frame rate, so the pipe is just "| ffmpeg -i - ...".
+ * -o dumps the base view; -O writes the two MVC views side by side (base left,
+ * dependent right) as one double-width frame - a frame-compatible 3D layout,
+ * since there is no open MVC encoder to reproduce a true stereo bitstream.
+ */
+static void write_plane(const uint8_t *p, int stride, int w, int h) {
+	for (int y = 0; y < h; y++)
+		fwrite(p + (size_t)y * stride, 1, w, stdout);
+}
+static void write_plane_sbs(const uint8_t *l, const uint8_t *r, int stride, int w, int h) {
+	for (int y = 0; y < h; y++) {
+		fwrite(l + (size_t)y * stride, 1, w, stdout);
+		fwrite(r + (size_t)y * stride, 1, w, stdout);
+	}
+}
+static void dump_frame(void)
+{
+	int sbs = dump == 2 && out.samples_mvc[0] != NULL;
+	if (!y4m_started) {
+		// frame rate from the SPS VUI (time_scale / 2 / num_units_in_tick for a
+		// progressive frame); fall back to 24000/1001 when the stream omits it
+		// (Y4M requires a rate - override downstream with ffmpeg -r if wrong).
+		uint32_t ts = d->sps.time_scale, nu = d->sps.num_units_in_tick;
+		int have = ts != 0 && nu != 0 && nu < 0x40000000u; // guard 2*nu against int overflow
+		int fnum = have ? (int)ts : 24000;
+		int fden = have ? (int)(2 * nu) : 1001;
+		fprintf(stdout, "YUV4MPEG2 W%d H%d F%d:%d Ip A1:1 C420mpeg2\n",
+			out.width_Y << sbs, out.height_Y, fnum, fden);
+		y4m_started = 1;
+	}
+	fputs("FRAME\n", stdout);
+	if (sbs) {
+		write_plane_sbs(out.samples[0], out.samples_mvc[0], out.stride_Y, out.width_Y, out.height_Y);
+		write_plane_sbs(out.samples[1], out.samples_mvc[1], out.stride_C, out.width_C, out.height_C);
+		write_plane_sbs(out.samples[2], out.samples_mvc[2], out.stride_C, out.width_C, out.height_C);
+	} else {
+		write_plane(out.samples[0], out.stride_Y, out.width_Y, out.height_Y);
+		write_plane(out.samples[1], out.stride_C, out.width_C, out.height_C);
+		write_plane(out.samples[2], out.stride_C, out.width_C, out.height_C);
+	}
 }
 
 
@@ -352,20 +402,23 @@ static int decode_file(const char *name0)
 	// print the success counts
 	if (!quit) {
 		if (count_flag > 0)
-			printf("%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET ", %d " BLUE "FLAGGED" RESET " (%s)\n", moveup, count_pass, count_unsup, count_fail, count_flag, name0);
+			fprintf(msg, "%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET ", %d " BLUE "FLAGGED" RESET " (%s)\n", moveup, count_pass, count_unsup, count_fail, count_flag, name0);
 		else
-			printf("%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET " (%s)\n", moveup, count_pass, count_unsup, count_fail, name0);
+			fprintf(msg, "%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET " (%s)\n", moveup, count_pass, count_unsup, count_fail, name0);
 		moveup = "\e[A\e[K";
 		
 		// decode the entire file and FAIL on any error
 		nal += 3 + (nal[2] == 0); // skip the [0]001 delimiter
 		int res, stuck = 0;
+		y4m_started = 0; // one Y4M stream header per file
 		do {
 			const uint8_t *end = edge264_find_start_code(nal, end0, 0);
 			res = edge264_decode_NAL(d, nal, end, NULL, NULL);
 			int drained = 0;
 			while (!edge264_get_frame(d, &out, 0)) {
 				drained++;
+				if (dump)
+					dump_frame();
 				if (conf[0] != NULL && check_frame()) {
 					res = EBADMSG;
 					break;
@@ -404,16 +457,16 @@ static int decode_file(const char *name0)
 		count_fail += res == EBADMSG;
 		count_flag += res == ESRCH;
 		if (res == ENODATA && print_passed) {
-			printf("%s%s: " GREEN "PASS" RESET "\n", moveup, name0);
+			fprintf(msg, "%s%s: " GREEN "PASS" RESET "\n", moveup, name0);
 			moveup = "";
 		} else if (res == ENOTSUP && print_unsupported) {
-			printf("%s%s: " YELLOW "UNSUPPORTED" RESET "\n", moveup, name0);
+			fprintf(msg, "%s%s: " YELLOW "UNSUPPORTED" RESET "\n", moveup, name0);
 			moveup = "";
 		} else if (res == EBADMSG && print_failed) {
-			printf("%s%s: " RED "FAIL" RESET "\n", moveup, name0);
+			fprintf(msg, "%s%s: " RED "FAIL" RESET "\n", moveup, name0);
 			moveup = "";
 		} else if (res == ESRCH) {
-			printf("%s%s: " BLUE "FLAGGED" RESET "\n", moveup, name0);
+			fprintf(msg, "%s%s: " BLUE "FLAGGED" RESET "\n", moveup, name0);
 			moveup = "";
 		}
 	}
@@ -460,6 +513,8 @@ int main(int argc, char *argv[])
 				case 'f': print_failed = 1; break;
 				case 'k': skip_unsupported = 1; break;
 				case 'm': n_threads = -1; break;
+				case 'o': dump = 1; break;
+				case 'O': dump = 2; break;
 				case 's': n_threads = 0; break;
 				case 'p': print_passed = 1; break;
 				case 'u': print_unsupported = 1; break;
@@ -470,10 +525,15 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
-	
+	// while dumping YUV to stdout, skip the reference comparison and keep every
+	// human-readable line off stdout (else it corrupts the piped video stream)
+	if (dump)
+		enable_yuv = 0;
+	msg = dump ? stderr : stdout;
+
 	// print help if any argument was unknown
 	if (help) {
-		printf("Usage: " BOLD "%s [video.264|directory] [-hbdfkmspuvVy]" RESET "\n"
+		printf("Usage: " BOLD "%s [video.264|directory] [-hbdfkmoOspuvVy]" RESET "\n"
 			"Decodes a video or all videos inside a directory (./conformance by default),\n"
 			"comparing their outputs with inferred YUV pairs (.yuv and .1.yuv extensions).\n"
 			"-h\tprint this help and exit\n"
@@ -483,6 +543,9 @@ int main(int argc, char *argv[])
 			"-k\tkeep decoding past unsupported NALs instead of stopping (e.g. the\n"
 			"\ttype-24 units real 3D Blu-rays carry, which a player skips)\n"
 			"-m\tmulti-threaded decoding, auto-detecting cores (this is the default)\n"
+			"-o\twrite decoded frames as YUV4MPEG2 (Y4M) to stdout for piping to an\n"
+			"\tencoder, e.g. | ffmpeg -i - -c:v libx264 out.mp4 (base view only)\n"
+			"-O\tlike -o but side-by-side (base|dependent) for frame-compatible 3D\n"
 			"-s\tforce single-threaded decoding\n"
 			"-p\tprint names of passed files in directory\n"
 			"-u\tprint names of unsupported files in directory\n"
@@ -526,9 +589,9 @@ int main(int argc, char *argv[])
 	}
 	
 	if (count_flag > 0)
-		printf("%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET ", %d " BLUE "FLAGGED" RESET "\n", moveup, count_pass, count_unsup, count_fail, count_flag);
+		fprintf(msg, "%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET ", %d " BLUE "FLAGGED" RESET "\n", moveup, count_pass, count_unsup, count_fail, count_flag);
 	else
-		printf("%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET "\n", moveup, count_pass, count_unsup, count_fail);
+		fprintf(msg, "%s%d " GREEN "PASS" RESET ", %d " YELLOW "UNSUPPORTED" RESET ", %d " RED "FAIL" RESET "\n", moveup, count_pass, count_unsup, count_fail);
 	edge264_free(&d);
 	
 	// close SDL if enabled
@@ -561,7 +624,7 @@ int main(int argc, char *argv[])
 			cpu_msec = (int64_t)rusage.ru_utime.tv_sec * 1000 + rusage.ru_utime.tv_usec / 1000;
 			mem_kb = rusage.ru_maxrss / 1000;
 		#endif
-		printf("time: %.3lfs\nCPU: %.3lfs\nmemory: %.3lfMB\n", (double)time_msec / 1000, (double)cpu_msec / 1000, (double)mem_kb / 1000);
+		fprintf(msg, "time: %.3lfs\nCPU: %.3lfs\nmemory: %.3lfMB\n", (double)time_msec / 1000, (double)cpu_msec / 1000, (double)mem_kb / 1000);
 	}
 	if (trace_file)
 		fclose(trace_file);

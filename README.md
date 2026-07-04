@@ -113,6 +113,22 @@ ffmpeg -i vid.mp4 -vcodec copy -bsf h264_mp4toannexb -an vid.264 # optional, con
 ./edge264_test -d vid.264 # replace -d with -b to benchmark instead of display
 ```
 
+### Transcoding (piping decoded frames to an encoder)
+
+`edge264_test -o` writes the decoded frames to standard output as a self-describing [YUV4MPEG2 (Y4M)](https://wiki.multimedia.cx/index.php/YUV4MPEG2) stream (dimensions and frame rate in the header), so it pipes straight into any encoder. This is the practical way to re-encode a stream FFmpeg cannot decode - in particular an **MVC 3D Blu-ray**, whose dependent view FFmpeg drops:
+
+```sh
+# 2D: re-encode the base view
+./edge264_test movie.264 -o | ffmpeg -i - -c:v libx264 -crf 18 out.mp4
+
+# 3D: -O writes the two views side by side (base | dependent) as one frame.
+# There is no open MVC encoder, so a frame-compatible side-by-side H.264 (playable
+# on any 3D display) is the realistic single-file 3D output; frame-packing=3 tags it.
+./edge264_test movie.264 -O | ffmpeg -i - -c:v libx264 -crf 18 -x264opts frame-packing=3 out_sbs3d.mp4
+```
+
+Real 3D Blu-rays carry per-access-unit unspecified NALs (type 24) that return `ENOTSUP`; add `-k` so the decode runs to the end instead of stopping at the first one (`-ok` / `-Ok`). The frame rate is taken from the stream's VUI and can be overridden downstream (`ffmpeg -r ...`).
+
 Here is a complete example that opens an input file in Annex B byte stream format from the command line, and dumps its decoded frames in planar YUV order to standard output. See [edge264_test.c](src/edge264_test.c) for a more complete example which can also display frames.
 
 ```c

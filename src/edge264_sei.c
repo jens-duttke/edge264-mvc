@@ -155,10 +155,20 @@ int ADD_VARIANT(parse_sei)(Edge264Decoder *dec, Edge264UnrefCb unref_cb, void *u
 			nal_ret = EBADMSG;
 		if (sei_ret) {
 			dec->gb = start;
-			// stop at end-of-NAL: payloadSize is attacker-controlled and uncapped,
-			// so without this a crafted ~INT_MAX payloadSize spins billions of
-			// no-op get_uv calls past the buffer (CPU-burn DoS).
-			while (payloadSize-- > 0 && dec->gb.CPB < dec->gb.end)
+			// Skip the payload to reach the next message, bounding the skip by the
+			// bits actually left in this NAL (cache-aware), NOT by CPB. CPB is the
+			// bitstream reader's refill pointer, not its read position: a NAL small
+			// enough to fit entirely in the bit cache has CPB == end already, so a
+			// `CPB < end` guard skips nothing and the payload bytes get re-read as
+			// bogus follow-on messages, leaving the reader mid-syntax so rbsp_end
+			// fails and a harmless skippable SEI (e.g. the tiny recovery_point that
+			// ends a real 3D Blu-ray base-view access unit) is reported as a fatal
+			// EBADMSG that kills the whole stream. This bound also keeps the DoS
+			// guard the CPB test gave: payloadType/payloadSize are attacker-
+			// controlled and uncapped (H.264 7.3.2.3.1), and bits_left never exceeds
+			// the real NAL size, so a crafted ~INT_MAX payloadSize cannot spin.
+			int bits_left = (int)(dec->gb.end - dec->gb.CPB) * 8 + SIZE_BIT * 2 - 1 - ctz(dec->gb.lsb_cache);
+			for (unsigned n = payloadSize; n-- > 0 && bits_left >= 8; bits_left -= 8)
 				get_uv(&dec->gb, 8);
 		} else {
 			int skip = (SIZE_BIT - 1 - ctz(dec->gb.lsb_cache)) & 7;

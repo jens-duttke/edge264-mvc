@@ -55,20 +55,24 @@ static uint8_t *map_file(const char *path, size_t *size_out) {
 	return m;
 }
 
-static void decode_all(const uint8_t *buf, size_t size) {
+// Returns the number of NALs that returned EBADMSG, so a "clean" fixture (a
+// valid stream) can be asserted to decode without any invalid-stream error.
+static int decode_all(const uint8_t *buf, size_t size) {
 	Edge264Decoder *dec = edge264_alloc(0, logcb, NULL, 0, NULL, NULL, NULL);
 	const uint8_t *nal = buf + 3 + (size > 2 && buf[2] == 0);
 	const uint8_t *end = buf + size;
-	int res;
+	int res, badmsg = 0;
 	do {
 		const uint8_t *sc = edge264_find_start_code(nal, end, 0);
 		res = edge264_decode_NAL(dec, nal, sc, NULL, NULL);
+		badmsg += res == EBADMSG;
 		Edge264Frame f;
 		while (edge264_get_frame(dec, &f, 0) == 0) {}
 		if (res != ENOBUFS)
 			nal = sc + 3;
 	} while (res == 0 || res == ENOBUFS || res == ENOTSUP);
 	edge264_free(&dec);
+	return badmsg;
 }
 
 static int do_run(const char *manifest, const char *dir) {
@@ -82,9 +86,11 @@ static int do_run(const char *manifest, const char *dir) {
 	while (fgets(line, sizeof(line), mf)) {
 		if (line[0] == '#' || line[0] == '\n')
 			continue;
-		char name[512];
-		if (sscanf(line, "%511s", name) != 1)
+		char name[512], flag[64] = "";
+		int nf = sscanf(line, "%511s %63s", name, flag);
+		if (nf < 1)
 			continue;
+		int must_be_clean = nf == 2 && strcmp(flag, "clean") == 0;
 		total++;
 		char path[4096];
 		snprintf(path, sizeof(path), "%s/%s.264", dir, name);
@@ -96,8 +102,15 @@ static int do_run(const char *manifest, const char *dir) {
 			return 1;
 		}
 		// If a memory-safety regression is present, ASAN aborts here.
-		decode_all(buf, size);
+		int badmsg = decode_all(buf, size);
 		munmap(buf, size);
+		// A "clean" fixture is a valid stream: any EBADMSG is a regression (e.g.
+		// a small trailing SEI mis-skipped and misreturned as an invalid stream).
+		if (must_be_clean && badmsg != 0) {
+			printf(RED "FAIL" RESET " %s (valid stream returned EBADMSG x%d)\n", name, badmsg);
+			fclose(mf);
+			return 1;
+		}
 	}
 	fclose(mf);
 	printf("%d / %d asan fixtures " GREEN "PASS" RESET " (no sanitizer error)\n", total, total);

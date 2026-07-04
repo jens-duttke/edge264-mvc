@@ -1,5 +1,7 @@
-# ASAN crafted-bitstream fixtures: <name> (decoded by tests/asan_check.c with a log callback)
+# ASAN crafted-bitstream fixtures: <name> [clean] (decoded by tests/asan_check.c with a log callback)
+# The optional "clean" flag marks a VALID stream that must decode with zero EBADMSG.
 sei_payloadtype_oob
 sei_payloadsize_dos
+sei_recovery_point clean
 reflist_oob
 slice_first_mb_oob

@@ -459,6 +459,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Read `frame_mbs_only_flag` before bounding `pic_height_in_map_units` | tall progressive frames clamped / stalled |
 | Reject `frame_num` gap with no reclaimable slot (instead of aborting) | a frame-num gap aborted the decoder |
 | Harden SEI parsing against crafted `payloadType` / `payloadSize` | out-of-bounds read / multi-second CPU burn on a crafted SEI |
+| Skip an unhandled SEI message by its cache-aware bit count, not the refill pointer | a small trailing SEI that fit entirely in the bitstream cache (a `recovery_point` closing a base-view access unit, as commercial 3D Blu-rays carry) was not advanced past, so its payload was re-parsed as bogus follow-on messages and misfired `EBADMSG`, failing an otherwise valid stream in the header-logging / trace path |
 | Emit an incomplete final picture at end-of-stream | a capture truncated mid-frame (broadcast TS/M2TS) deadlocked the drain |
 | Recover an orphaned undelivered picture on a flush drain | a corrupt-slice frame stalled the DPB and lost the last picture |
 | Clamp out-of-range RefPicList entries | stack overrun / access violation on a non-conformant ref list |

@@ -455,6 +455,11 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 	// when the worker finishes; otherwise the caller's unref_cb/arg flow through.
 	int ret = parser(dec, nal_base ? internal_unref_nal : unref_cb, nal_base ? (void *)nal_base : unref_arg);
 	// printf("nal_unit_type=%d, ret=%d\n\n", dec->nal_unit_type, ret);
+	// Queue the dependent views of already-queued bases on the parsing thread
+	// (idempotent, cheap for non-MVC), so the consumer-side pairing valve in
+	// get_frame - whose worker-timing-gated output_frames writes perturb the
+	// parse-side bump triggers - stays inert on well-formed streams.
+	catch_up_dependent_bumps(dec);
 
 	// Release the caller's NAL buffer on success: non-slices always, and copied
 	// slices too (we hold our own copy, so the caller buffer is already free).
@@ -550,8 +555,12 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 	// never complete has no in-flight task, so it must not block the queue; and
 	// flushing emits whatever is ready so the drain terminates.
 	if (idx0 >= 0 && lowest_any_pic != pic0 && !dec->flushing) {
-		int in_flight = 0;
-		for (unsigned b = dec->busy_tasks; b; b &= b - 1) {
+		// A queued picture whose slices are still being parsed (multi-slice
+		// pictures can be queued at their first slice by the immediate-output
+		// or reorder bump) may momentarily have no busy task between two of its
+		// slices, so the scan below alone would let a later frame overtake it.
+		int in_flight = lowest_any_pic == dec->currPic;
+		for (unsigned b = dec->busy_tasks; !in_flight && b; b &= b - 1) {
 			if (dec->taskPics[__builtin_ctz(b)] == lowest_any_pic) {
 				in_flight = 1;
 				break;

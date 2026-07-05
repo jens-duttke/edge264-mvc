@@ -770,7 +770,15 @@ static void parse_dec_ref_pic_marking(Edge264Decoder *dec, Edge264SeqParameterSe
 			if (memory_management_control_operation == 5) { // dereference all frames
 				dec->short_term_frames = dec->long_term_frames = 0;
 				dec->FrameNums[dec->currPic] = 0;
-				dec->LongTermFrameIdx_v[0] = dec->LongTermFrameIdx_v[1] = (i8x16){};
+				// Reset only the current view's long-term indices. The short/long-term
+				// bitmaps above are view-masked working copies (merged per-view in
+				// unset_currPic), but LongTermFrameIdx is seeded and written back
+				// wholesale, so zeroing all 32 slots would clobber the co-decoded other
+				// view's live long-term indices while its long-term flags survive the
+				// masked merge. 8.2.5 marks reference pictures per view component.
+				unsigned same_views = (dec->non_base_frames >> dec->currPic & 1) ? dec->non_base_frames : ~dec->non_base_frames;
+				for (unsigned r = same_views; r; r &= r - 1)
+					dec->LongTermFrameIdx[__builtin_ctz(r)] = 0;
 				int tempPicOrderCnt = minw(dec->TopFieldOrderCnt, dec->BottomFieldOrderCnt);
 				dec->FieldOrderCnt[0][dec->currPic] = dec->TopFieldOrderCnt - tempPicOrderCnt;
 				dec->FieldOrderCnt[1][dec->currPic] = dec->BottomFieldOrderCnt - tempPicOrderCnt;

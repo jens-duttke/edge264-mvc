@@ -63,6 +63,11 @@ EXPECTED = {
     "mvc-synthetic/mvc_late_dependent":         (4, 2),
     "mvc-synthetic/mvc_dependent_frame_num_gap": (12, 12),
     "mvc-synthetic/mvc_same_poc_pairing":       (320, 320),
+    #   mvc_mmco5_pairing   - 3 stereo AUs; the last issues MMCO5 in both views (a
+    #                         reference-marking reset), exercising the per-view MMCO5
+    #                         path and confirming the views stay POC-paired across it.
+    #                         All 3 decode to 128.                       -> 3 base, 3 dep
+    "mvc-synthetic/mvc_mmco5_pairing":          (3, 3),
 }
 
 # Non-flat fixture: NOT all-128, so its correct per-frame values are listed explicitly

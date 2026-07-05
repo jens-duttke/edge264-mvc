@@ -111,6 +111,19 @@ decoder reproduces that hash. Run it from the repo root:
   shape is what exposes it. Its `.yaml` is produced by
   `tests/gen_interview_reflist_stream.py`.
 
+- **mvc_mmco5_pairing** (3 frames) - **path coverage** for MMCO5
+  (`memory_management_control_operation == 5`, the reference-marking reset) in the MVC
+  path. The third access unit issues an MMCO5 in *both* views; the fixture confirms the
+  decoder handles a mid-stream marking reset in a stereo stream without stalling and
+  keeps the two views POC-paired (`Poc == Poc_mvc`) and in display order across it - no
+  published JVT MVC vector and no other synthetic fixture drives MMCO5 in the MVC path.
+  All-128 (residual-free DC/zero-MV), so it exercises the per-view MMCO5 branch of
+  `parse_dec_ref_pic_marking` (the `LongTermFrameIdx` reset that must stay view-scoped)
+  but does **not** distinguish that view-scoping by pixels: the cross-view
+  `LongTermFrameIdx` clobber is only observable with base-view long-term references
+  (MMCO 3/6), which this fixture deliberately omits. It is committed regression coverage
+  for the MMCO5 x MVC interaction, not a fail-first guard for the view-mask fix itself.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

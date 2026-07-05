@@ -93,6 +93,24 @@ decoder reproduces that hash. Run it from the repo root:
   Its `.yaml` is produced by `tests/gen_same_poc_stream.py` (the embedded per-frame
   header structure is technical decode metadata, not picture content).
 
+- **mvc_interview_reflist** (2 frames) - a **correctness guard**, and the only
+  fixture here that is not all-128: the base view is 128 and the dependent IDR is
+  192 (an `I_PCM` macroblock). The second dependent access unit is a
+  `B_L1_16x16`, zero-motion, no-residual copy of `RefPicList1[0]`, and the slice
+  has exactly one temporal reference, so `RefPicList0 == RefPicList1 = [depIDR]`
+  after temporal init. Per H.8.2.1 the inter-view reference is appended *after*
+  the 8.2.4.2.3 "RefPicList1 identical to RefPicList0 -> switch the first two"
+  step; on a single-entry list that switch does not fire, so `RefPicList1[0]`
+  stays the temporal reference and the dependent frame decodes to 192. A decoder
+  that appends the inter-view reference *before* the switch makes the list length
+  2, fires the switch, and wrongly promotes the co-AU base view (128) to
+  `RefPicList1[0]` - so the dependent frame decodes to 128, the wrong eye. The
+  spec-correct dependent output (192, 192) is pinned in `ground_truth.py`. This is
+  inert on every real 3D-Blu-ray and the whole JVT MVC set (all use hierarchical B
+  with two temporal references, where the switch does not fire); the single-ref
+  shape is what exposes it. Its `.yaml` is produced by
+  `tests/gen_interview_reflist_stream.py`.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

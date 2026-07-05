@@ -878,9 +878,6 @@ static void parse_ref_pic_list_modification(Edge264Decoder *dec, Edge264SeqParam
 			count[best >> 16]++;
 		}
 	}
-	if (dec->nal_unit_type == 20) // if we're second view
-		t->RefPicList[0][size++] = dec->basePic; // add inter-view ref for MVC
-	
 	// fill RefPicListL1 by swapping before/after references
 	for (int src = 0; src < size; src++) {
 		int dst = (src < count[0]) ? src + count[1] :
@@ -930,6 +927,19 @@ static void parse_ref_pic_list_modification(Edge264Decoder *dec, Edge264SeqParam
 	if (t->RefPicList[0][1] >= 0 && t->RefPicList[0][0] == t->RefPicList[1][0]) {
 		t->RefPicList[1][0] = t->RefPicList[0][1];
 		t->RefPicList[1][1] = t->RefPicList[0][0];
+	}
+
+	// Append the inter-view reference for the dependent view AFTER the temporal
+	// 8.2.4.2.3 "RefPicList1 identical to RefPicList0 -> switch first two" step:
+	// per H.8.2.1 the inter-view reference components follow the temporal reference
+	// list initialisation, so that switch must operate on the temporal-only list.
+	// Appending basePic before it - on a single-temporal-reference dependent B slice
+	// where RefPicList0 == RefPicList1 = [temporal] - would make the list length 2,
+	// fire the switch, and wrongly promote basePic to RefPicList1[0].
+	if (dec->nal_unit_type == 20) { // second view: add inter-view ref for MVC
+		t->RefPicList[0][size] = dec->basePic;
+		t->RefPicList[1][size] = dec->basePic;
+		size++;
 	}
 
 	// parse the ref_pic_list_modification() header

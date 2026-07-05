@@ -17,6 +17,7 @@
 !tests/gen_mvc_smallres_stall.py
 !tests/gen_gap_stream.py
 !tests/gen_same_poc_stream.py
+!tests/gen_interview_reflist_stream.py
 !tests/gen_sei_recovery_point.py
 !tests/conformance_check.c
 !tests/conformance

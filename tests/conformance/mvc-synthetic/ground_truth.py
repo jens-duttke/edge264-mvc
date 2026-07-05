@@ -38,6 +38,10 @@ def gt(n_views_frames):
     # digest over n frames of a single view, every sample == 0x80
     return fnv128(b"\x80" * (BYTES_PER_VIEW_FRAME * n_views_frames))
 
+def gt_frames(values):
+    # digest over frames, each a uniform 384-byte plane-set of the given 8-bit value
+    return fnv128(b"".join(bytes([v]) * BYTES_PER_VIEW_FRAME for v in values))
+
 # (total output frames, stereo frames) for each fixture, read off its construction:
 #   mvc_base            - 2 stereo access units                 -> 2 base, 2 dep
 #   mvc_dep_before_base - same content, dependent NAL reordered -> 2 base, 2 dep
@@ -61,6 +65,22 @@ EXPECTED = {
     "mvc-synthetic/mvc_same_poc_pairing":       (320, 320),
 }
 
+# Non-flat fixture: NOT all-128, so its correct per-frame values are listed explicitly
+# as (base_values, dep_values). The base view is 128 in both frames; the dependent view
+# is 192 in both frames. Spec derivation for the dependent view:
+#   AU0 dependent view is an I_PCM macroblock = 192.
+#   AU1 dependent view is a B_L1_16x16, zero-MV, no-residual copy of RefPicList1[0].
+#     The slice has exactly ONE temporal reference (its own IDR), so RefPicList0 and
+#     RefPicList1 are both [depIDR] after temporal init. Per H.8.2.1 the inter-view
+#     reference (the co-AU base view = 128) is appended AFTER the 8.2.4.2.3
+#     "RefPicList1 identical to RefPicList0 -> switch first two" step; on a single-entry
+#     list that switch does not apply, so RefPicList1[0] remains the temporal ref (192).
+#     Hence dependent frame 1 = 192, NOT the base view's 128. A decoder that appends the
+#     inter-view ref before the switch wrongly emits 128 here.
+EXPECTED_NONFLAT = {
+    "mvc-synthetic/mvc_interview_reflist": ([128, 128], [192, 192]),
+}
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     manifest = os.path.join(here, "..", "manifest.txt")
@@ -77,6 +97,19 @@ def main():
     fails = 0
     for name, (nframes, nstereo) in EXPECTED.items():
         exp_base, exp_dep = gt(nframes), gt(nstereo)
+        if name not in committed:
+            print(f"MISSING in manifest: {name}"); fails += 1; continue
+        got_base, got_dep = committed[name]
+        ok_b = got_base == exp_base
+        ok_d = got_dep == exp_dep
+        print(f"{name}: base {'OK' if ok_b else 'MISMATCH'} dep {'OK' if ok_d else 'MISMATCH'}")
+        if not ok_b:
+            print(f"    base expected {exp_base}  committed {got_base}"); fails += 1
+        if not ok_d:
+            print(f"    dep  expected {exp_dep}  committed {got_dep}"); fails += 1
+
+    for name, (base_vals, dep_vals) in EXPECTED_NONFLAT.items():
+        exp_base, exp_dep = gt_frames(base_vals), gt_frames(dep_vals)
         if name not in committed:
             print(f"MISSING in manifest: {name}"); fails += 1; continue
         got_base, got_dep = committed[name]

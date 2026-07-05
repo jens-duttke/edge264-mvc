@@ -297,15 +297,30 @@ static int run_paced_forked(const uint8_t *buf, size_t size, int frames, int ste
 // suite-level failure count so `make check` fails loudly. Needs no
 // reference YUVs - fully offline.
 static int do_run(const char *manifest, const char *dir) {
-	FILE *mf = fopen(manifest, "r");
-	if (!mf) {
+	// Map the whole manifest and drop its file descriptor before decoding any
+	// fixture. A paced fixture is decoded in a forked child that calls exit(),
+	// which would flush an inherited manifest stdio stream and reposition the
+	// shared file offset - corrupting the parent's next line read (it gets parsed
+	// mid-token and reported as a missing fixture). map_file closes the fd right
+	// after mmap, so no handle is open across the fork and fixtures may appear in
+	// any manifest order, not only before the paced ones.
+	size_t msize = 0;
+	uint8_t *mtext = map_file(manifest, &msize);
+	if (!mtext) {
 		fprintf(stderr, "cannot open manifest %s\n", manifest);
 		return 1;
 	}
-	char line[1024];
 	int total = 0, failed = 0;
-	while (fgets(line, sizeof(line), mf)) {
-		if (line[0] == '#' || line[0] == '\n')
+	for (size_t off = 0; off < msize; ) {
+		char line[1024];
+		size_t eol = off;
+		while (eol < msize && mtext[eol] != '\n')
+			eol++;
+		size_t llen = eol - off < sizeof(line) ? eol - off : sizeof(line) - 1;
+		memcpy(line, mtext + off, llen);
+		line[llen] = '\0';
+		off = eol < msize ? eol + 1 : msize;
+		if (line[0] == '#' || line[0] == '\0')
 			continue;
 		char name[512], hb[64], hd[64];
 		int frames, stereo, paced = 0;
@@ -347,7 +362,7 @@ static int do_run(const char *manifest, const char *dir) {
 			failed++;
 		}
 	}
-	fclose(mf);
+	munmap(mtext, msize);
 	if (failed)
 		printf("\n" RED "%d / %d conformance fixtures FAILED" RESET "\n", failed, total);
 	else

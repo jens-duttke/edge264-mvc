@@ -11,6 +11,8 @@ edge264 is a cross-platform, open-source H.264/AVC **software** decoder, focused
 > sat open for months. edge264-mvc integrates those PRs, adds many more MVC-correctness and
 > real-world decode-robustness fixes, and implements working **multithreaded decoding** (bit-exact
 > to single-thread and validated on the full 231-stream JVT conformance corpus).
+> It also powers **[vapoursynth-mvc](https://github.com/jens-duttke/vapoursynth-mvc)**, a VapourSynth
+> source plugin that brings MVC 3D decoding to VapourSynth processing pipelines.
 
 ![](README-benchmark.svg)
 

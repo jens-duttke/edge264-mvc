@@ -483,6 +483,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | Emit an incomplete final picture at end-of-stream | a capture truncated mid-frame (broadcast TS/M2TS) deadlocked the drain |
 | Recover an orphaned undelivered picture on a flush drain | a corrupt-slice frame stalled the DPB and lost the last picture |
 | Clamp out-of-range RefPicList entries | stack overrun / access violation on a non-conformant ref list |
+| Reject a base-less inter-coded MVC dependent-view slice (type 20, P/B) whose base view was never decoded | a stream carrying dependent-view slices but no decodable base view (no base-view SPS) left every dependent slice's inter-view reference resolving to its own not-yet-decoded frame slot, so its decode task depended on its own picture; multithreaded, those self-dependent tasks piled up until the parser deadlocked waiting for a free task slot and `edge264_decode_NAL` never returned (FFmpeg likewise reports the missing base view and produces no frame) |
 | Tolerate a VUI that over-reads past the SPS rbsp | whole stream dropped over a common encoder defect |
 | Tolerate a CABAC slice that over-reads past its NAL when complete | a dense 4K multi-slice CABAC frame stalled mid-stream |
 | Tolerate non-1 `cabac_alignment_one_bit` padding | every slice rejected -> mid-stream stall, 0 frames |

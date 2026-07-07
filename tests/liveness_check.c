@@ -18,12 +18,15 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "edge264.h"
@@ -35,6 +38,15 @@
 // Re-feeding the same NAL this many times with neither a delivered frame nor a
 // non-ENOBUFS result means the decoder cannot make progress => stall.
 #define STALL_LIMIT 4096
+
+// Wall-clock budget for one fixture. The progress guard above catches an ENOBUFS
+// spin, but NOT a decoder deadlock where edge264_decode_NAL itself never returns
+// (e.g. a multithreaded worker/parser cyclic wait). Such a hang cannot be
+// detected in-process, so each fixture is decoded in a forked child bounded by
+// this timeout; overrun => the child is killed and the fixture FAILs as a
+// deadlock instead of hanging the whole suite. Fixtures are tiny (<10 KB) and
+// finish in milliseconds, so this is orders of magnitude of slack.
+#define TIMEOUT_SEC 15
 
 static uint8_t *map_file(const char *path, size_t *size_out) {
 	int fd = open(path, O_RDONLY);
@@ -82,6 +94,55 @@ static int decode_count(const uint8_t *buf, size_t size) {
 	return frames;
 }
 
+// Runs decode_count in a forked child under a wall-clock timeout, so an internal
+// decoder deadlock (a NAL that never returns - which the in-process progress
+// guard cannot catch) is reported as a clean FAIL rather than hanging the suite.
+// Returns the child's frame count (>=0), -1 on stall/crash, or -2 on timeout
+// (deadlock). Falls back to an in-process decode if fork/pipe are unavailable.
+static int decode_count_forked(const uint8_t *buf, size_t size) {
+	int fds[2];
+	if (pipe(fds) != 0)
+		return decode_count(buf, size);
+	fflush(stdout); // so the child does not re-flush the parent's buffered output
+	pid_t pid = fork();
+	if (pid < 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return decode_count(buf, size);
+	}
+	if (pid == 0) { // child: decode and report the count through the pipe
+		close(fds[0]);
+		int got = decode_count(buf, size);
+		ssize_t w = write(fds[1], &got, sizeof got);
+		(void)w;
+		close(fds[1]);
+		// _exit (not exit) so the child terminates promptly without running atexit
+		// handlers: a sanitizer build's LeakSanitizer end-of-run check uses a
+		// ptrace-based StopTheWorld that hangs in a forked child under a restrictive
+		// yama ptrace_scope, which would defeat the timeout. Memory-safety of the
+		// decode paths is covered non-forked by tests/asan; here we only need the
+		// frame count, already sent through the pipe.
+		_exit(0);
+	}
+	close(fds[1]);
+	// poll for the child, killing it if it exceeds the timeout (deadlock)
+	int status, got = -1;
+	for (int waited_ms = 0; waited_ms < TIMEOUT_SEC * 1000; waited_ms += 20) {
+		if (waitpid(pid, &status, WNOHANG) == pid) {
+			ssize_t n = read(fds[0], &got, sizeof got);
+			if (n != (ssize_t)sizeof got || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+				got = -1; // child crashed/aborted before reporting
+			close(fds[0]);
+			return got;
+		}
+		nanosleep(&(struct timespec){.tv_nsec = 20 * 1000 * 1000}, NULL);
+	}
+	kill(pid, SIGKILL);
+	waitpid(pid, &status, 0);
+	close(fds[0]);
+	return -2; // deadlock: the child never returned within the timeout
+}
+
 static int do_run(const char *manifest, const char *dir) {
 	FILE *mf = fopen(manifest, "r");
 	if (!mf) {
@@ -107,9 +168,12 @@ static int do_run(const char *manifest, const char *dir) {
 			failed++;
 			continue;
 		}
-		int got = decode_count(buf, size);
+		int got = decode_count_forked(buf, size);
 		munmap(buf, size);
-		if (got < 0) {
+		if (got == -2) {
+			printf(RED "FAIL" RESET " %s (deadlock: decode_NAL did not return within %ds)\n", name, TIMEOUT_SEC);
+			failed++;
+		} else if (got < 0) {
 			printf(RED "FAIL" RESET " %s (stall: no forward progress)\n", name);
 			failed++;
 		} else if (got != expected) {

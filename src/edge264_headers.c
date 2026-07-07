@@ -1110,7 +1110,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 	static const char * const slice_type_names[5] = {"P", "B", "I", "SP", "SI"};
 	static const char * const disable_deblocking_filter_idc_names[3] = {"enabled", "disabled", "sliced"};
 	int ret;
-	
+
 	// find and reserve an empty task to fill
 	unsigned avail_tasks;
 	while (!(avail_tasks = 0xffff & ~dec->busy_tasks))
@@ -1197,7 +1197,32 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		unset_currPic(dec);
 	}
 	dec->idr_pic_id = idr_pic_id;
-	
+
+	// An inter-coded MVC dependent-view slice (type 20, P/B) predicts from the base
+	// view of its access unit via the inter-view reference. A corrupt/incomplete
+	// stream that carries such dependent slices but no decodable base view (e.g. no
+	// base-view SPS, so no base picture is ever created and basePic stays -1) leaves
+	// every dependent slice with a RefPicList that resolves only to its own
+	// not-yet-decoded slot: the inter-view reference is basePic == -1, and the
+	// out-of-range fix-up in parse_ref_pic_list_modification falls back to the
+	// current picture's own slot. That is a task whose only dependency is its own
+	// frame, which in the multithreaded path never clears - the worker never runs
+	// it, the frame never completes, and once 16 such tasks pile up the parser
+	// blocks forever waiting for a free task slot (a hard deadlock, never returning
+	// from edge264_decode_NAL). Reject the slice as corrupt before it reserves any
+	// decoder state; matches ffmpeg, which reports the missing base view and
+	// produces no frame. Restricted to P/B slices (slice_type < 2): an intra
+	// dependent slice has no RefPicList and no inter-view reference, so it decodes
+	// standalone and pairs once its base arrives - which is exactly the legal
+	// dependent-before-base NAL reordering (see mvc_dep_before_base), where the
+	// base view of the access unit follows the dependent view in decode order and
+	// basePic is momentarily -1. basePic is only ever set by a base view (in
+	// unset_currPic above, once the base picture of the access unit closes), so a
+	// conformant inter-coded dependent view - whose base always precedes it - sees
+	// basePic >= 0 here; this is inert for well-formed MVC.
+	if (dec->nal_unit_type == 20 && dec->basePic < 0 && t->slice_type < 2)
+		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
+
 	// Compute Top/BottomFieldOrderCnt (8.2.1), and FrameNum after the last possible unset_currPic
 	int TopFieldOrderCnt, BottomFieldOrderCnt;
 	if (sps->pic_order_cnt_type == 0) {

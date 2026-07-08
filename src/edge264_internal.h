@@ -403,7 +403,7 @@ typedef struct Edge264Decoder {
 	Edge264SeqParameterSet sps;
 	Edge264SeqParameterSet ssps;
 	int64_t OutputPocBase[2];
-	int32_t PrevOutputPoc[2];
+	int64_t PrevOutputUnwrapped[2]; // previous exported DisplayPoc per view, kept strictly increasing (see edge264_unwrap_output_poc)
 	int8_t HavePrevOutputPoc[2];
 	Edge264PicParameterSet PPS[4];
 	

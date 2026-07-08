@@ -474,22 +474,35 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 	return ret;
 }
 
+// Unwrap the raw picture order count into a strictly increasing per-view display
+// key. The raw POC is not monotone across a decode run: it wraps at
+// MaxPicOrderCntLsb, resets to zero at every IDR / MMCO5, and a real 3D Blu-ray
+// open-GOP boundary can even emit two successive output pictures carrying the
+// same POC. Callers (and the fork's MVC display-order guarantee) need DisplayPoc
+// to be a monotone display-order key, so advance a running base by whole LSB
+// spans - or by one when there is no span (pic_order_cnt_type != 0) - until the
+// unwrapped value strictly exceeds the previous output's. Only the ordering is
+// exported, never the POC-scaled magnitude, so the exact increment is immaterial;
+// keying off the previous unwrapped value (not the raw POC) also makes the guard
+// immune to the parser SPS read here belonging to a later, parse-ahead sequence.
 static int64_t edge264_unwrap_output_poc(Edge264Decoder *dec, int view, int32_t raw_poc) {
 	int64_t base = dec->OutputPocBase[view];
+	int64_t value = base + raw_poc;
 	if (dec->HavePrevOutputPoc[view]) {
-		if (raw_poc < dec->PrevOutputPoc[view]) {
+		if (value <= dec->PrevOutputUnwrapped[view]) {
 			int64_t span = 0;
 			if (dec->sps.pic_order_cnt_type == 0 && dec->sps.log2_max_pic_order_cnt_lsb > 0)
 				span = (int64_t)1 << dec->sps.log2_max_pic_order_cnt_lsb;
-			if (span > 0)
-				base += span;
+			int64_t deficit = dec->PrevOutputUnwrapped[view] - value + 1;
+			base += span > 0 ? (deficit + span - 1) / span * span : deficit;
+			value = base + raw_poc;
 		}
 	} else {
 		dec->HavePrevOutputPoc[view] = 1;
 	}
 	dec->OutputPocBase[view] = base;
-	dec->PrevOutputPoc[view] = raw_poc;
-	return base + raw_poc;
+	dec->PrevOutputUnwrapped[view] = value;
+	return value;
 }
 
 

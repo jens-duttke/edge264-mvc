@@ -75,7 +75,7 @@ typedef struct {
 	int stereo;     // 1 if any frame carried a dependent view
 	int mono;       // frames delivered without a dependent view
 	int pair_err;   // Poc != Poc_mvc on a stereo frame
-	int order_err;  // DisplayPoc went backwards
+	int order_err;  // display order violated (stereo: not strictly increasing; 2D: decreased)
 	int decode_err; // a NAL returned an unexpected hard error
 	Hash base;
 	Hash dep;
@@ -91,7 +91,12 @@ static void account_frame(Result *r, const Edge264Frame *f, int64_t *prev_disp) 
 	} else {
 		r->mono++;
 	}
-	if (f->DisplayPoc < *prev_disp)
+	// Stereo requires a strictly increasing display-order key: a plateau (equal
+	// DisplayPoc, e.g. two open-GOP access units sharing a raw POC on a real 3D
+	// Blu-ray) mislabels a pair, so it is an error too. 2D DisplayPoc may
+	// legitimately dip across IDR/sequence boundaries and is flagged only on a
+	// strict decrease (the verdict below consults order_err only for stereo).
+	if (is_stereo ? f->DisplayPoc <= *prev_disp : f->DisplayPoc < *prev_disp)
 		r->order_err++;
 	*prev_disp = f->DisplayPoc;
 	hash_view(&r->base, f->samples, f);

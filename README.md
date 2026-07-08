@@ -467,6 +467,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | MVC same-POC view mispairing (non-deterministic dependent view under multithreading / paced DPB overflow) | edge264-mvc |
 | MVC inter-view reference appended before the RefPicList1-vs-RefPicList0 swap (wrong dependent-view L1 / direct-mode reference on a single-temporal-reference B slice) | edge264-mvc |
 | MVC per-view MMCO5 reset cleared the co-decoded view's long-term frame indices (marking must be per view component) | edge264-mvc |
+| Keep the exported display POC strictly monotonic across real-world POC discontinuities (open-GOP LSB wrap and same-POC access units on commercial 3D Blu-rays) | edge264-mvc |
 
 **Decode robustness on real-world streams** - found by a broad decode audit over a large, heterogeneous sample corpus (crashes, hangs, wrong output and decode failures that the synthetic and conformance suites do not exercise). Each carries a committed regression fixture ([`tests/liveness`](tests/liveness), [`tests/asan`](tests/asan) or [`tests/conformance`](tests/conformance)) and is **inert on the full JVT conformance set** (identical results before and after, zero regressions); each was verified against FFmpeg on real captures:
 

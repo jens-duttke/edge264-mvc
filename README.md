@@ -3,16 +3,16 @@
 edge264 is a cross-platform, open-source H.264/AVC **software** decoder, focused on **speed** and **ease of use**.
 
 > [!NOTE]
-> This is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264), used
-> in production by **[Oku3D Media Player](https://oku3d.com/)**, a native 3D media player. It
-> makes the **MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end:
-> FFmpeg / libavcodec drop the MVC dependent view entirely, so this is the only viable
-> open-source *software* MVC decoder, but stock edge264's MVC path had several bugs and the fixing PRs
-> sat open for months. edge264-mvc integrates those PRs, adds many more MVC-correctness and
-> real-world decode-robustness fixes, and implements working **multithreaded decoding** (bit-exact
-> to single-thread and validated on the full 231-stream JVT conformance corpus).
-> It also powers **[vapoursynth-mvc](https://github.com/jens-duttke/vapoursynth-mvc)**, a VapourSynth
-> source plugin that brings MVC 3D decoding to VapourSynth processing pipelines.
+> This is a maintained fork of [tvlabs/edge264](https://github.com/tvlabs/edge264). It powers:
+> - **[Oku3D Media Player](https://oku3d.com/)** - a native 3D media player that plays 3D Blu-rays (MVC) and converts any 2D video to stereoscopic 3D in real time.
+> - **[mvc-source](https://github.com/jens-duttke/mvc-source)** - a dependency-free AviSynth+ & VapourSynth source plugin that frame-serves both MVC views for 3D video processing on Linux and Windows.
+>
+> edge264-mvc makes the **MVC / H.264 Annex H decode path (3D Blu-ray, stereo)** actually work end to end:
+> FFmpeg / libavcodec drop the MVC dependent view entirely, so this is the only viable open-source
+> *software* MVC decoder. Stock edge264's MVC path had several bugs whose fixing PRs sat open for
+> months; this fork integrates those, adds many more MVC-correctness and decode-robustness fixes, and
+> implements working **multithreaded decoding** (bit-exact to single-thread, validated on the full
+> 231-stream JVT conformance corpus).
 
 ![](README-benchmark.svg)
 

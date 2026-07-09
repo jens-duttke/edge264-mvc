@@ -187,6 +187,58 @@ static void catch_up_dependent_bumps(Edge264Decoder *dec) {
 	}
 }
 
+/**
+ * Reverse counterpart of catch_up_dependent_bumps. Output is driven by base
+ * views: get_frame scans get_frame_queue[0] and pairs each base with its
+ * dependent, so a dependent is only ever emitted once its base is queued. The
+ * fullness/reorder valve (bump_frame) however bumps the *current slice's* view,
+ * so on a dependent-view NAL it can push a dependent into get_frame_queue[1]
+ * while its base is still held-but-unqueued in to_get_frames. get_frame then
+ * never delivers that pair (the base-driven scan misses it), stranding the
+ * dependent - on an MVC deep-B two-view stream whose 8+8 references saturate the
+ * DPB the two views desync this way often enough to reorder or stall the output
+ * (issue #2). Queue each such orphaned base into get_frame_queue[0], lowest POC
+ * first, so the pair is emitted together in display order. Runs after every NAL
+ * next to catch_up_dependent_bumps; a well-formed stream keeps the two views in
+ * lockstep (a dependent's base is bumped in the same access unit), so no queued
+ * dependent is ever missing its base and this is inert.
+ */
+static void catch_up_orphaned_bases(Edge264Decoder *dec) {
+	if (dec->ssps.BitDepth_Y == 0)
+		return;
+	unsigned queued_deps = 0;
+	for (int i = 0; i < 16; i++) {
+		int q = dec->get_frame_queue[1][i];
+		if (q >= 0)
+			queued_deps |= 1u << q;
+	}
+	for (;;) {
+		// lowest-POC held-but-unqueued base whose dependent is already queued
+		int pick = -1;
+		int32_t lowest = INT_MAX;
+		for (unsigned o = dec->to_get_frames & ~dec->output_frames & ~dec->non_base_frames; o; o &= o - 1) {
+			int b = __builtin_ctz(o);
+			int paired = 0;
+			for (unsigned d = queued_deps; d; d &= d - 1) {
+				int dd = __builtin_ctz(d);
+				if (dec->FrameNums[dd] == dec->FrameNums[b] &&
+					dec->FieldOrderCnt[0][dd] == dec->FieldOrderCnt[0][b]) {
+					paired = 1;
+					break;
+				}
+			}
+			if (paired && dec->FieldOrderCnt[0][b] < lowest)
+				lowest = dec->FieldOrderCnt[0][pick = b];
+		}
+		if (pick < 0)
+			return;
+		assert(movemask(dec->get_frame_queue_v[0])); // get_frame_queue should never be full
+		dec->DispOrder[pick] = dec->next_dispnum++;
+		dec->output_frames |= 1u << pick;
+		dec->get_frame_queue_v[0] = shrd128(set8(pick), dec->get_frame_queue_v[0], 15);
+	}
+}
+
 static void flush_frames(Edge264Decoder *dec) {
 	// FIXME interrupt all threads then wait until they are back to wait
 	assert(!(dec->n_threads == 0 && dec->busy_tasks));
@@ -1311,7 +1363,15 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		unsigned reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames;
 		assert(dec->currPic < 0);
 		while (non_existing + __builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) > sps->max_dec_frame_buffering && bump_frame(dec, non_base_view, 0));
-		assert(non_existing + __builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) <= sps->max_dec_frame_buffering);
+		// Bound the assert by the physical DPB capacity (32 slots), not the signaled
+		// max_dec_frame_buffering: an MVC stream whose two views together need more
+		// held frames than the base-derived MFB (a deep-B pyramid, or a frame_num
+		// gap that inserts non-existing references into an already-full view set)
+		// legitimately overshoots MFB while staying within the 32 physical slots.
+		// The bump loop above relieves what it can; the real overflow guard is the
+		// > 32 ENOBUFS backpressure below. Keying this to MFB aborted such streams
+		// (issue #2). Conformant streams stay <= MFB, so this is inert for them.
+		assert(non_existing + __builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) <= 32);
 		if (non_existing + __builtin_popcount(reference_frames | dec->to_get_frames | dec->output_frames) > 32)
 			return ENOBUFS; // exit here if we must wait for get_frame to consume and return enough frames
 		// wait until enough empty slots are undepended
@@ -1438,7 +1498,12 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		unsigned long_term_frames = dec->prev_long_term_frames & ~same_views | dec->long_term_frames;
 		unsigned reference_frames = short_term_frames | long_term_frames;
 		assert(__builtin_popcount(reference_frames & same_views) <= sps->max_num_ref_frames);
-		assert(__builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames & ~same_views) <= sps->max_dec_frame_buffering);
+		// See the frame_num-gap assert above: the held set (both views' references
+		// plus the other view's undrained pictures) can exceed the signaled
+		// max_dec_frame_buffering on a legal MVC stream whose combined DPB need
+		// outgrows the base-view-derived MFB, so bound only by the 32 physical
+		// slots. Inert for conformant streams (which stay <= MFB).
+		assert(__builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames & ~same_views) <= 32);
 		int max_bump = sps->max_num_ref_frames;
 		if (!dec->nal_ref_idc) {
 			max_bump = 0;

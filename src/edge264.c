@@ -381,12 +381,22 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 		return EINVAL;
 	if (dec->n_threads)
 		pthread_mutex_lock(&dec->lock);
-	
-	// there has to be enough buffer space for any NAL to flush the entire DPB
+
+	// There has to be enough buffer space for any NAL to flush the entire DPB.
+	// get_frame_queue is 16 entries *per view*, and a flush routes base pictures to
+	// queue[0] and dependents to queue[1] (bump_all_frames), so the two views must
+	// be gated independently: a combined queued0 + queued1 + total-pending <= 16
+	// test halves the effective capacity for MVC, where each view can legitimately
+	// hold up to 16 - it left no room past the reorder window (also up to 16) and
+	// deadlocked a deep-B two-view stream that had genuinely filled both view
+	// queues (issue #2). Per-view the base and dependent each keep their full 16
+	// slots. Inert for 2D (queued1 and the dependent pending are both zero, so this
+	// reduces to the original single-queue test).
 	int queued0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
 	int queued1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
-	int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
-	if (queued0 + queued1 + bumpable > 16) {
+	int pending_base = __builtin_popcount(dec->to_get_frames & ~dec->output_frames & ~dec->non_base_frames);
+	int pending_dep = __builtin_popcount(dec->to_get_frames & ~dec->output_frames & dec->non_base_frames);
+	if (queued0 + max(1, pending_base) > 16 || queued1 + max(1, pending_dep) > 16) {
 		if (dec->n_threads)
 			pthread_mutex_unlock(&dec->lock);
 		return ENOBUFS;
@@ -460,6 +470,7 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 	// get_frame - whose worker-timing-gated output_frames writes perturb the
 	// parse-side bump triggers - stays inert on well-formed streams.
 	catch_up_dependent_bumps(dec);
+	catch_up_orphaned_bases(dec);
 
 	// Release the caller's NAL buffer on success: non-slices always, and copied
 	// slices too (we hold our own copy, so the caller buffer is already free).

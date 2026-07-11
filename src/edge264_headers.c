@@ -278,6 +278,18 @@ static void clear_decoder(Edge264Decoder *dec) {
 int ADD_VARIANT(parse_end_of_sequence)(Edge264Decoder *dec, Edge264UnrefCb unref_cb, void *unref_arg) {
 	int ret = EBADMSG;
 	if (rbsp_end(&dec->gb, 0)) {
+		// end_of_seq empties the DPB (Annex C.4.5.3): every picture of the finished
+		// sequence must be output now. bump_all_frames queues them, but get_frame
+		// still holds back a queued base whose dependent view is not in the DPB - its
+		// unpaired-base valve only emits such a base once dec->flushing is set or the
+		// output queue is full. On a live stream the next access unit fills the queue
+		// and resolves it, but at an end_of_seq there is no next access unit, so on a
+		// real 3D Blu-ray whose trailing picture had no paired dependent the tail base
+		// stayed held here and a multi-clip caller that ends a clip on this NAL
+		// (rather than the buf>=end drain) spun ENOBUFS on it. Set flushing so the
+		// unpaired-base valve fires and the tail is emitted; the next NAL clears the
+		// flag again (edge264_decode_NAL), so a following sequence is unaffected.
+		dec->flushing = 1;
 		if (bump_all_frames(dec))
 			return ENOBUFS;
 		clear_decoder(dec);

@@ -3,6 +3,16 @@
 # so one base frame has no POC-matching dependent. A correct decoder emits that
 # base frame alone (9 total) instead of deadlocking. Regression (M1) => stall.
 mvc_unpaired_base 9
+# mvc_unpaired_base_eos: mvc_unpaired_base with a trailing end_of_sequence NAL
+# (type 10) appended (tests/gen_mvc_unpaired_base_eos.py). Same unpaired base,
+# but now the decoder reaches it at an end_of_sequence rather than at the buffer
+# end (buf >= end) - the point a multi-clip 3D player hits when a clip terminates
+# on its end_of_seq unit. parse_end_of_sequence must set the same flushing valve
+# that end-of-buffer does, or the held unpairable base is never emitted and the
+# draining caller spins ENOBUFS forever, losing the last base frame. A correct
+# decoder flushes it and delivers all 9. Regression (end_of_sequence flush) =>
+# stall (8 of 9).
+mvc_unpaired_base_eos 9
 dpb_frame_num_gap 0
 # tall_progressive: a 1x540-MB (16x8640px) progressive IDR. The SPS height bound
 # "527 << frame_mbs_only_flag" is read before the flag is parsed (always 527),

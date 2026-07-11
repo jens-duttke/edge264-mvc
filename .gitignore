@@ -20,6 +20,7 @@
 !tests/gen_interview_reflist_stream.py
 !tests/gen_sei_recovery_point.py
 !tests/gen_mvc_baseless.py
+!tests/gen_mvc_unpaired_base_eos.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

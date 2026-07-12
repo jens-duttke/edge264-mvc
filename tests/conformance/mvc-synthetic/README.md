@@ -130,6 +130,19 @@ decoder reproduces that hash. Run it from the repo root:
   (MMCO 3/6), which this fixture deliberately omits. It is committed regression coverage
   for the MMCO5 x MVC interaction, not a fail-first guard for the view-mask fix itself.
 
+- **mvc_display_ordering** (8 frames) - a **fork regression guard** for the base-view
+  display-order fix from issue #2. Two IDR sequences code the base view with decode order
+  != display order (POCs decoded 0, 2, 6, 4, `max_num_reorder_frames = 1`), so a
+  higher-POC picture is decoded and its dependent queued before a lower-POC one. The
+  removed `catch_up_orphaned_bases` reverse-pairing pass stamped such a base's display
+  rank at queue time, in decode rather than display order, swapping output positions 3
+  and 4; output is now strictly base-driven (`bump_frame` never queues a dependent ahead
+  of its base) and emits 0, 2, 4, 6. Unlike the other synthetic fixtures this one is
+  **not** all-128: each picture carries a distinct flat I_PCM luma (per POC), so the
+  reorder is visible in the base-view hash - the pre-fix (`catch_up_orphaned_bases`)
+  decoder fails it on the base hash, and it matches FFmpeg's base-view order.
+  `mvc_display_ordering.yaml` is produced by `tests/gen_mvc_ordering.py`.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

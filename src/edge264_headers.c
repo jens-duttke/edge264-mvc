@@ -81,6 +81,28 @@ static int bump_frame(Edge264Decoder *dec, int non_base_view, unsigned ignored) 
 	unsigned same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
 	for (unsigned o = dec->to_get_frames & ~dec->output_frames & same_views & ~ignored; o; o &= o - 1) {
 		int i = __builtin_ctz(o);
+		// Keep MVC output base-driven: never queue a dependent while its base is
+		// still held. get_frame delivers by scanning the base queue and pairing each
+		// base with its dependent, so a dependent queued ahead of its base cannot be
+		// delivered - under DPB pressure that stalls the decoder, and reverse-pairing
+		// the base to unstick it emits the base in decode rather than display order,
+		// reordering a stream whose decode and display order differ (a frame_num gap
+		// - issue #2). The base view's own bump queues the pair together, in display
+		// order. A truly base-less dependent (dropped/corrupt base NAL) is drained by
+		// get_frame's orphan valve, not here.
+		if (non_base_view) {
+			int paired = 0;
+			for (unsigned b = dec->output_frames & ~dec->non_base_frames; b; b &= b - 1) {
+				int bb = __builtin_ctz(b);
+				if (dec->FrameNums[bb] == dec->FrameNums[i] &&
+					dec->FieldOrderCnt[0][bb] == dec->FieldOrderCnt[0][i]) {
+					paired = 1;
+					break;
+				}
+			}
+			if (!paired)
+				continue;
+		}
 		if (dec->FieldOrderCnt[0][i] < lowest_poc)
 			lowest_poc = dec->FieldOrderCnt[0][pic = i];
 	}
@@ -184,58 +206,6 @@ static void catch_up_dependent_bumps(Edge264Decoder *dec) {
 			dec->output_frames |= 1 << dep;
 			dec->get_frame_queue_v[1] = shrd128(set8(dep), dec->get_frame_queue_v[1], 15);
 		}
-	}
-}
-
-/**
- * Reverse counterpart of catch_up_dependent_bumps. Output is driven by base
- * views: get_frame scans get_frame_queue[0] and pairs each base with its
- * dependent, so a dependent is only ever emitted once its base is queued. The
- * fullness/reorder valve (bump_frame) however bumps the *current slice's* view,
- * so on a dependent-view NAL it can push a dependent into get_frame_queue[1]
- * while its base is still held-but-unqueued in to_get_frames. get_frame then
- * never delivers that pair (the base-driven scan misses it), stranding the
- * dependent - on an MVC deep-B two-view stream whose 8+8 references saturate the
- * DPB the two views desync this way often enough to reorder or stall the output
- * (issue #2). Queue each such orphaned base into get_frame_queue[0], lowest POC
- * first, so the pair is emitted together in display order. Runs after every NAL
- * next to catch_up_dependent_bumps; a well-formed stream keeps the two views in
- * lockstep (a dependent's base is bumped in the same access unit), so no queued
- * dependent is ever missing its base and this is inert.
- */
-static void catch_up_orphaned_bases(Edge264Decoder *dec) {
-	if (dec->ssps.BitDepth_Y == 0)
-		return;
-	unsigned queued_deps = 0;
-	for (int i = 0; i < 16; i++) {
-		int q = dec->get_frame_queue[1][i];
-		if (q >= 0)
-			queued_deps |= 1u << q;
-	}
-	for (;;) {
-		// lowest-POC held-but-unqueued base whose dependent is already queued
-		int pick = -1;
-		int32_t lowest = INT_MAX;
-		for (unsigned o = dec->to_get_frames & ~dec->output_frames & ~dec->non_base_frames; o; o &= o - 1) {
-			int b = __builtin_ctz(o);
-			int paired = 0;
-			for (unsigned d = queued_deps; d; d &= d - 1) {
-				int dd = __builtin_ctz(d);
-				if (dec->FrameNums[dd] == dec->FrameNums[b] &&
-					dec->FieldOrderCnt[0][dd] == dec->FieldOrderCnt[0][b]) {
-					paired = 1;
-					break;
-				}
-			}
-			if (paired && dec->FieldOrderCnt[0][b] < lowest)
-				lowest = dec->FieldOrderCnt[0][pick = b];
-		}
-		if (pick < 0)
-			return;
-		assert(movemask(dec->get_frame_queue_v[0])); // get_frame_queue should never be full
-		dec->DispOrder[pick] = dec->next_dispnum++;
-		dec->output_frames |= 1u << pick;
-		dec->get_frame_queue_v[0] = shrd128(set8(pick), dec->get_frame_queue_v[0], 15);
 	}
 }
 

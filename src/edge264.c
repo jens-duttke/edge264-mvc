@@ -470,7 +470,6 @@ int edge264_decode_NAL(Edge264Decoder *dec, const uint8_t *buf, const uint8_t *e
 	// get_frame - whose worker-timing-gated output_frames writes perturb the
 	// parse-side bump triggers - stays inert on well-formed streams.
 	catch_up_dependent_bumps(dec);
-	catch_up_orphaned_bases(dec);
 
 	// Release the caller's NAL buffer on success: non-slices always, and copied
 	// slices too (we hold our own copy, so the caller buffer is already free).

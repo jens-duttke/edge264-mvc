@@ -1,9 +1,12 @@
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
+	#include <fcntl.h>
+	#include <io.h>
 	#include <windows.h>
 	#include <psapi.h>
 	#define dlsym (void*)GetProcAddress
@@ -324,14 +327,309 @@ static int check_frame()
 
 
 
+static int drain_frames(int *res, int *quit)
+{
+	int drained = 0;
+	while (!edge264_get_frame(d, &out, 0)) {
+		drained++;
+		if (dump)
+			dump_frame();
+		if (conf[0] != NULL && check_frame()) {
+			*res = EBADMSG;
+			break;
+		} else if (display && draw_frame()) {
+			*res = ENODATA;
+			*quit = 1;
+			break;
+		}
+	}
+	return drained;
+}
+
+static int keep_decoding(int res)
+{
+	// -k: mirror a real player's decode loop by skipping an unsupported NAL
+	// (ENOTSUP) and continuing, instead of stopping at the first one. Real 3D
+	// Blu-rays carry per-access-unit unspecified NALs (type 24) that edge264
+	// reports ENOTSUP by design; without this the tool halts at the first one and
+	// never reaches the dependent view.
+	return res == 0 || res == ENOBUFS || (res == ENOTSUP && skip_unsupported);
+}
+
+static int finish_decode_result(int res, const uint8_t *end1)
+{
+	edge264_flush(d);
+	if (res == ENOBUFS || (res == ENODATA && conf[0] != NULL && conf[0] != end1))
+		res = EBADMSG;
+	return res;
+}
+
+static int decode_mapped_input(const uint8_t *nal, const uint8_t *end0, const uint8_t *end1, int *quit)
+{
+	nal += 3 + (nal[2] == 0); // skip the [0]001 delimiter
+	int res, stuck = 0;
+	y4m_started = 0; // one Y4M stream header per file
+	do {
+		const uint8_t *end = edge264_find_start_code(nal, end0, 0);
+		res = edge264_decode_NAL(d, nal, end, NULL, NULL);
+		int drained = drain_frames(&res, quit);
+		if (res != ENOBUFS)
+			nal = end + 3;
+		// Progress guard (the caller contract requires one so ENOBUFS cannot
+		// spin forever). A DPB that fills a few NALs before end-of-stream can
+		// reject the next NAL with ENOBUFS while get_frame drains nothing - the
+		// pending frames only come out once the flush sentinel (buf >= end) sets
+		// `flushing`. The normal loop reaches that only when nal hits end0, which
+		// it never does here (nal is pinned on the un-accepted NAL), so force the
+		// sentinel after a stall. Inert on well-formed streams (every ENOBUFS
+		// there drains at least one frame, resetting the counter).
+		stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
+		if (stuck > 64) { nal = end0; stuck = 0; }
+	} while (keep_decoding(res));
+	return finish_decode_result(res, end1);
+}
+
+#define STREAM_CHUNK ((size_t)64 * 1024)
+#define STREAM_MAX_NAL_SIZE ((size_t)64 * 1024 * 1024)
+#define STREAM_MAX_BUFFER_SIZE (STREAM_MAX_NAL_SIZE + STREAM_CHUNK + 4)
+#define STREAM_PAD 32
+
+typedef struct StreamBuffer {
+	uint8_t *alloc;
+	uint8_t *data;
+	size_t len;
+	size_t cap;
+	int fd;
+	int eof;
+	int saw_start_code;
+} StreamBuffer;
+
+static int stream_reserve(StreamBuffer *s, size_t need)
+{
+	if (need <= s->cap)
+		return 0;
+	if (need > STREAM_MAX_BUFFER_SIZE) {
+		errno = EFBIG;
+		return -1;
+	}
+	size_t cap = s->cap ? s->cap : STREAM_CHUNK;
+	while (cap < need) {
+		cap *= 2;
+		if (cap > STREAM_MAX_BUFFER_SIZE)
+			cap = STREAM_MAX_BUFFER_SIZE;
+	}
+	uint8_t *alloc = malloc(cap + 2 * STREAM_PAD + 15);
+	if (alloc == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
+	uint8_t *data = (uint8_t *)(((uintptr_t)alloc + STREAM_PAD + 15) & ~(uintptr_t)15);
+	if (s->data != NULL)
+		memcpy(data, s->data, s->len);
+	free(s->alloc);
+	s->alloc = alloc;
+	s->data = data;
+	s->cap = cap;
+	memset(s->data + s->len, 0, STREAM_PAD);
+	return 0;
+}
+
+static int stream_fill(StreamBuffer *s)
+{
+	if (s->len == STREAM_MAX_BUFFER_SIZE) {
+		errno = EFBIG;
+		return -1;
+	}
+	size_t size = STREAM_MAX_BUFFER_SIZE - s->len;
+	if (size > STREAM_CHUNK)
+		size = STREAM_CHUNK;
+	if (stream_reserve(s, s->len + size))
+		return -1;
+	int n;
+	do {
+		#ifdef _WIN32
+			n = _read(s->fd, s->data + s->len, (unsigned)size);
+		#else
+			n = read(s->fd, s->data + s->len, size);
+		#endif
+	} while (n < 0 && errno == EINTR);
+	if (n < 0)
+		return -1;
+	if (n == 0)
+		s->eof = 1;
+	else
+		s->len += n;
+	memset(s->data + s->len, 0, STREAM_PAD);
+	return 0;
+}
+
+static size_t stream_find_start_code(const uint8_t *data, size_t start, size_t end, size_t *delimiter)
+{
+	const uint8_t *limit = data + end;
+	const uint8_t *found = edge264_find_start_code(data + start, limit, 0);
+	if (found == limit)
+		return SIZE_MAX;
+	if (found > data + start && found[-1] == 0)
+		found--;
+	if (delimiter != NULL)
+		*delimiter = found[2] == 1 ? 3 : 4;
+	return found - data;
+}
+
+static int stream_next_nal(StreamBuffer *s, const uint8_t **nal, const uint8_t **end, size_t *consume)
+{
+	size_t delimiter, start;
+	while ((start = stream_find_start_code(s->data, 0, s->len, &delimiter)) == SIZE_MAX) {
+		if (s->eof) {
+			if (s->len == 0 && s->saw_start_code)
+				return 0;
+			errno = EBADMSG;
+			return -1;
+		}
+		for (size_t i = 0; i + 3 < s->len; i++) {
+			if (s->data[i] != 0) {
+				errno = EBADMSG;
+				return -1;
+			}
+		}
+		if (s->len > 3) {
+			memmove(s->data, s->data + s->len - 3, 3);
+			s->len = 3;
+		}
+		if (stream_fill(s))
+			return -1;
+	}
+	s->saw_start_code = 1;
+	for (size_t i = 0; i < start; i++) {
+		if (s->data[i] != 0) {
+			errno = EBADMSG;
+			return -1;
+		}
+	}
+	if (start != 0) {
+		memmove(s->data, s->data + start, s->len - start);
+		s->len -= start;
+	}
+
+	size_t search = delimiter;
+	while (1) {
+		size_t next = stream_find_start_code(s->data, search, s->len, NULL);
+		if (next != SIZE_MAX) {
+			if (next == delimiter) {
+				errno = EBADMSG;
+				return -1;
+			}
+			if (next - delimiter > STREAM_MAX_NAL_SIZE) {
+				errno = EFBIG;
+				return -1;
+			}
+			*nal = s->data + delimiter;
+			*end = s->data + next;
+			*consume = next;
+			return 1;
+		}
+		if (s->eof) {
+			if (s->len <= delimiter) {
+				errno = EBADMSG;
+				return -1;
+			}
+			if (s->len - delimiter > STREAM_MAX_NAL_SIZE) {
+				errno = EFBIG;
+				return -1;
+			}
+			*nal = s->data + delimiter;
+			*end = s->data + s->len;
+			*consume = s->len;
+			return 1;
+		}
+		if (s->len - delimiter > STREAM_MAX_NAL_SIZE + 3) {
+			errno = EFBIG;
+			return -1;
+		}
+		search = s->len > 3 ? s->len - 3 : delimiter;
+		if (search < delimiter)
+			search = delimiter;
+		if (stream_fill(s))
+			return -1;
+	}
+}
+
+static void stream_consume(StreamBuffer *s, size_t size)
+{
+	memmove(s->data, s->data + size, s->len - size);
+	s->len -= size;
+	memset(s->data + s->len, 0, STREAM_PAD);
+}
+
+static int decode_stream_input(int fd, const char *name, const uint8_t *end1, int *quit)
+{
+	StreamBuffer s = {.fd = fd};
+	if (stream_reserve(&s, STREAM_CHUNK)) {
+		perror(name);
+		*quit = 1;
+		return finish_decode_result(EBADMSG, end1);
+	}
+	const uint8_t *nal = NULL, *end = NULL;
+	size_t consume = 0;
+	int current = 0, res = 0, stuck = 0;
+	y4m_started = 0; // one Y4M stream header per file
+	do {
+		if (!current) {
+			int next = stream_next_nal(&s, &nal, &end, &consume);
+			if (next < 0) {
+				int error = errno;
+				if (error == EFBIG)
+					fprintf(msg, "%s: NAL unit exceeds the 64 MiB stream-input limit\n", name);
+				else if (error == EBADMSG)
+					fprintf(msg, "%s: invalid Annex B byte stream\n", name);
+				else {
+					errno = error;
+					perror(name);
+					*quit = 1;
+				}
+				moveup = "";
+				res = EBADMSG;
+				break;
+			}
+			if (next == 0) {
+				nal = s.data;
+				end = s.data;
+				consume = 0;
+			}
+			current = 1;
+		}
+		res = edge264_decode_NAL(d, nal, end, NULL, NULL);
+		int drained = drain_frames(&res, quit);
+		if (res != ENOBUFS) {
+			if (consume != 0)
+				stream_consume(&s, consume);
+			current = 0;
+		}
+		stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
+		if (stuck > 64) {
+			nal = s.data;
+			end = s.data;
+			consume = 0;
+			current = 1;
+			stuck = 0;
+		}
+	} while (keep_decoding(res));
+	free(s.alloc);
+	return finish_decode_result(res, end1);
+}
+
+
+
 static int decode_file(const char *name0)
 {
 	// process file names
 	if (trace_file)
 		fprintf(trace_file, "\n--- # %s\n", name0);
-	int len = strrchr(name0, '.') - name0;
-	if (strcmp(name0 + len + 1, "264") != 0)
+	int input_stdin = strcmp(name0, "-") == 0;
+	const char *extension = strrchr(name0, '.');
+	if (!input_stdin && (extension == NULL || strcmp(extension + 1, "264") != 0))
 		return 0;
+	int len = input_stdin ? 1 : extension - name0;
 	char name1[len + 5], name2[len + 7];
 	snprintf(name1, sizeof(name1), "%.*s.yuv", len, name0);
 	snprintf(name2, sizeof(name2), "%.*s.1.yuv", len, name0);
@@ -340,15 +638,23 @@ static int decode_file(const char *name0)
 	int quit = 0;
 	conf[0] = conf[1] = NULL;
 	#ifdef _WIN32
-		HANDLE f0 = NULL, f1 = NULL, f2 = NULL, m0 = NULL, m1 = NULL, m2 = NULL;
+		int fd0 = -1;
+		int stream_input = input_stdin;
+		HANDLE f0 = INVALID_HANDLE_VALUE, f1 = INVALID_HANDLE_VALUE, f2 = INVALID_HANDLE_VALUE;
+		HANDLE m0 = NULL, m1 = NULL, m2 = NULL;
 		void *v0 = NULL, *v1 = NULL, *v2 = NULL;
-		if ((f0 = CreateFileA(name0, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE ||
+		if (input_stdin) {
+			if ((fd0 = _fileno(stdin)) < 0 || _setmode(fd0, _O_BINARY) < 0) {
+				perror(name0);
+				quit = 1;
+			}
+		} else if ((f0 = CreateFileA(name0, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE ||
 			(m0 = CreateFileMappingA(f0, NULL, PAGE_READONLY, 0, 0, NULL)) == NULL ||
 			(v0 = MapViewOfFile(m0, FILE_MAP_READ, 0, 0, 0)) == NULL) {
 			printf("Error opening file %s: %lu\n", name0, GetLastError());
 			quit = 1;
 		}
-		if (enable_yuv) {
+		if (enable_yuv && !input_stdin) {
 			if ((f1 = CreateFileA(name1, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
 				printf("%s%s not found\n", moveup, name1);
 				moveup = "";
@@ -365,20 +671,28 @@ static int decode_file(const char *name0)
 				quit = 1;
 			}
 		}
-		const uint8_t *nal = v0;
-		const uint8_t *end0 = v0 + GetFileSize(f0, NULL);
-		const uint8_t *end1 = v1 + GetFileSize(f1, NULL);
+		const uint8_t *buf0 = v0;
+		const uint8_t *end0 = v0 != NULL ? v0 + GetFileSize(f0, NULL) : NULL;
+		const uint8_t *end1 = v1 != NULL ? v1 + GetFileSize(f1, NULL) : NULL;
 	#else
 		int fd0 = -1, fd1 = -1, fd2 = -1;
+		int stream_input = input_stdin;
 		struct stat st0, st1, st2;
 		uint8_t *mm0 = MAP_FAILED, *mm1 = MAP_FAILED, *mm2 = MAP_FAILED;
-		if ((fd0 = open(name0, O_RDONLY)) < 0 ||
-			fstat(fd0, &st0) < 0 ||
-			(mm0 = mmap(NULL, st0.st_size, PROT_READ, MAP_SHARED, fd0, 0)) == MAP_FAILED) {
+		if (input_stdin) {
+			fd0 = STDIN_FILENO;
+		} else if ((fd0 = open(name0, O_RDONLY)) < 0 || fstat(fd0, &st0) < 0) {
 			perror(name0);
 			quit = 1;
+		} else if (S_ISREG(st0.st_mode)) {
+			if ((mm0 = mmap(NULL, st0.st_size, PROT_READ, MAP_SHARED, fd0, 0)) == MAP_FAILED) {
+				perror(name0);
+				quit = 1;
+			}
+		} else {
+			stream_input = 1;
 		}
-		if (enable_yuv) {
+		if (enable_yuv && !input_stdin) {
 			if ((fd1 = open(name1, O_RDONLY)) < 0) {
 				printf("%s%s not found\n", moveup, name1);
 				moveup = "";
@@ -394,9 +708,9 @@ static int decode_file(const char *name0)
 				quit = 1;
 			}
 		}
-		const uint8_t *nal = mm0;
-		const uint8_t *end0 = mm0 + st0.st_size;
-		const uint8_t *end1 = mm1 + st1.st_size;
+		const uint8_t *buf0 = mm0 != MAP_FAILED ? mm0 : NULL;
+		const uint8_t *end0 = mm0 != MAP_FAILED ? mm0 + st0.st_size : NULL;
+		const uint8_t *end1 = mm1 != MAP_FAILED ? mm1 + st1.st_size : NULL;
 	#endif
 	
 	// print the success counts
@@ -408,47 +722,8 @@ static int decode_file(const char *name0)
 		moveup = "\e[A\e[K";
 		
 		// decode the entire file and FAIL on any error
-		nal += 3 + (nal[2] == 0); // skip the [0]001 delimiter
-		int res, stuck = 0;
-		y4m_started = 0; // one Y4M stream header per file
-		do {
-			const uint8_t *end = edge264_find_start_code(nal, end0, 0);
-			res = edge264_decode_NAL(d, nal, end, NULL, NULL);
-			int drained = 0;
-			while (!edge264_get_frame(d, &out, 0)) {
-				drained++;
-				if (dump)
-					dump_frame();
-				if (conf[0] != NULL && check_frame()) {
-					res = EBADMSG;
-					break;
-				} else if (display && draw_frame()) {
-					res = ENODATA;
-					quit = 1;
-					break;
-				}
-			}
-			if (res != ENOBUFS)
-				nal = end + 3;
-			// Progress guard (the caller contract requires one so ENOBUFS cannot
-			// spin forever). A DPB that fills a few NALs before end-of-stream can
-			// reject the next NAL with ENOBUFS while get_frame drains nothing - the
-			// pending frames only come out once the flush sentinel (buf >= end) sets
-			// `flushing`. The normal loop reaches that only when nal hits end0, which
-			// it never does here (nal is pinned on the un-accepted NAL), so force the
-			// sentinel after a stall. Inert on well-formed streams (every ENOBUFS
-			// there drains at least one frame, resetting the counter).
-			stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
-			if (stuck > 64) { nal = end0; stuck = 0; }
-			// -k: mirror a real player's decode loop by skipping an unsupported
-			// NAL (ENOTSUP) and continuing, instead of stopping at the first one.
-			// Real 3D Blu-rays carry per-access-unit unspecified NALs (type 24)
-			// that edge264 reports ENOTSUP by design; without this the tool halts
-			// at the first one and never reaches the dependent view.
-		} while (res == 0 || res == ENOBUFS || (res == ENOTSUP && skip_unsupported));
-		edge264_flush(d);
-		if (res == ENOBUFS || (res == ENODATA && conf[0] != NULL && conf[0] != end1))
-			res = EBADMSG;
+		int res = stream_input ? decode_stream_input(fd0, name0, end1, &quit) :
+			decode_mapped_input(buf0, end0, end1, &quit);
 		// FIXME interrupt all threads before closing the files!
 		
 		// print the file that was decoded
@@ -473,22 +748,22 @@ static int decode_file(const char *name0)
 	
 	// close everything
 	#ifdef _WIN32
-		UnmapViewOfFile(v0);
-		UnmapViewOfFile(v1);
-		UnmapViewOfFile(v2);
-		CloseHandle(m0);
-		CloseHandle(m1);
-		CloseHandle(m2);
-		CloseHandle(f0);
-		CloseHandle(f1);
-		CloseHandle(f2);
+		if (v0 != NULL) UnmapViewOfFile(v0);
+		if (v1 != NULL) UnmapViewOfFile(v1);
+		if (v2 != NULL) UnmapViewOfFile(v2);
+		if (m0 != NULL) CloseHandle(m0);
+		if (m1 != NULL) CloseHandle(m1);
+		if (m2 != NULL) CloseHandle(m2);
+		if (f0 != INVALID_HANDLE_VALUE) CloseHandle(f0);
+		if (f1 != INVALID_HANDLE_VALUE) CloseHandle(f1);
+		if (f2 != INVALID_HANDLE_VALUE) CloseHandle(f2);
 	#else
-		munmap(mm0, st0.st_size);
-		munmap(mm1, st1.st_size);
-		munmap(mm2, st2.st_size);
-		close(fd0);
-		close(fd1);
-		close(fd2);
+		if (mm0 != MAP_FAILED) munmap(mm0, st0.st_size);
+		if (mm1 != MAP_FAILED) munmap(mm1, st1.st_size);
+		if (mm2 != MAP_FAILED) munmap(mm2, st2.st_size);
+		if (fd0 >= 0 && !input_stdin) close(fd0);
+		if (fd1 >= 0) close(fd1);
+		if (fd2 >= 0) close(fd2);
 	#endif
 	return quit;
 }
@@ -504,7 +779,9 @@ int main(int argc, char *argv[])
 	int n_threads = -1; // multithreaded by default (auto-detect cores); -V forces single-thread
 	int trace = 0;
 	for (int i = 1; i < argc; i++) {
-		if (argv[i][0] != '-') {
+		if (strcmp(argv[i], "-") == 0) {
+			file_name = argv[i];
+		} else if (argv[i][0] != '-') {
 			file_name = argv[i];
 		} else for (int j = 1; argv[i][j]; j++) {
 			switch (argv[i][j]) {
@@ -530,12 +807,19 @@ int main(int argc, char *argv[])
 	if (dump)
 		enable_yuv = 0;
 	msg = dump ? stderr : stdout;
+	#ifdef _WIN32
+		if (dump && _setmode(_fileno(stdout), _O_BINARY) < 0) {
+			perror("stdout");
+			return 1;
+		}
+	#endif
 
 	// print help if any argument was unknown
 	if (help) {
-		printf("Usage: " BOLD "%s [video.264|directory] [-hbdfkmoOspuvVy]" RESET "\n"
-			"Decodes a video or all videos inside a directory (./conformance by default),\n"
+		printf("Usage: " BOLD "%s [video.264|directory|-] [-hbdfkmoOspuvVy]" RESET "\n"
+			"Decodes a video, stdin (-), or all videos inside a directory (./conformance by default),\n"
 			"comparing their outputs with inferred YUV pairs (.yuv and .1.yuv extensions).\n"
+			"Stream input buffers one NAL unit at a time, limited to 64 MiB.\n"
 			"-h\tprint this help and exit\n"
 			"-b\tbenchmark decoding time and memory usage\n"
 			"-d\tenable display of the videos (requires SDL2)\n"
@@ -570,7 +854,9 @@ int main(int argc, char *argv[])
 	d = edge264_alloc(n_threads, trace ? (int(*)(const char*, void*))fputs : NULL, trace_file, trace > 1, NULL, NULL, NULL);
 	
 	// check if input is a directory by trying to move into it
-	if (chdir(file_name) < 0) {
+	if (strcmp(file_name, "-") == 0) {
+		decode_file(file_name);
+	} else if (chdir(file_name) < 0) {
 		decode_file(file_name);
 	} else {
 		#ifdef _WIN32

@@ -401,6 +401,7 @@ ifeq ($(OS),wasm)
 else
 	$(Q)./edge264_check$(EXE)
 	$(Q)$(MAKE) --no-print-directory check-conformance
+	$(Q)$(MAKE) --no-print-directory check-stream-input
 endif
 
 edge264_check$(EXE): src/edge264_check.c edge264.h src/edge264_internal.h $(LIBNAME)
@@ -448,6 +449,15 @@ endif
 
 liveness_check$(EXE): tests/liveness_check.c edge264.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/liveness_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
+
+# Native edge264_test stream-input regression. Compares regular-file mmap,
+# stdin (-), and FIFO/non-regular input Y4M output on small MVC fixtures. FIFO
+# input splits an Annex B start code across reads, and every subprocess has a timeout.
+.PHONY: check-stream-input
+check-stream-input: edge264_test$(EXE)
+ifneq ($(OS),wasm)
+	$(Q)$(PY) tests/stream_input_check.py --exe ./edge264_test$(EXE)
+endif
 
 # Sanitizer regression over the crafted-SEI fixtures (tests/asan/). Build with a
 # sanitizer to instrument it, e.g. `make SANITIZE=address check-asan` (or

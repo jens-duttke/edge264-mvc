@@ -469,6 +469,7 @@ Multithreaded decoding is the headline addition. Call `edge264_alloc` with `n_th
 | MVC per-view MMCO5 reset cleared the co-decoded view's long-term frame indices (marking must be per view component) | edge264-mvc |
 | Keep the exported display POC strictly monotonic across real-world POC discontinuities (open-GOP LSB wrap and same-POC access units on commercial 3D Blu-rays) | edge264-mvc |
 | MVC deep-B two-view output deadlock / C.4.5 fullness abort (the output-buffer gate counted both view queues against one 16-slot budget, halving MVC capacity below the reorder window; a GOP16 hierarchical-B stream that filled both view reference sets then deadlocked under multithreading and aborted in debug) | edge264-mvc |
+| MVC base-view display-order swap on a stream coded decode-order != display-order (a reverse-pairing pass queued a base when its dependent was seen, i.e. in decode order, stamping its display rank out of order; output is now strictly base-driven, so the base view again matches FFmpeg) | edge264-mvc |
 
 **Decode robustness on real-world streams** - found by a broad decode audit over a large, heterogeneous sample corpus (crashes, hangs, wrong output and decode failures that the synthetic and conformance suites do not exercise). Each carries a committed regression fixture ([`tests/liveness`](tests/liveness), [`tests/asan`](tests/asan) or [`tests/conformance`](tests/conformance)) and is **inert on the full JVT conformance set** (identical results before and after, zero regressions); each was verified against FFmpeg on real captures:
 

@@ -376,13 +376,15 @@ static int decode_mapped_input(const uint8_t *nal, const uint8_t *end0, const ui
 		if (res != ENOBUFS)
 			nal = end + 3;
 		// Progress guard (the caller contract requires one so ENOBUFS cannot
-		// spin forever). A DPB that fills a few NALs before end-of-stream can
-		// reject the next NAL with ENOBUFS while get_frame drains nothing - the
-		// pending frames only come out once the flush sentinel (buf >= end) sets
-		// `flushing`. The normal loop reaches that only when nal hits end0, which
-		// it never does here (nal is pinned on the un-accepted NAL), so force the
-		// sentinel after a stall. Inert on well-formed streams (every ENOBUFS
-		// there drains at least one frame, resetting the counter).
+		// spin forever). A DPB that fills with unfinished pictures before
+		// end-of-stream rejects every further NAL with ENOBUFS while get_frame
+		// drains nothing: those held pictures only come out once `flushing` lets
+		// get_frame's valve emit them. Feeding the flush sentinel (buf >= end) is
+		// not enough on its own - decode_NAL returns ENOBUFS at its fullness gate
+		// before reaching the buf>=end path that would set `flushing`, so the
+		// sentinel never arms it. Set `flushing` here, then force the sentinel
+		// (nal = end0). Inert on well-formed streams (every ENOBUFS there drains
+		// at least one frame, resetting the counter).
 		stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
 		if (stuck > 64) { d->flushing = 1; nal = end0; stuck = 0; }
 	} while (keep_decoding(res));
@@ -605,6 +607,9 @@ static int decode_stream_input(int fd, const char *name, const uint8_t *end1, in
 				stream_consume(&s, consume);
 			current = 0;
 		}
+		// Same forced end-of-stream drain as decode_mapped_input: the buf>=end
+		// sentinel alone cannot arm `flushing` (decode_NAL returns ENOBUFS at its
+		// fullness gate first), so set it here before feeding the sentinel.
 		stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
 		if (stuck > 64) {
 			d->flushing = 1;

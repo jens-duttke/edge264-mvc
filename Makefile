@@ -402,6 +402,7 @@ else
 	$(Q)./edge264_check$(EXE)
 	$(Q)$(MAKE) --no-print-directory check-conformance
 	$(Q)$(MAKE) --no-print-directory check-stream-input
+	$(Q)$(MAKE) --no-print-directory check-edge264-test-liveness
 endif
 
 edge264_check$(EXE): src/edge264_check.c edge264.h src/edge264_internal.h $(LIBNAME)
@@ -457,6 +458,14 @@ liveness_check$(EXE): tests/liveness_check.c edge264.h $(LIBNAME)
 check-stream-input: edge264_test$(EXE)
 ifneq ($(OS),wasm)
 	$(Q)$(PY) tests/stream_input_check.py --exe ./edge264_test$(EXE)
+endif
+
+# Exercise edge264_test's mapped and streamed progress guards on a DPB full of
+# unfinished pictures. A timeout turns a regressed ENOBUFS spin into a failure.
+.PHONY: check-edge264-test-liveness
+check-edge264-test-liveness: edge264_test$(EXE)
+ifneq ($(OS),wasm)
+	$(Q)$(PY) tests/edge264_test_liveness.py --exe ./edge264_test$(EXE)
 endif
 
 # Sanitizer regression over the crafted-SEI fixtures (tests/asan/). Build with a

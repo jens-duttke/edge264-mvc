@@ -16,6 +16,7 @@
 #include <time.h>
 #ifdef _WIN32
 	#include <processthreadsapi.h>
+	#include <profileapi.h> // QueryPerformanceCounter/Frequency for get_relative_time_us
 	#define ssize_t ptrdiff_t
 #else
 	#include <unistd.h>
@@ -1216,10 +1217,10 @@ static always_inline unsigned depended_frames(Edge264Decoder *dec) {
 // relative time with microsecond precision
 static always_inline uint64_t get_relative_time_us() {
 	#ifdef _WIN32
-		uint64_t ticks, frequency;
+		LARGE_INTEGER ticks, frequency;
 		QueryPerformanceFrequency(&frequency);
 		QueryPerformanceCounter(&ticks);
-		return ticks * 1000000 / frequency; // could be optimized with mul+shift but not critical
+		return (uint64_t)ticks.QuadPart * 1000000 / (uint64_t)frequency.QuadPart; // could be optimized with mul+shift but not critical
 	#else
 		struct timespec tp;
 		clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &tp);

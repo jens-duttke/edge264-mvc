@@ -384,7 +384,7 @@ static int decode_mapped_input(const uint8_t *nal, const uint8_t *end0, const ui
 		// sentinel after a stall. Inert on well-formed streams (every ENOBUFS
 		// there drains at least one frame, resetting the counter).
 		stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
-		if (stuck > 64) { nal = end0; stuck = 0; }
+		if (stuck > 64) { d->flushing = 1; nal = end0; stuck = 0; }
 	} while (keep_decoding(res));
 	return finish_decode_result(res, end1);
 }
@@ -607,6 +607,7 @@ static int decode_stream_input(int fd, const char *name, const uint8_t *end1, in
 		}
 		stuck = (res == ENOBUFS && drained == 0) ? stuck + 1 : 0;
 		if (stuck > 64) {
+			d->flushing = 1;
 			nal = s.data;
 			end = s.data;
 			consume = 0;

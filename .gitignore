@@ -12,6 +12,7 @@
 !tests/*.264
 !tests/gen_cabac_overread.py
 !tests/gen_cabac_orphan.py
+!tests/edge264_test_liveness.py
 !tests/gen_cabac_misalign.py
 !tests/gen_slice_first_mb_oob.py
 !tests/gen_mvc_smallres_stall.py

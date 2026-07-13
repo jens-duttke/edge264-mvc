@@ -16,8 +16,13 @@
 # CAVLC-only, so this writes its own minimal CABAC (I_PCM macroblocks: only a few
 # arithmetic bins per MB, samples are raw). The picture is 1x2 MBs (16x32).
 #
-# Usage: gen_cabac_orphan.py <out.264> [allcomplete] [N]
+# "allincomplete" leaves every picture unfinished, filling the DPB so a caller
+# must force an end-of-stream drain to make progress.
+# Usage: gen_cabac_orphan.py <out.264> [orphan|allcomplete|allincomplete] [N]
 import sys
+
+mode = sys.argv[2] if len(sys.argv) > 2 else 'orphan'
+N = int(sys.argv[3]) if len(sys.argv) > 3 else 24
 
 class BW:
     def __init__(self): self.bits = []
@@ -167,9 +172,6 @@ def gen_picture(idr, frame_num, poc, complete):
         rbsp += e.bytes()
     return nal(5 if idr else 1, 3 if idr else 0, rbsp)
 
-mode = sys.argv[2] if len(sys.argv) > 2 else 'orphan'
-N = int(sys.argv[3]) if len(sys.argv) > 3 else 24
-
 # SPS: High, 1x2 MBs (16x32), 4:2:0 8-bit, 12-bit POC, no scaling/VUI
 s = BW()
 s.u(8, 100); s.u(8, 0); s.u(8, 10)
@@ -182,7 +184,9 @@ s.ue(0)                                   # pic_width_in_mbs_minus1 = 0 (1 wide)
 s.ue(1)                                   # pic_height_in_map_units_minus1 = 1 (2 tall)
 s.u1(1)                                   # frame_mbs_only_flag
 s.u1(0)                                   # direct_8x8_inference_flag
-s.u1(0)                                   # frame_cropping_flag
+s.u1(mode == 'allincomplete')             # crop the uncoded lower MB from liveness output
+if mode == 'allincomplete':
+    s.ue(0); s.ue(0); s.ue(0); s.ue(8)   # left/right/top/bottom; 8 * 2 luma rows
 s.u1(1)                                   # vui_parameters_present_flag
 # VUI: everything off except bitstream_restriction, which sets
 # max_num_reorder_frames = 0 so every complete picture is output immediately
@@ -204,13 +208,13 @@ p.se(0); p.se(0); p.se(0); p.u1(0); p.u1(0); p.u1(0)
 p.trailing()
 pps = nal(8, 3, p.bytes())
 
-# IDR (POC 0, complete) establishes the stream; picture 1 is INCOMPLETE with the
-# next-lowest POC; the rest are complete with increasing POC and shift it out of
-# the 16-entry queue. In 'allcomplete' mode every picture is complete (proves the
-# 2-MB encoder + decodes cleanly with or without the fix).
+# In orphan mode the IDR establishes the stream, picture 1 is incomplete, and
+# the rest are complete with increasing POC so they shift it out of the output
+# queue. allcomplete proves the 2-MB encoder; allincomplete fills the DPB with
+# unfinished pictures so a caller has to force an end-of-stream drain.
 stream = bytearray(sps + pps)
 for k in range(N):
-    incomplete = (mode == 'orphan' and k == 1)
+    incomplete = mode == 'allincomplete' or (mode == 'orphan' and k == 1)
     stream += gen_picture(idr=(k == 0), frame_num=0, poc=k, complete=not incomplete)
 
 open(sys.argv[1], 'wb').write(stream)

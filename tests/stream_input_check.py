@@ -14,6 +14,9 @@ from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 
 SMALL_CHUNKS = (1, 2, 1, 3, 5, 8, 13, 2, 4, 7, 11, 17)
+# A filler NAL larger than one 64 KiB read chunk, to force the buffer-growth path.
+LARGE_FILLER_BYTES = 200 * 1024
+LARGE_FIFO_CHUNKS = (65536, 1, 2, 3, 4096, 7, 40009)
 
 
 class Fixture(NamedTuple):
@@ -44,6 +47,7 @@ FIXTURES = (
     ),
 )
 EMPTY_NAL_FIXTURE = FIXTURES[0]
+LARGE_NAL_FIXTURE = FIXTURES[1]
 MODES = (("-o", 16), ("-O", 32))
 THREADS = (((), "auto"), (("-s",), "single"))
 
@@ -223,6 +227,81 @@ def check_empty_nal(exe: Path, fixture: Path, timeout: float) -> None:
         )
 
 
+def first_vcl_offset(data: bytes) -> int:
+    # Offset of the first VCL or prefix NAL start code (types 1, 5, 14, 20), i.e.
+    # just past the leading parameter sets - a legal spot to splice filler in.
+    i = 0
+    while i + 4 <= len(data):
+        if data[i] == 0 and data[i + 1] == 0 and data[i + 2] == 1:
+            if (data[i + 3] & 0x1F) in (1, 5, 14, 20):
+                return i
+            i += 3
+        else:
+            i += 1
+    raise RuntimeError("fixture has no slice NAL")
+
+
+def with_large_filler(data: bytes) -> bytes:
+    # Splice in a filler-data NAL (type 12) larger than one read chunk. The decoder
+    # ignores filler (ignore_NAL), so the decoded frames are unchanged, but a single
+    # NAL above 64 KiB forces the stream reader to grow its buffer past the initial
+    # chunk - the path a real above-64 KiB keyframe hits and the small committed
+    # fixtures never reach. An all-0xFF payload cannot form a spurious start code.
+    filler = b"\x00\x00\x01\x0c" + b"\xff" * LARGE_FILLER_BYTES + b"\x80"
+    cut = first_vcl_offset(data)
+    return data[:cut] + filler + data[cut:]
+
+
+def check_large_nal(exe: Path, fixture_spec: Fixture, timeout: float, have_fifo: bool) -> None:
+    # Regular files take the memory-mapped fast path, so it is the oracle; stdin and
+    # FIFO take the incremental reader, which must grow its buffer to hold the
+    # oversized filler NAL and still match, byte for byte.
+    data = fixture_spec.path.resolve().read_bytes()
+    augmented = with_large_filler(data)
+    with tempfile.TemporaryDirectory(prefix="edge264-large-nal-") as directory:
+        augmented_path = Path(directory) / fixture_spec.path.name
+        augmented_path.write_bytes(augmented)
+        for thread_args, thread_name in THREADS:
+            label = f"{fixture_spec.path.name} large-NAL -O {thread_name}"
+            baseline = run_capture(
+                edge264_argv(exe, str(fixture_spec.path.resolve()), "-O", thread_args),
+                None,
+                timeout,
+                f"{label} baseline",
+            )
+            regular = run_capture(
+                edge264_argv(exe, str(augmented_path), "-O", thread_args),
+                None,
+                timeout,
+                f"{label} regular",
+            )
+            inspect_y4m(regular, 32, fixture_spec.frames, f"{label} regular")
+            if regular != baseline:
+                raise RuntimeError(f"{label} filler NAL changed the decoded output")
+            stdin = run_capture(
+                edge264_argv(exe, "-", "-O", thread_args),
+                augmented,
+                timeout,
+                f"{label} stdin",
+            )
+            if stdin != regular:
+                raise RuntimeError(f"{label} stdin differs from regular-file output")
+            if have_fifo:
+                fifo = run_fifo(
+                    exe,
+                    augmented_path,
+                    "-O",
+                    thread_args,
+                    LARGE_FIFO_CHUNKS,
+                    0,
+                    timeout,
+                    f"{label} FIFO",
+                )
+                if fifo != regular:
+                    raise RuntimeError(f"{label} FIFO differs from regular-file output")
+            print(f"PASS {label}: {len(regular)} bytes")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", default="./edge264_test", type=Path)
@@ -286,6 +365,7 @@ def main() -> int:
                 if fixture_spec.distinct_views and mode == "-O":
                     assert_distinct_views(regular, *dimensions, label)
                 print(f"PASS {label}: {len(regular)} bytes")
+    check_large_nal(exe, LARGE_NAL_FIXTURE, args.timeout, have_fifo)
     if not have_fifo:
         print("SKIP FIFO input: os.mkfifo is unavailable")
     return 0

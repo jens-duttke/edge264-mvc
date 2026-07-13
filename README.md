@@ -131,6 +131,8 @@ ffmpeg -i vid.mp4 -vcodec copy -bsf h264_mp4toannexb -an vid.264 # optional, con
 
 Real 3D Blu-rays carry per-access-unit unspecified NALs (type 24) that return `ENOTSUP`; add `-k` so the decode runs to the end instead of stopping at the first one (`-ok` / `-Ok`). The frame rate is taken from the stream's VUI and can be overridden downstream (`ffmpeg -r ...`).
 
+The input path can also be `-` to read an Annex B stream from standard input, so a demuxer can pipe straight into the decoder without a temporary file (`demux ... | edge264_test - -O | ffmpeg -i - ...`); on POSIX a named pipe (FIFO) path works the same way. Stream input is buffered one NAL unit at a time (capped at 64 MiB), while regular files stay on the memory-mapped fast path.
+
 Here is a complete example that opens an input file in Annex B byte stream format from the command line, and dumps its decoded frames in planar YUV order to standard output. See [edge264_test.c](src/edge264_test.c) for a more complete example which can also display frames.
 
 ```c
@@ -284,6 +286,7 @@ It covers a synthetic suite (tiny generated bitstreams with pixel-exact intra/in
 - **Conformance** ([`tests/conformance`](tests/conformance)) - decodes a curated subset of real JVT conformance bitstreams and compares each stream's per-view output to a committed hash anchored to the official ITU reference YUVs, together with the MVC structural guarantees (POC pairing, display order). It ships the expected hashes, so a fresh clone runs it fully offline.
 - **Liveness** ([`tests/liveness`](tests/liveness)) - decodes damaged real-world streams (truncated captures, dropped or corrupt NALs) behind a progress guard, asserting the decoder always makes forward progress instead of stalling or deadlocking.
 - **Memory safety** ([`tests/asan`](tests/asan)) - decodes crafted-SEI fixtures under AddressSanitizer (`make SANITIZE=address check-asan`).
+- **Stream input** ([`tests/stream_input_check.py`](tests/stream_input_check.py)) - decodes small MVC fixtures from a regular file, standard input (`-`), and a POSIX FIFO, asserting byte-identical Y4M output across all three (and across single- and multi-threaded decoding), so the incremental stream reader stays in lockstep with the memory-mapped fast path. A large filler NAL exercises the buffer-growth path that a real above-64 KiB keyframe hits.
 - **Multithreading** - every conformance and liveness fixture is also decoded with background worker threads and asserted bit-exact to the single-threaded output.
 
 On the full set of AVCv1, FRExt and MVC [conformance bitstreams](https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/) (231 streams), edge264 decodes 113 bit-exact against the ITU reference YUVs, 114 use yet-unsupported features, and 4 fail - the same result as stock edge264, with multithreaded output bit-exact to single-thread on every supported stream.

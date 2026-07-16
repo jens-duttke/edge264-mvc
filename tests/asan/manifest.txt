@@ -3,5 +3,6 @@
 sei_payloadtype_oob
 sei_payloadsize_dos
 sei_recovery_point clean
+sei_short_payload clean
 reflist_oob
 slice_first_mb_oob

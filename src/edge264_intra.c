@@ -659,7 +659,6 @@ static cold noinline void decode_intra16x16(uint8_t * restrict p, size_t stride,
 	
 	case I16x16_P_8: {
 		// The optimal codes differ wildly between ISAs, but this one is not too critical.
-		size_t nstride = -stride;
 		i8x16 t = loadu64x2(pT - 1, pT + 8);
 		i8x16 l = ldleftP16(p, stride, t);
 		i8x16 m = {8, 7, 6, 5, 4, 3, 2, 1, 1, 2, 3, 4, 5, 6, 7, 8};

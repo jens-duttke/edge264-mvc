@@ -1375,10 +1375,16 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 			int PicOrderCnt = 0;
 			if (sps->pic_order_cnt_type == 2) {
 				PicOrderCnt = FrameNum * 2;
-			} else if (sps->num_ref_frames_in_pic_order_cnt_cycle > 0) {
-				PicOrderCnt = (FrameNum / sps->num_ref_frames_in_pic_order_cnt_cycle) *
-					sps->PicOrderCntDeltas[sps->num_ref_frames_in_pic_order_cnt_cycle] +
-					sps->PicOrderCntDeltas[FrameNum % sps->num_ref_frames_in_pic_order_cnt_cycle];
+			} else if (sps->num_ref_frames_in_pic_order_cnt_cycle > 0 && FrameNum > 0) {
+				// Mirror the correct main-path derivation (8.2.1.2): absFrameNum
+				// equals FrameNum for these inferred-reference gap frames, so the
+				// cycle multiplier is PicOrderCntDeltas[cycle-1] (the full-cycle
+				// sum, the only element written) and both the quotient and the
+				// remainder use FrameNum-1. Indexing [cycle] read one past the
+				// int16_t[255] array (cycle up to 255) into the next SPS field.
+				PicOrderCnt = (int)((FrameNum - 1) / sps->num_ref_frames_in_pic_order_cnt_cycle) *
+					sps->PicOrderCntDeltas[sps->num_ref_frames_in_pic_order_cnt_cycle - 1] +
+					sps->PicOrderCntDeltas[(FrameNum - 1) % sps->num_ref_frames_in_pic_order_cnt_cycle];
 			}
 			dec->FieldOrderCnt[0][i] = dec->FieldOrderCnt[1][i] = PicOrderCnt;
 			dec->remaining_mbs[i] = 0;

@@ -135,7 +135,10 @@ const uint8_t *edge264_find_start_code(const uint8_t *buf, const uint8_t *end, i
 
 static void internal_alloc(void **samples, unsigned samples_size, void **mbs, unsigned mbs_size, int errno_on_fail, void *alloc_arg) {
 	*samples = aligned_malloc(16, samples_size + mbs_size);
-	*mbs = *samples + samples_size;
+	// reason: guard the failed allocation - `NULL + samples_size` is undefined
+	// pointer arithmetic (6.5.6). The caller (alloc_frame) already treats a NULL
+	// samples pointer as failure, so returning NULL for *mbs keeps that contract.
+	*mbs = *samples ? *samples + samples_size : NULL;
 }
 
 static void internal_free(void *samples, void *mbs, void *alloc_arg) {

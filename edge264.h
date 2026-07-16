@@ -45,7 +45,7 @@ typedef void (*Edge264FreeCb)(void *samples, void *mbs, void *alloc_arg);
 typedef struct Edge264Frame {
 	const uint8_t *samples[3]; // Y/Cb/Cr planes
 	const uint8_t *samples_mvc[3]; // second view
-	const uint8_t *mb_errors; // probabilities (0..100) for each macroblock to be erroneous, NULL if there are no errors, values are spaced by stride_mb in memory
+	const uint8_t *mb_errors; // reserved for a per-macroblock error-concealment plane (probabilities 0..100, one per macroblock, spaced by stride_mb); NOT YET IMPLEMENTED - always NULL on every frame. Do not branch on it expecting data; when it is wired up, stride_mb must be widened first (see below).
 	int8_t bit_depth_Y;
 	int8_t bit_depth_C;
 	int16_t width_Y;
@@ -54,7 +54,7 @@ typedef struct Edge264Frame {
 	int16_t height_C;
 	int16_t stride_Y;
 	int16_t stride_C;
-	int16_t stride_mb;
+	int16_t stride_mb; // reserved: intended row stride of the mb_errors plane (unused while mb_errors is always NULL). NOTE: too narrow for the real byte stride - pic_width_in_mbs * sizeof(Edge264Macroblock) overflows int16_t at >=108 macroblocks wide (every 1080p/4K frame). Widen to int32_t (an ABI change) when the mb_errors plane is implemented.
 	int32_t FrameId;
 	int32_t FrameId_mvc; // second view
 	int32_t Poc;

@@ -2372,6 +2372,9 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264Decoder *dec, Edge264UnrefCb unr
 		format.width_Y = width - sps.frame_crop_offsets[3] - sps.frame_crop_offsets[1];
 		format.height_Y = height - sps.frame_crop_offsets[0] - sps.frame_crop_offsets[2];
 		format.stride_Y = (sps.BitDepth_Y == 8) ? width : width << 1;
+		// reason: mb_errors is not yet exported (always NULL), so this stride is
+		// currently unused. It truncates in int16_t at >=108 mbs wide (304 B/mb);
+		// widen stride_mb (an ABI change) together with populating mb_errors.
 		format.stride_mb = sps.pic_width_in_mbs * sizeof(Edge264Macroblock);
 		if (!(format.stride_Y & 2047)) // add an offset to stride if it is a multiple of 2048
 			format.stride_Y += (sps.BitDepth_Y == 8) ? 16 : 32;

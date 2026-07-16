@@ -84,7 +84,7 @@ static int parse_pic_timing(Edge264Decoder *dec) {
 
 
 static int parse_pan_scan_rect(Edge264Decoder *dec) {
-	int pan_scan_rect_id = get_ue32(&dec->gb, 4294967294);
+	unsigned pan_scan_rect_id = get_ue32(&dec->gb, 4294967294);
 	int pan_scan_rect_cancel_flag = get_u1(&dec->gb);
 	log_dec(dec, "    pan_scan_rect_id: %u\n"
 		"    pan_scan_rect_cancel_flag: %u\n",

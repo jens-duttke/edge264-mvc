@@ -33,7 +33,14 @@
 		return packs32((lo + 128) >> 8, (hi + 128) >> 8);
 	}
 #elif SIMD == CLANG
-	static inline i16x8 temporal_scale(i16x8 mvCol, int16_t DistScaleFactor) {return __builtin_convertvector((__builtin_convertvector(mvCol, i32x8) * DistScaleFactor + 128) >> 8, i16x8);}
+	static inline i16x8 temporal_scale(i16x8 mvCol, int16_t DistScaleFactor) {
+		// Narrow with packs32 (saturating), like the SSE/NEON/WASM backends;
+		// __builtin_convertvector truncates, so an extreme (mvCol*DSF+128)>>8 that
+		// exceeds int16 wrapped instead of clamping - a per-ISA decode divergence.
+		i32x4 lo = (cvtlo16s32(mvCol) * DistScaleFactor + 128) >> 8;
+		i32x4 hi = (cvthi16s32(mvCol) * DistScaleFactor + 128) >> 8;
+		return packs32(lo, hi);
+	}
 #endif
 static always_inline i16x8 mvs_near_zero(i16x8 mvCol, i32x4 zero) {
 	return (u32x4)(abs16(mvCol) >> 1) == zero;

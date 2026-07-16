@@ -193,7 +193,11 @@
 		for (int i = startIdx; i <= endIdx; i++)
 			log_mb(ctx, (i < endIdx) ? "%d," : "%d]}\n", ctx->c[ctx->scan[i]]);
 		
-		// trailing_ones_sign_flags+total_zeros+run_before consumed at most 31 bits, so we can delay refill here
+		// The post-level section (trailing_ones_sign_flags + total_zeros +
+		// run_before) can consume more than 31 bits across its multiple
+		// run_before reads; 31 is the old 32-bit-cache bound. Delaying the refill
+		// to here is safe because the SIZE_BIT == 64 cache absorbs the true
+		// worst case (a 32-bit build would need to re-check it).
 		return ctx->t.gb.lsb_cache ? 1 : refill(&ctx->t.gb, 1);
 	}
 

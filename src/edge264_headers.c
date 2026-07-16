@@ -823,8 +823,13 @@ static void parse_dec_ref_pic_marking(Edge264Decoder *dec, Edge264SeqParameterSe
 		}
 	}
 	
-	// 8.2.5.3 - Sliding window marking process
-	if (__builtin_popcount(dec->short_term_frames | dec->long_term_frames) >= sps->max_num_ref_frames) {
+	// 8.2.5.3 - Sliding window marking process. Guard on a short-term ref
+	// existing: 8.2.5.3 presumes numShortTerm > 0 at capacity, but a
+	// non-conformant stream that fills every slot with long-term refs (MMCO 6/3)
+	// leaves short_term_frames == 0, so the loop below would not run, `next`
+	// would stay 0, and the toggle would spuriously mark slot 0 short-term (and
+	// demote it out of long_term_frames). Inert whenever a short-term ref exists.
+	if (dec->short_term_frames && __builtin_popcount(dec->short_term_frames | dec->long_term_frames) >= sps->max_num_ref_frames) {
 		int best = INT_MAX;
 		int next = 0;
 		// iterate on short-term and non-existing frames

@@ -1168,6 +1168,16 @@ static void noinline decode_inter(Edge264Context *ctx, int i, int w, int h) {
 		}
 	} else if (i8x8 >= 4) { // explicit2
 		refIdx += 32;
+		// The else "halve both weights" arm targets the case where both weights
+		// are the max-denom default (2^7 = 128, unrepresentable in the signed
+		// int8 the blend packs them into). This (wX & w) != 128 test also routes a
+		// lone default 128 paired with a positive explicit weight to the
+		// full-precision arm, where pack_w stores 128 as a signed int8 that reads
+		// back as -128 -> wrong bipred blend. Reachable only at
+		// luma/chroma_log2_weight_denom == 7 with one ref defaulted and the other
+		// explicitly weighted (absent from the conformance set, WARNING untested);
+		// a bit-exact fix for a 128 paired with an odd weight needs a
+		// wider-precision blend (halving would round the odd weight).
 		if (__builtin_expect((ctx->t.explicit_weights[0][refIdxX] & ctx->t.explicit_weights[0][refIdx]) != 128, 1)) {
 			wod[0] = pack_w(ctx->t.explicit_weights[0][refIdxX], ctx->t.explicit_weights[0][refIdx]);
 			wod[1] = ((ctx->t.explicit_offsets[0][refIdxX] + ctx->t.explicit_offsets[0][refIdx] + 1) | 1) << ctx->t.luma_log2_weight_denom;

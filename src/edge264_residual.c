@@ -235,15 +235,20 @@ static void add_idct8x8(Edge264Context *ctx, int iYCbCr, uint8_t *dst0)
 			d7 = scale32(c[14], c[15], LS7, off, sh);
 		} else {
 			int sh = div - 6;
-			// FIXME use shift function for SSE
-			d0 = packs32(c[0], c[1]) * (LS0 << sh);
-			d1 = packs32(c[2], c[3]) * (LS1 << sh);
-			d2 = packs32(c[4], c[5]) * (LS2 << sh);
-			d3 = packs32(c[6], c[7]) * (LS3 << sh);
-			d4 = packs32(c[8], c[9]) * (LS4 << sh);
-			d5 = packs32(c[10], c[11]) * (LS5 << sh);
-			d6 = packs32(c[12], c[13]) * (LS6 << sh);
-			d7 = packs32(c[14], c[15]) * (LS7 << sh);
+			// Up-scaling dequant: widen LS to 32 bits before the shift and do the
+			// coefficient multiply at 32 bits, saturating once with packs32 (like
+			// scale32 and add_idct4x4). At qP 49-51 with a custom 8x8 scaling
+			// matrix, LS = weightScale8x8 * normAdjust8x8 reaches ~11475 and
+			// LS << 2 overflows the 16-bit lane, so the old 16-bit multiply used a
+			// sign-flipped operand.
+			d0 = packs32((i32x4)(cvtlo16u32((u16x8)LS0) << sh) * c[0], (i32x4)(cvthi16u32((u16x8)LS0) << sh) * c[1]);
+			d1 = packs32((i32x4)(cvtlo16u32((u16x8)LS1) << sh) * c[2], (i32x4)(cvthi16u32((u16x8)LS1) << sh) * c[3]);
+			d2 = packs32((i32x4)(cvtlo16u32((u16x8)LS2) << sh) * c[4], (i32x4)(cvthi16u32((u16x8)LS2) << sh) * c[5]);
+			d3 = packs32((i32x4)(cvtlo16u32((u16x8)LS3) << sh) * c[6], (i32x4)(cvthi16u32((u16x8)LS3) << sh) * c[7]);
+			d4 = packs32((i32x4)(cvtlo16u32((u16x8)LS4) << sh) * c[8], (i32x4)(cvthi16u32((u16x8)LS4) << sh) * c[9]);
+			d5 = packs32((i32x4)(cvtlo16u32((u16x8)LS5) << sh) * c[10], (i32x4)(cvthi16u32((u16x8)LS5) << sh) * c[11]);
+			d6 = packs32((i32x4)(cvtlo16u32((u16x8)LS6) << sh) * c[12], (i32x4)(cvthi16u32((u16x8)LS6) << sh) * c[13]);
+			d7 = packs32((i32x4)(cvtlo16u32((u16x8)LS7) << sh) * c[14], (i32x4)(cvthi16u32((u16x8)LS7) << sh) * c[15]);
 		}
 		c[0] = c[1] = c[2] = c[3] = c[4] = c[5] = c[6] = c[7] = c[8] = c[9] = c[10] = c[11] = c[12] = c[13] = c[14] = c[15] = (i8x16){};
 		

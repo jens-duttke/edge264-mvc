@@ -232,7 +232,7 @@ int main(int argc, char *argv[]) {
 > typedef struct Edge264Frame {
 > 	const uint8_t *samples[3]; // Y/Cb/Cr planes
 > 	const uint8_t *samples_mvc[3]; // second view
-> 	const uint8_t *mb_errors; // probabilities (0..100) for each macroblock to be erroneous, NULL if there are no errors, values are spaced by stride_mb in memory
+> 	const uint8_t *mb_errors; // reserved for a per-macroblock error-concealment plane; NOT YET IMPLEMENTED - always NULL on every frame
 > 	int8_t bit_depth_Y; // 8
 > 	int8_t bit_depth_C;
 > 	int16_t width_Y;

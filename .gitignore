@@ -24,6 +24,7 @@
 !tests/gen_mvc_baseless.py
 !tests/gen_mvc_ordering.py
 !tests/gen_mvc_unpaired_base_eos.py
+!tests/gen_mvc_orphan_tail.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

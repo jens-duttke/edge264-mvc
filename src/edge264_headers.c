@@ -1361,9 +1361,9 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		assert(non_existing + __builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) <= 32);
 		if (non_existing + __builtin_popcount(reference_frames | dec->to_get_frames | dec->output_frames) > 32)
 			return ENOBUFS; // exit here if we must wait for get_frame to consume and return enough frames
-		// wait until enough empty slots are undepended
+		// wait until enough empty slots are undepended and not written by in-flight tasks
 		unsigned unavail;
-		while (non_existing + __builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec)) > 32)
+		while (non_existing + __builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) > 32)
 			pthread_cond_wait(&dec->task_complete, &dec->lock);
 		// finally insert the last non-existing frames one by one
 		for (unsigned FrameNum = dec->FrameNum - non_existing; FrameNum < dec->FrameNum; FrameNum++) {
@@ -1402,9 +1402,14 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		unsigned reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames;
 		if (__builtin_popcount(reference_frames | dec->to_get_frames | dec->output_frames) == 32)
 			return ENOBUFS; // exit here if we must wait for get_frame to consume and return a frame slot
-		// wait until at least one empty slot is undepended (or returned in the meantime)
+		// wait until at least one empty slot is undepended and not written by an
+		// in-flight task (or returned in the meantime). inflight_frames matters
+		// when a frame leaves to_get_frames/output_frames while its decode tasks
+		// still run (e.g. get_frame's orphan-dependent valve on a base-less
+		// dependent tail): without it the slot is reallocated mid-decode and the
+		// stale tasks corrupt the new picture's remaining_mbs (see inflight_frames).
 		unsigned unavail;
-		while (__builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec)) >= 32)
+		while (__builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) >= 32)
 			pthread_cond_wait(&dec->task_complete, &dec->lock);
 		// MVC: prevent dependent view from aliasing the base view's DPB slot,
 		// since the dependent view references the base view's pixels for

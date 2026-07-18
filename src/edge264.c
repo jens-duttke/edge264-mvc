@@ -758,6 +758,19 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 			int dep = dec->get_frame_queue[1][i];
 			if (dep < 0)
 				continue;
+			// Never drop a dependent that is still being parsed (currPic) or
+			// still written by in-flight decode tasks: clearing its
+			// to_get_frames/output_frames bits frees its DPB slot, and the
+			// parser then reallocates it while the old picture's tasks still
+			// run - the new occupant shares mb_buffer/remaining_mbs with them,
+			// the stale subtractions corrupt the counter, the frame never
+			// finalizes, and once every task slot waits on it the parser
+			// deadlocks (hard MT hang on the base-less dependent tail of a
+			// trimmed real 3D-BD stream). Defer the drop: a genuinely orphaned
+			// dependent completes shortly and is dropped on a later call, so
+			// the liveness purpose of this valve is preserved.
+			if (dep == dec->currPic || (inflight & 1u << dep))
+				continue;
 			int32_t base_fn = dec->FrameNums[dep], base_poc = dec->FieldOrderCnt[0][dep];
 			int has_base = 0;
 			for (unsigned o = live_bases; o; o &= o - 1) {

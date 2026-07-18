@@ -1214,6 +1214,23 @@ static always_inline unsigned depended_frames(Edge264Decoder *dec) {
 	u32x4 c = b | (u32x4)shr128(b, 4);
 	return c[0];
 }
+// Frames still being written by an in-flight decode task: the target picture
+// (taskPics) of every busy task whose frame has not completed. These slots must
+// never be reallocated - the new occupant would share mb_buffer/remaining_mbs
+// with the previous picture's still-running tasks, whose atomic subtractions
+// then corrupt the counter so the frame never finalizes and the task pool
+// deadlocks. depended_frames only covers frames a task READS (its RefPicList),
+// not the one it writes, so it does not protect against this. Completed frames
+// (next_deblock_addr == INT_MAX) are excluded: a worker's completion store is
+// its last write to the frame, so the window between it and the busy-bit clear
+// (taken under the lock after the benchmark log) is benign and excluding it
+// avoids stalling the parser on every frame completion.
+static always_inline unsigned inflight_frames(Edge264Decoder *dec) {
+	unsigned inflight = 0;
+	for (unsigned b = dec->busy_tasks; b; b &= b - 1)
+		inflight |= 1u << dec->taskPics[__builtin_ctz(b)];
+	return inflight & ~ready_frames(dec);
+}
 // relative time with microsecond precision
 static always_inline uint64_t get_relative_time_us() {
 	#ifdef _WIN32

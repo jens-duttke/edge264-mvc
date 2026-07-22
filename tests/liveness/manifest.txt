@@ -157,3 +157,17 @@ mvc_gop16_dpb_cavlc 32
 # pairs; every tail dependent is dropped (no base to pair with), like ffmpeg.
 # Regression (orphan-drop guard or allocator in-flight guard) => deadlock/crash (MT).
 mvc_orphan_dep_tail 4
+
+# incomplete_ref_dependency: a 17-MB reference IDR whose only slice ends after
+# one MB, followed by 17 one-MB P slices that all reference it. The incomplete
+# IDR has no task left that can finalize it; under multithreading the first 16 P
+# tasks fill the fixed pool, all remain pending on that IDR, and the parser
+# blocks reserving the 17th while every worker sleeps. Generated with width 17
+# by tests/gen_incomplete_ref_dependency.py. Regression => decode_NAL deadlock.
+incomplete_ref_dependency 2
+
+# incomplete_ref_dependency_eos: the same permanent dependency with only ten P
+# tasks. The pool does not saturate, so the deadlock surfaces in EOS/flush while
+# waiting for busy_tasks to drain. Generated with width 10. Regression => flush
+# deadlock (the synchronous path's existing no-ready-task safety net passes).
+incomplete_ref_dependency_eos 2

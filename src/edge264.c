@@ -805,7 +805,7 @@ int edge264_get_frame(Edge264Decoder *dec, Edge264Frame *out, int borrow) {
 		int q1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
 		int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
 		if (q0 + q1 + bumpable > 16)
-			pthread_cond_wait(&dec->task_complete, &dec->lock);
+			progress_or_wait(dec);
 	}
 	if (dec->n_threads)
 		pthread_mutex_unlock(&dec->lock);

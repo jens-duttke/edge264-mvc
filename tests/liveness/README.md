@@ -182,3 +182,22 @@ multithreaded (`EDGE264_THREADS=8` and `-1`), where these deadlocks surface.
   base to pair with), like ffmpeg, and the decoder terminates. Regresses either guard
   (edge264.c edge264_get_frame orphan valve, edge264_headers.c
   parse_slice_layer_without_partitioning slot allocation) => deadlock or crash (multithreaded).
+
+- incomplete_ref_dependency.264 and incomplete_ref_dependency_eos.264: 177-byte and
+  114-byte two-picture CAVLC streams generated through:
+
+      python3 tests/gen_incomplete_ref_dependency.py /tmp/incomplete.yaml 17
+      python3 tests/gen_avc.py /tmp/incomplete.yaml tests/liveness/incomplete_ref_dependency.264
+
+  (use width 10 and the `_eos` output name for the second fixture). Their reference IDR ends
+  cleanly after one macroblock, leaving `remaining_mbs > 0` after its only task exits. Every
+  slice of the following picture references that incomplete IDR. With width 17, the first 16
+  P tasks fill the fixed task pool and the parser blocks reserving the 17th. With width 10,
+  EOS/flush waits on ten permanently pending tasks before the pool can saturate. In both cases
+  every worker sleeps on `task_ready`, and no task targets the IDR any longer. The quiescent
+  scheduler valve deterministically conceals only dependency slots with no possible writer,
+  recomputes `ready_tasks`, and lets both pictures drain. Pre-fix the forked liveness harness
+  reports a hard deadlock after 15 seconds; post-fix both fixtures deliver 2 frames in
+  single-thread, 8-thread, and auto-thread modes. These minimize the scheduler/DPB condition
+  from a long MVC decode where an asynchronous slice error orphaned a base-view reference.
+  Regresses `progress_or_wait` => hard MT deadlock.

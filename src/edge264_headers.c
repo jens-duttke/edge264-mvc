@@ -121,12 +121,15 @@ static int bump_frame(Edge264Decoder *dec, int non_base_view, unsigned ignored) 
 	return 1;
 }
 
+static void conceal_frame(Edge264Decoder *dec, int id);
+static void progress_or_wait(Edge264Decoder *dec);
+
 static int bump_all_frames(Edge264Decoder *dec) {
 	if (dec->currPic >= 0)
 		unset_currPic(dec);
 	while (bump_frame(dec, 0, 0) | bump_frame(dec, 1, 0));
 	while (dec->busy_tasks)
-		pthread_cond_wait(&dec->task_complete, &dec->lock);
+		progress_or_wait(dec);
 	// Forward progress on a flush drain: an errored picture that never finalized
 	// (its slice returned EBADMSG, so next_deblock_addr != INT_MAX) was bumped into
 	// the 16-entry output queue but later shifted out by other bumps without being
@@ -145,7 +148,8 @@ static int bump_all_frames(Edge264Decoder *dec) {
 	}
 	for (unsigned o = dec->to_get_frames & ~queued; o; o &= o - 1) {
 		int i = __builtin_ctz(o);
-		__atomic_store_n(&dec->next_deblock_addr[i], INT_MAX, __ATOMIC_RELEASE);
+		if (__atomic_load_n(&dec->next_deblock_addr[i], __ATOMIC_ACQUIRE) != INT_MAX)
+			conceal_frame(dec, i);
 		int v = dec->non_base_frames >> i & 1;
 		for (int j = 0; j < 16; j++) {
 			if (dec->get_frame_queue[v][j] < 0) {
@@ -213,7 +217,7 @@ static void flush_frames(Edge264Decoder *dec) {
 	// FIXME interrupt all threads then wait until they are back to wait
 	assert(!(dec->n_threads == 0 && dec->busy_tasks));
 	while (dec->busy_tasks)
-		pthread_cond_wait(&dec->task_complete, &dec->lock);
+		progress_or_wait(dec);
 }
 
 static int alloc_frame(Edge264Decoder *dec, int id, int errno_on_fail) {
@@ -1140,6 +1144,67 @@ static void initialize_task(Edge264Decoder *dec, Edge264SeqParameterSet *sps, Ed
 
 
 
+// Replace an abandoned damaged picture with deterministic neutral samples and
+// macroblock metadata before publishing it as complete. The caller holds lock,
+// and only selects slots with no in-flight task, so no worker can race these
+// writes. The release store publishes the concealed buffers to dependent tasks.
+static void conceal_frame(Edge264Decoder *dec, int id) {
+	assert(dec->samples_buffers[id] && dec->mb_buffers[id]);
+	memset(dec->samples_buffers[id], 0, dec->plane_size_Y + dec->plane_size_C + 16);
+	int width = dec->sps.pic_width_in_mbs;
+	int height = dec->sps.pic_height_in_mbs;
+	int mbs = (width + 1) * height - 1;
+	int8_t recovery_bits = ((dec->frame_flip_bits >> id) & 1) + 2;
+	Edge264Macroblock *m = dec->mb_buffers[id];
+	for (int y = 0; y < height; y++) {
+		int row = y * (width + 1);
+		for (int x = 0; x < width; x++) {
+			m[row + x] = unavail_mb;
+			m[row + x].error_probability = 100;
+			m[row + x].recovery_bits = recovery_bits;
+		}
+		if (row + width < mbs)
+			m[row + width] = unavail_mb;
+	}
+	__atomic_store_n(&dec->remaining_mbs[id], 0, __ATOMIC_RELEASE);
+	__atomic_store_n(&dec->next_deblock_addr[id], INT_MAX, __ATOMIC_RELEASE);
+}
+
+// Break a task-completion wait on a reference picture that can no longer
+// complete. A damaged slice may leave remaining_mbs positive after its last
+// task exits; later tasks then wait on that frame while every worker sleeps.
+// If every busy task is pending and none is ready, an unresolved dependency
+// with no task targeting its slot has no possible writer. Conceal only those
+// terminal dependencies, recompute readiness, and wake the workers. Conformant
+// streams never enter this path: an incomplete dependency retains an in-flight
+// writer until it reaches INT_MAX.
+static int release_terminal_task_dependencies(Edge264Decoder *dec) {
+	if (dec->ready_tasks || dec->pending_tasks != dec->busy_tasks)
+		return 0;
+	unsigned terminal = depended_frames(dec) & ~ready_frames(dec) & ~inflight_frames(dec);
+	if (dec->currPic >= 0)
+		terminal &= ~(1u << dec->currPic);
+	for (unsigned b = terminal; b; b &= b - 1)
+		conceal_frame(dec, __builtin_ctz(b));
+	if (terminal) {
+		dec->ready_tasks = ready_tasks(dec);
+		if (dec->ready_tasks && dec->n_threads)
+			pthread_cond_broadcast(&dec->task_ready);
+	}
+	return terminal != 0;
+}
+
+// All task_complete waits assume that some worker can eventually signal. Check
+// for the quiescent abandoned-reference state first; if concealment made a task
+// runnable, let the caller re-evaluate its wait predicate without sleeping.
+static void progress_or_wait(Edge264Decoder *dec) {
+	if (release_terminal_task_dependencies(dec) && dec->ready_tasks)
+		return;
+	pthread_cond_wait(&dec->task_complete, &dec->lock);
+}
+
+
+
 /**
  * This function matches slice_header() in 7.3.3, which it parses while updating
  * the DPB and initialising slice data for further decoding.
@@ -1153,7 +1218,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 	// find and reserve an empty task to fill
 	unsigned avail_tasks;
 	while (!(avail_tasks = 0xffff & ~dec->busy_tasks))
-		pthread_cond_wait(&dec->task_complete, &dec->lock);
+		progress_or_wait(dec);
 	Edge264Task *t = dec->tasks + __builtin_ctz(avail_tasks);
 	t->unref_cb = unref_cb;
 	t->unref_arg = unref_arg;
@@ -1364,7 +1429,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		// wait until enough empty slots are undepended and not written by in-flight tasks
 		unsigned unavail;
 		while (non_existing + __builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) > 32)
-			pthread_cond_wait(&dec->task_complete, &dec->lock);
+			progress_or_wait(dec);
 		// finally insert the last non-existing frames one by one
 		for (unsigned FrameNum = dec->FrameNum - non_existing; FrameNum < dec->FrameNum; FrameNum++) {
 			int i = __builtin_ctz(~unavail);
@@ -1410,7 +1475,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		// stale tasks corrupt the new picture's remaining_mbs (see inflight_frames).
 		unsigned unavail;
 		while (__builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) >= 32)
-			pthread_cond_wait(&dec->task_complete, &dec->lock);
+			progress_or_wait(dec);
 		// MVC: prevent dependent view from aliasing the base view's DPB slot,
 		// since the dependent view references the base view's pixels for
 		// inter-view prediction and would corrupt them by overwriting.
@@ -1556,15 +1621,18 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		"  macroblocks_cabac:\n" : "  macroblocks_cavlc:\n", 0);
 	if (dec->n_threads) {
 		pthread_cond_signal(&dec->task_ready);
-	} else if (!dec->ready_tasks) {
-		// Single-threaded safety net: ready_tasks can be 0 when
-		// task_dependencies includes the current frame's own slot in a
-		// transitional state. In multithreaded mode the worker recalculates
-		// ready_tasks after completing each task, but in single-threaded
-		// mode this path is the only chance to run the task.
-		dec->ready_tasks |= 1 << task_id;
-		dec->worker_loop(dec);
 	} else {
+		if (!dec->ready_tasks) {
+			// Keep damaged-stream concealment deterministic across threading
+			// modes. A terminal incomplete dependency has no writer here either;
+			// conceal it before falling back to the historical force-run valve.
+			release_terminal_task_dependencies(dec);
+			if (!dec->ready_tasks) {
+				// ready_tasks can also be 0 when task_dependencies includes the
+				// current frame's own slot in a transitional state.
+				dec->ready_tasks |= 1 << task_id;
+			}
+		}
 		dec->worker_loop(dec);
 	}
 	return ret;

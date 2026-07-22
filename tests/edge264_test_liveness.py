@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that edge264_test's forced flush breaks a zero-progress stall."""
+"""Check edge264_test liveness and deterministic damaged-frame concealment."""
 
 import argparse
 import re
@@ -87,6 +87,60 @@ def run_stdin(
         )
 
 
+def run_dump(exe: Path, fixture: Path, mode: str, timeout: float) -> bytes:
+    label = f"{fixture.name} {mode} dump"
+    try:
+        completed = subprocess.run(
+            [str(exe), str(fixture), mode, "-o", "-k"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{label} timed out after {timeout:g}s") from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"{label} exited {completed.returncode}\n"
+            f"stderr:\n{completed.stderr.decode(errors='replace')}"
+        )
+    messages = [line for line in ANSI.sub(b"", completed.stderr).splitlines() if line]
+    if not messages or b"1 PASS, 0 UNSUPPORTED, 0 FAIL" not in messages[-1]:
+        raise RuntimeError(
+            f"{label} did not finish as a passing decode\n"
+            f"stderr:\n{completed.stderr.decode(errors='replace')}"
+        )
+    return completed.stdout
+
+
+def assert_two_y4m_frames(label: str, output: bytes) -> None:
+    header, separator, payload = output.partition(b"\n")
+    match = re.search(rb"(?:^| )W(\d+) H(\d+)(?: |$)", header)
+    if not separator or not match or b"C420" not in header:
+        raise RuntimeError(f"{label} did not produce a supported Y4M stream")
+    width, height = map(int, match.groups())
+    frame_bytes = width * height * 3 // 2
+    record_bytes = len(b"FRAME\n") + frame_bytes
+    if len(payload) != record_bytes * 2:
+        raise RuntimeError(
+            f"{label} produced {len(payload)} frame bytes, expected {record_bytes * 2}"
+        )
+    for offset in (0, record_bytes):
+        if payload[offset : offset + len(b"FRAME\n")] != b"FRAME\n":
+            raise RuntimeError(f"{label} has a malformed Y4M frame marker")
+
+
+def check_dependency_parity(exe: Path, fixture: Path, timeout: float) -> None:
+    single = run_dump(exe, fixture, "-s", timeout)
+    multi = run_dump(exe, fixture, "-m", timeout)
+    assert_two_y4m_frames(f"{fixture.name} single-thread", single)
+    assert_two_y4m_frames(f"{fixture.name} multi-thread", multi)
+    if multi != single:
+        raise RuntimeError(
+            f"{fixture.name} multi-thread concealment differs from single-thread output"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", default="./edge264_test", type=Path)
@@ -109,6 +163,14 @@ def main() -> int:
             print(f"PASS {args.fixture.name} {mode} regular")
             run_stdin(exe, fixture, frame, mode, args.timeout)
             print(f"PASS {args.fixture.name} {mode} stdin")
+    liveness_dir = Path(__file__).resolve().parent / "liveness"
+    for name in (
+        "incomplete_ref_dependency.264",
+        "incomplete_ref_dependency_eos.264",
+    ):
+        dependency_fixture = liveness_dir / name
+        check_dependency_parity(exe, dependency_fixture, args.timeout)
+        print(f"PASS {name} deterministic concealment")
     return 0
 
 

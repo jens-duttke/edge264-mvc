@@ -1,0 +1,22 @@
+# Generated files - suppress their diffs so reviews are not drowned in machine
+# output. They stay versioned and mergeable; only `git diff` / `git log -p`
+# reports them as "Binary files differ". `linguist-generated` collapses them in
+# GitHub pull requests as well.
+
+# matplotlib output, rewritten in full by .github/workflows/benchmarks.yml
+README-benchmark.svg -diff linguist-generated
+
+# fixture sources emitted by their tests/gen_*.py generators (the hand-authored
+# .yaml fixtures next to them are deliberately left diffable)
+tests/conformance/mvc-synthetic/mvc_same_poc_pairing.yaml -diff linguist-generated
+tests/conformance/mvc-synthetic/mvc_dependent_frame_num_gap.yaml -diff linguist-generated
+tests/conformance/mvc-synthetic/mvc_display_ordering.yaml -diff linguist-generated
+tests/conformance/mvc-synthetic/mvc_interview_reflist.yaml -diff linguist-generated
+tests/liveness/mvc_smallres_dpb_stall.yaml -diff linguist-generated
+tests/liveness/mvc_baseless_dependent.yaml -diff linguist-generated
+tests/liveness/mvc_orphan_dependent.yaml -diff linguist-generated
+
+# Bitstream fixtures. Git already auto-detects every committed one as binary
+# (all carry NUL bytes in their first 8000), this only makes it explicit and
+# immune to a contributor's core.autocrlf.
+*.264 binary

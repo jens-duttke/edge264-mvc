@@ -52,6 +52,16 @@ MODES = (("-o", 16), ("-O", 32))
 THREADS = (((), "auto"), (("-s",), "single"))
 
 
+def assert_no_corrupt_nal_skipped(label: str, stderr: bytes) -> None:
+    # -k also skips corrupt NALs (EBADMSG) and still exits 0. These fixtures are
+    # valid streams, so a skip here is a decoder regression, not stream damage.
+    if b"skipped corrupt NAL unit" in stderr:
+        raise RuntimeError(
+            f"{label} skipped a corrupt NAL unit on a valid stream\n"
+            f"stderr:\n{stderr.decode(errors='replace')}"
+        )
+
+
 def run_capture(
     argv: Sequence[str],
     stdin: Optional[bytes],
@@ -74,6 +84,7 @@ def run_capture(
             f"{label} exited {completed.returncode}\n"
             f"stderr:\n{completed.stderr.decode(errors='replace')}"
         )
+    assert_no_corrupt_nal_skipped(label, completed.stderr)
     return completed.stdout
 
 
@@ -201,6 +212,7 @@ def run_fifo(
             )
         if writer_errors:
             raise RuntimeError(f"{label} FIFO writer failed: {writer_errors[0]!r}")
+        assert_no_corrupt_nal_skipped(label, stderr)
         return stdout
 
 

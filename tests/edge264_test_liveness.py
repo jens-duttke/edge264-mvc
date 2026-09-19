@@ -215,9 +215,13 @@ def main() -> int:
         dependency_fixture = liveness_dir / name
         check_dependency_parity(exe, dependency_fixture, args.timeout)
         print(f"PASS {name} deterministic concealment")
-    corrupt_fixture = liveness_dir / "mvc_corrupt_dep_slice.264"
-    check_corrupt_dependent_slice(exe, corrupt_fixture, args.timeout)
-    print(f"PASS {corrupt_fixture.name} corrupt dependent slice skipped and concealed")
+    for name in (
+        "mvc_corrupt_dep_slice.264",
+        "mvc_corrupt_dep_idr_pic_id.264",
+    ):
+        corrupt_fixture = liveness_dir / name
+        check_corrupt_dependent_slice(exe, corrupt_fixture, args.timeout)
+        print(f"PASS {name} corrupt dependent slice skipped and concealed")
     return 0
 
 

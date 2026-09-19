@@ -15,6 +15,7 @@ tests/conformance/mvc-synthetic/mvc_interview_reflist.yaml -diff linguist-genera
 tests/liveness/mvc_smallres_dpb_stall.yaml -diff linguist-generated
 tests/liveness/mvc_baseless_dependent.yaml -diff linguist-generated
 tests/liveness/mvc_orphan_dependent.yaml -diff linguist-generated
+tests/liveness/mvc_corrupt_dep_idr_pic_id.yaml -diff linguist-generated
 tests/liveness/mvc_corrupt_dep_slice.yaml -diff linguist-generated
 
 # Bitstream fixtures. Git already auto-detects every committed one as binary

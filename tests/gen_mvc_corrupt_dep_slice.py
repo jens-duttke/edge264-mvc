@@ -16,20 +16,31 @@
 # state, its picture is concealed from the base view, and all BODY stereo pairs
 # are delivered, identically in single- and multi-threaded decoding.
 #
-# Usage: gen_mvc_corrupt_dep_slice.py <out.yaml>
+# With "idr_pic_id" the stream instead restarts with an IDR access unit every
+# IDR_EVERY AUs, and the damaged slice belongs to a dependent IDR picture: its
+# frame_num and pic_order_cnt stay intact and only idr_pic_id is garbage. The
+# slice is intra, so the frame_num test cannot see it; the decoder used to open
+# a second dependent picture with the (FrameNum, POC) of the first, which never
+# paired with a base, and jammed the same way.
+#
+# Usage: gen_mvc_corrupt_dep_slice.py <out.yaml> [idr_pic_id]
 import sys
+
+IDR_DAMAGE = sys.argv[2:] == ["idr_pic_id"]
 
 W, H = 16, 16                 # picture size in macroblocks
 NMBS = W * H
 BODY = 40                     # stereo AUs (1 IDR + 39 P)
 BAD_AU = 8                    # AU whose second dependent slice is damaged
 BITS = 8
+IDR_EVERY = 8 if IDR_DAMAGE else 1 << 30   # BAD_AU is an IDR access unit
 
 def block(lines):
     return "\n".join(lines) + "\n\n"
 
 out = [block([
-    "--- # MVC stream with one corrupt dependent-view slice header (AU %d of %d)." % (BAD_AU, BODY),
+    "--- # MVC stream with one corrupt dependent-view %s (AU %d of %d)." % (
+        "idr_pic_id" if IDR_DAMAGE else "slice header", BAD_AU, BODY),
     "# See tests/gen_mvc_corrupt_dep_slice.py. Expected: %d stereo pairs." % BODY])]
 # SPS (base view): level 1.2 keeps the derived DPB small (MaxDpbMbs 891 / 256
 # MBs = 3 frames), so the tail reaches the immediate-output fullness path early.
@@ -101,31 +112,31 @@ def prefix_nal(idr):
         "  inter_view_flag: 1"])
 
 def base_slice(i):
-    if i == 0:
+    if i % IDR_EVERY == 0:
         return block([
             "- nal_ref_idc: 3", "  nal_unit_type: 5", "  first_mb_in_slice: 0",
             "  slice_type: 2", "  pic_parameter_set_id: 0",
-            "  frame_num: {bits: %d, absolute: 0}" % BITS, "  idr_pic_id: 0",
+            "  frame_num: {bits: %d, absolute: 0}" % BITS, "  idr_pic_id: %d" % (i // IDR_EVERY),
             "  pic_order_cnt: {type: 0, bits: %d, absolute: 0}" % BITS,
             "  no_output_of_prior_pics_flag: 0", "  long_term_reference_flag: 0",
             "  slice_qp_delta: 0"] + intra_mbs(NMBS))
     return block([
         "- nal_ref_idc: 2", "  nal_unit_type: 1", "  first_mb_in_slice: 0",
         "  slice_type: 0", "  pic_parameter_set_id: 0",
-        "  frame_num: {bits: %d, absolute: %d}" % (BITS, i),
-        "  pic_order_cnt: {type: 0, bits: %d, absolute: %d}" % (BITS, 2 * i),
+        "  frame_num: {bits: %d, absolute: %d}" % (BITS, i % IDR_EVERY),
+        "  pic_order_cnt: {type: 0, bits: %d, absolute: %d}" % (BITS, 2 * (i % IDR_EVERY)),
         "  num_ref_idx_active: {override_flag: 0, l0: 1}",
         "  slice_qp_delta: 0"] + skip_mbs(NMBS))
 
-def dep_slice(i, first_mb, n, frame_num, poc):
-    if i == 0:
+def dep_slice(i, first_mb, n, frame_num, poc, idr_pic_id):
+    if i % IDR_EVERY == 0:
         return block([
             "- nal_ref_idc: 3", "  nal_unit_type: 20", "  non_idr_flag: 0",
             "  priority_id: 0", "  view_id: 1", "  temporal_id: 0",
             "  anchor_pic_flag: 1", "  inter_view_flag: 0",
             "  first_mb_in_slice: %d" % first_mb,
             "  slice_type: 2", "  pic_parameter_set_id: 1",
-            "  frame_num: {bits: %d, absolute: 0}" % BITS, "  idr_pic_id: 0",
+            "  frame_num: {bits: %d, absolute: 0}" % BITS, "  idr_pic_id: %d" % idr_pic_id,
             "  pic_order_cnt: {type: 0, bits: %d, absolute: 0}" % BITS,
             "  no_output_of_prior_pics_flag: 0", "  long_term_reference_flag: 0",
             "  slice_qp_delta: 0"] + intra_mbs(n))
@@ -142,13 +153,16 @@ def dep_slice(i, first_mb, n, frame_num, poc):
 
 for i in range(BODY):
     out.append("# --- AU %d%s ---\n" % (i, " (second dependent slice damaged)" if i == BAD_AU else ""))
-    out.append(prefix_nal(i == 0))
+    out.append(prefix_nal(i % IDR_EVERY == 0))
     out.append(base_slice(i))
-    out.append(dep_slice(i, 0, NMBS // 2, i, 2 * i))
-    if i == BAD_AU:
-        out.append(dep_slice(i, NMBS // 2, NMBS // 2, i + 100, 2 * i + 90))
+    fn, idr = i % IDR_EVERY, i // IDR_EVERY
+    out.append(dep_slice(i, 0, NMBS // 2, fn, 2 * fn, idr))
+    if i != BAD_AU:
+        out.append(dep_slice(i, NMBS // 2, NMBS // 2, fn, 2 * fn, idr))
+    elif IDR_DAMAGE:
+        out.append(dep_slice(i, NMBS // 2, NMBS // 2, fn, 2 * fn, idr + 4321))
     else:
-        out.append(dep_slice(i, NMBS // 2, NMBS // 2, i, 2 * i))
+        out.append(dep_slice(i, NMBS // 2, NMBS // 2, fn + 100, 2 * fn + 90, idr))
 
 open(sys.argv[1], "w").write("".join(out))
 print("wrote %s (%d stereo AUs, corrupt dependent slice in AU %d)" % (sys.argv[1], BODY, BAD_AU))

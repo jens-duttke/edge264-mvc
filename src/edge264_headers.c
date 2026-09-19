@@ -1352,6 +1352,25 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		dep_corrupt = ((frame_num - prev - 1) & FrameNumMask) > 0;
 	}
 
+	// The test above excludes intra slices, so it cannot see the same damage one
+	// syntax element over: a slice of an open dependent IDR picture whose
+	// idr_pic_id alone is corrupt. frame_num (forced to 0) and nal_ref_idc still
+	// match, so idr_pic_id is the only new-picture trigger left. Accepting it
+	// closes the open picture and opens a second dependent picture carrying the
+	// same (FrameNum, POC) as the first; the base of the access unit pairs with
+	// one of them, the other is never queued by bump_frame, and the DPB jams as
+	// above. A slice that genuinely opens a picture starts at macroblock 0 - ASO
+	// is not allowed in the MVC profiles - so one that starts further in, right
+	// where the open picture continues, is a damaged continuation. Reject it
+	// before it alters any state. Inert for a stream of dependent IDR pictures
+	// that lost its base view, whose pictures each begin at macroblock 0.
+	if (dec->nal_unit_type == 20 && dec->currPic >= 0 &&
+		(dec->non_base_frames >> dec->currPic & 1) &&
+		idr_pic_id >= 0 && dec->idr_pic_id >= 0 && idr_pic_id != dec->idr_pic_id &&
+		t->first_mb_in_slice > 0 && frame_num == (dec->FrameNum & FrameNumMask) &&
+		(dec->nal_ref_idc > 0) == ((dec->short_term_frames | dec->long_term_frames) >> dec->currPic & 1))
+		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
+
 	// detect the start of a new frame (7.4.1.2.4)
 	if (dep_corrupt && (frame_num != (dec->FrameNum & FrameNumMask) ||
 		(dec->nal_ref_idc > 0) != ((dec->short_term_frames | dec->long_term_frames) >> dec->currPic & 1)))

@@ -1,0 +1,9 @@
+*
+!.gitignore
+!skills
+skills/*
+!skills/release-notes
+!skills/release-notes/**
+!commands
+commands/*
+!commands/audit.md

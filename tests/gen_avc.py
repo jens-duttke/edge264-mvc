@@ -162,6 +162,8 @@ def gen_slice_layer_without_partitioning(bits, f, slice):
 		bits = gen_se(bits, slice.pic_order_cnt["delta0"])
 		if "delta1" in slice.pic_order_cnt:
 			bits = gen_se(bits, slice.pic_order_cnt["delta1"])
+	if "redundant_pic_cnt" in vars(slice): # PPS sets redundant_pic_cnt_present_flag
+		bits = gen_ue(bits, slice.redundant_pic_cnt)
 	if slice_type == 1:
 		bits = bits << 1 | slice.direct_spatial_mv_pred_flag
 	if slice_type <= 1:
@@ -381,7 +383,7 @@ def gen_pic_parameter_set(bits, f, pps):
 	bits = gen_se(bits, pps.chroma_qp_index_offset)
 	bits = bits << 1 | pps.deblocking_filter_control_present_flag
 	bits = bits << 1 | pps.constrained_intra_pred_flag
-	bits = bits << 1 # redundant_pic_cnt_present_flag
+	bits = bits << 1 | vars(pps).get("redundant_pic_cnt_present_flag", 0)
 	if "transform_8x8_mode_flag" in vars(pps):
 		bits = bits << 1 | pps.transform_8x8_mode_flag
 		bits = bits << 1 | int("pic_scaling_matrix" in vars(pps))

@@ -1476,6 +1476,22 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264Decoder *dec, Edg
 		TopFieldOrderCnt = BottomFieldOrderCnt = dec->FrameNum * 2 + (dec->nal_ref_idc != 0) - 1;
 		log_dec(dec, "  pic_order_cnt: {type: 2, absolute: %d}\n", TopFieldOrderCnt);
 	}
+	
+	// 7.3.3 puts redundant_pic_cnt right after the picture order count fields
+	// when the active PPS enables it. Leaving these bits unread shifts every
+	// later field of the header, which ends up placing cabac_alignment_one_bit
+	// inside slice data and corrupting the entire slice, so such a PPS used to
+	// make the stream unsupported. A redundant coded picture (7.4.3:
+	// redundant_pic_cnt greater than 0) is a lower quality copy of content the
+	// primary picture already carries, meant to be decoded only when the primary
+	// is lost; decoding it here would overwrite the primary, so skip that slice
+	// and keep the stream going.
+	if (t->pps.redundant_pic_cnt_present_flag) {
+		int redundant_pic_cnt = get_ue16(&dec->gb, 127);
+		log_dec(dec, "  redundant_pic_cnt: %u%s\n", redundant_pic_cnt, unsup_if(redundant_pic_cnt > 0));
+		if (redundant_pic_cnt > 0)
+			return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP);
+	}
 	dec->TopFieldOrderCnt = TopFieldOrderCnt;
 	dec->BottomFieldOrderCnt = BottomFieldOrderCnt;
 	log_dec(dec, "  frame_num: {bits: %u, absolute: %u}\n",
@@ -1912,8 +1928,8 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264Decoder *dec,  Edge264UnrefCb un
 	pps.second_chroma_qp_index_offset = pps.chroma_qp_index_offset = get_se16(&dec->gb, -12, 12);
 	pps.deblocking_filter_control_present_flag = get_u1(&dec->gb);
 	pps.constrained_intra_pred_flag = get_u1(&dec->gb);
-	int redundant_pic_cnt_present_flag = get_u1(&dec->gb);
-	if (pps.constrained_intra_pred_flag || redundant_pic_cnt_present_flag)
+	pps.redundant_pic_cnt_present_flag = get_u1(&dec->gb);
+	if (pps.constrained_intra_pred_flag)
 		ret = ENOTSUP;
 	log_dec(dec, "  num_ref_idx_default_active: {l0: %u, l1: %u}\n"
 		"  weighted_pred_flag: %u # %s\n"
@@ -1922,7 +1938,7 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264Decoder *dec,  Edge264UnrefCb un
 		"  chroma_qp_index_offset: %d\n"
 		"  deblocking_filter_control_present_flag: %u\n"
 		"  constrained_intra_pred_flag: %u%s\n"
-		"  redundant_pic_cnt_present_flag: %u%s\n",
+		"  redundant_pic_cnt_present_flag: %u\n",
 		pps.num_ref_idx_active[0], pps.num_ref_idx_active[1],
 		pps.weighted_pred_flag, weighted_pred_names[pps.weighted_pred_flag],
 		pps.weighted_bipred_idc, weighted_pred_names[pps.weighted_bipred_idc],
@@ -1930,7 +1946,7 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264Decoder *dec,  Edge264UnrefCb un
 		pps.chroma_qp_index_offset,
 		pps.deblocking_filter_control_present_flag,
 		pps.constrained_intra_pred_flag, unsup_if(pps.constrained_intra_pred_flag),
-		redundant_pic_cnt_present_flag, unsup_if(redundant_pic_cnt_present_flag));
+		pps.redundant_pic_cnt_present_flag);
 	
 	if (!rbsp_end(&dec->gb, 1)) {
 		pps.transform_8x8_mode_flag = get_u1(&dec->gb);

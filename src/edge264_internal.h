@@ -204,6 +204,7 @@ typedef struct {
 	int8_t chroma_qp_index_offset; // -12..12
 	int8_t deblocking_filter_control_present_flag; // 0..1
 	int8_t constrained_intra_pred_flag; // 0..1
+	int8_t redundant_pic_cnt_present_flag; // 0..1, adds redundant_pic_cnt to every slice header (7.3.3)
 	int8_t transform_8x8_mode_flag; // 0..1
 	int8_t pic_scaling_matrix_present_flag; // 0..1
 	int8_t second_chroma_qp_index_offset; // -12..12

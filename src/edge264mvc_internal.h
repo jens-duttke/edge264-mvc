@@ -8,7 +8,6 @@
 #include <assert.h>
 #include <errno.h>
 #include <limits.h>
-#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,7 +18,58 @@
 	#include <processthreadsapi.h>
 	#include <profileapi.h> // QueryPerformanceCounter/Frequency for get_relative_time_us
 	#define ssize_t ptrdiff_t
+#endif
+#if defined(_WIN32) && !defined(EDGE264MVC_WINPTHREADS)
+	// reason: winpthreads' mutexes and condition variables wait on kernel
+	// events, while Windows' slim reader/writer locks and condition variables
+	// stay in user mode unless they must sleep (FFmpeg maps them the same way).
+	// Only the calls the decoder makes are mapped, with their pthread names.
+	#include <windows.h>
+	#include <process.h>
+	#undef min
+	#undef max
+	typedef SRWLOCK pthread_mutex_t;
+	typedef CONDITION_VARIABLE pthread_cond_t;
+	typedef HANDLE pthread_t;
+	static inline int pthread_mutex_init(pthread_mutex_t *m, const void *attr) { (void)attr; InitializeSRWLock(m); return 0; }
+	static inline int pthread_mutex_destroy(pthread_mutex_t *m) { (void)m; return 0; }
+	static inline int pthread_mutex_lock(pthread_mutex_t *m) { AcquireSRWLockExclusive(m); return 0; }
+	static inline int pthread_mutex_unlock(pthread_mutex_t *m) { ReleaseSRWLockExclusive(m); return 0; }
+	static inline int pthread_cond_init(pthread_cond_t *c, const void *attr) { (void)attr; InitializeConditionVariable(c); return 0; }
+	static inline int pthread_cond_destroy(pthread_cond_t *c) { (void)c; return 0; }
+	static inline int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { return SleepConditionVariableSRW(c, m, INFINITE, 0) ? 0 : EINVAL; }
+	static inline int pthread_cond_signal(pthread_cond_t *c) { WakeConditionVariable(c); return 0; }
+	static inline int pthread_cond_broadcast(pthread_cond_t *c) { WakeAllConditionVariable(c); return 0; }
+	typedef struct { void *(*fn)(void *); void *arg; } Edge264MvcThreadStart;
+	static inline unsigned __stdcall edge264mvc_thread_start(void *p) {
+		Edge264MvcThreadStart s = *(Edge264MvcThreadStart *)p;
+		free(p);
+		s.fn(s.arg);
+		return 0;
+	}
+	static inline int pthread_create(pthread_t *t, const void *attr, void *(*fn)(void *), void *arg) {
+		(void)attr;
+		Edge264MvcThreadStart *s = malloc(sizeof(*s));
+		if (s == NULL)
+			return EAGAIN;
+		s->fn = fn;
+		s->arg = arg;
+		if ((*t = (HANDLE)_beginthreadex(NULL, 0, edge264mvc_thread_start, s, 0, NULL)) == NULL) {
+			free(s);
+			return EAGAIN;
+		}
+		return 0;
+	}
+	static inline int pthread_join(pthread_t t, void **ret) {
+		(void)ret;
+		WaitForSingleObject(t, INFINITE);
+		CloseHandle(t);
+		return 0;
+	}
 #else
+	#include <pthread.h>
+#endif
+#ifndef _WIN32
 	#include <unistd.h>
 	#include <sys/resource.h>
 #endif

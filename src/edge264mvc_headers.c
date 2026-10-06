@@ -420,7 +420,6 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 		// B slides
 		if (ctx->t.slice_type == 1) {
 			ctx->mbCol = ctx->t.mbCol_buffer + mb_offset;
-			ctx->col_short_term = 1 & ~(ctx->t.prev_long_term_frames >> ctx->t.RefPicList[1][0]);
 			
 			// initializations for temporal prediction and implicit weights
 			int rangeL1 = ctx->t.pps.num_ref_idx_active[1];
@@ -1612,6 +1611,10 @@ static void initialize_task(Edge264MvcDecoder *dec, Edge264MvcSeqParameterSet *s
 	t->samples_clip_v[1] = t->samples_clip_v[2] = set16((1 << sps->BitDepth_C) - 1);
 	if (t->slice_type == 1) { // B slices
 		t->mbCol_buffer = (Edge264MvcMacroblock *)dec->mb_buffers[t->RefPicList[1][0]];
+		// colZeroFlag (8.4.1.2.2) needs RefPicList1[0] to be a short-term reference,
+		// and an inter-view reference counts as neither short- nor long-term (H.8.4)
+		int col = t->RefPicList[1][0];
+		t->col_short_term = !(t->prev_long_term_frames >> col & 1) && !(dec->nal_unit_type == 20 && col == dec->basePic);
 		if (t->pps.weighted_bipred_idc == 2 || !t->direct_spatial_mv_pred_flag) {
 			// distances from the current picture, unclipped (see initialize_context)
 			u32x4 poc = set32(minw(dec->TopFieldOrderCnt, dec->BottomFieldOrderCnt));

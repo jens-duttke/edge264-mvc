@@ -70,6 +70,9 @@
 !tests/conformance/mvc-synthetic/*.yaml
 !tests/conformance/mvc-synthetic/*.md
 !tests/conformance/mvc-synthetic/*.py
+!tests/conformance/mvc-jmvc
+!tests/conformance/mvc-jmvc/*.264
+!tests/conformance/mvc-jmvc/*.md
 !tests/conformance/2d-synthetic
 !tests/conformance/2d-synthetic/*.264
 !tests/conformance/2d-synthetic/*.md

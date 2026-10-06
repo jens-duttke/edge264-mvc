@@ -187,3 +187,10 @@ mvc-synthetic/mvc_mmco5_pairing 3 1 696a95091c933d253656812f9555a4e4 696a95091c9
 mvc-synthetic/mvc_dependent_frame_num_gap 12 1 20fc95a352de8b25f2685fdbf0debce4 20fc95a352de8b25f2685fdbf0debce4 1
 mvc-synthetic/mvc_same_poc_pairing 320 1 304d38b6a717a325d5ef60a801e09ce4 304d38b6a717a325d5ef60a801e09ce4 1
 mvc-synthetic/mvc_display_ordering 8 1 0b51b61ff4711325ac6af977efce9ce4 95190a3f40631325987912b2f2731ce4
+# MVC fixture encoded with JMVC 8.5 (ITU-T H.264.2), not an ITU vector; see
+# mvc-jmvc/README.md. Both views are anchored to the JMVC decoder's output
+# (check=OK dep_check=OK). Its dependent-view B slices put the base view at
+# RefPicList1[0] and use spatial direct prediction; taking that inter-view reference
+# for a short-term one (H.8.4) sets colZeroFlag where it must stay 0, so the
+# dependent-view hash FAILs on the unfixed decoder.
+mvc-jmvc/interview_colocated 9 1 15e7b2bf2bd163e6011cedc71f42cf7b ebbe590d783b360c8d19e92c9cdf42b9

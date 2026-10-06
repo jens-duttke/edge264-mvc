@@ -405,6 +405,7 @@ typedef struct {
 	int8_t bottom_field_flag; // 0..1
 	int8_t MbaffFrameFlag; // 0..1
 	int8_t direct_spatial_mv_pred_flag; // 0..1
+	int8_t col_short_term; // 0..1, RefPicList1[0] is a short-term reference (B slices)
 	int8_t luma_log2_weight_denom; // 0..7
 	int8_t chroma_log2_weight_denom; // 0..7
 	int8_t disable_deblocking_filter_idc; // 0..2
@@ -499,7 +500,6 @@ typedef struct Edge264MvcContext {
 	Edge264MvcTask t; // must be first in struct to use the same pointer for bitstream functions
 	int8_t thread_id;
 	int8_t mb_qp_delta_nz; // 0..1
-	int8_t col_short_term; // 0..1
 	int8_t rec_pending; // in the replay context, the current macroblock still has its deblocking and publishing to do
 	int16_t mbx;
 	int16_t mby;

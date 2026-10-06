@@ -337,7 +337,7 @@ static always_inline void decode_direct_spatial_mv_pred(Edge264MvcContext *ctx, 
 	if (((i64x2)mv01)[0] != 0 || direct_flags != 0xffffffff) {
 		i16x8 colZeroMask0 = {}, colZeroMask1 = {}, colZeroMask2 = {}, colZeroMask3 = {};
 		unsigned colZeroFlags = 0;
-		if (ctx->col_short_term) {
+		if (ctx->t.col_short_term) {
 			const Edge264MvcMacroblock *mbCol = ctx->mbCol;
 			i8x16 refColL0 = (i32x4){mbCol->refIdx_s[0]};
 			i8x16 offsets = refColL0 & 32;

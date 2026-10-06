@@ -15,6 +15,9 @@ compares from the committed `.264` alone.
 
 - `2d/*.264` - JVT AVCv1 + FRExt conformance bitstreams (single view).
 - `mvc/*.264` - JVT MVC conformance bitstreams (stereo, NAL 14/15/20).
+- `mvc-synthetic/`, `mvc-jmvc/`, `2d-synthetic/` - streams for cases the
+  conformance bitstreams do not cover, each with its own README naming the
+  oracle its hashes are anchored to.
 - `manifest.txt` - one line per fixture:
   `<subdir>/<name> <frames> <stereo> <base-hash> <dep-hash|->`
   `frames` = output frame count, `stereo` = 1 for MVC, hashes are

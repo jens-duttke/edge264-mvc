@@ -273,22 +273,53 @@ typedef struct {
  * awaiting output) and a task slot, which it keeps while it waits on the
  * progress of its references. So the slots, not the cores, bound how deep a
  * chain of reference pictures pipelines, and a stream with 16 reference frames
- * fills half of a 32-slot DPB with them alone. Frame and task sets are 128-bit
- * masks (FrameMask, TaskMask) where the compiler has them, else 64-bit, and a
- * worker's id travels in the low bits of the decoder pointer, aligned on
- * MAX_TASKS bytes.
+ * fills half of a 32-slot DPB with them alone. Each slice takes a task slot,
+ * so a picture of 6 slices holds 6: task sets are 256-bit (TaskMask, a struct
+ * handled through the tm_ helpers), frame sets 128-bit (FrameMask) where the
+ * compiler has them, else 64-bit. A worker's id travels in the low bits of the
+ * decoder pointer, aligned on MAX_THREADS bytes.
  */
 #ifdef __SIZEOF_INT128__
 	#define MAX_FRAMES 128
-	#define MAX_TASKS 128
 	typedef unsigned __int128 FrameMask;
 #else
 	#define MAX_FRAMES 64
-	#define MAX_TASKS 64
 	typedef uint64_t FrameMask;
 #endif
-typedef FrameMask TaskMask;
-#define ALL_TASKS (~(TaskMask)0)
+#define MAX_THREADS 128
+#define MAX_TASKS 256
+#define TASK_WORDS (MAX_TASKS / 64)
+typedef struct { uint64_t w[TASK_WORDS]; } TaskMask;
+static inline TaskMask tm_none(void) { return (TaskMask){{0}}; }
+static inline TaskMask tm_all(void) { TaskMask m; for (int k = 0; k < TASK_WORDS; k++) m.w[k] = ~(uint64_t)0; return m; }
+static inline TaskMask tm_bit(int i) { TaskMask m = {{0}}; m.w[i >> 6] = (uint64_t)1 << (i & 63); return m; }
+static inline int tm_has(TaskMask m, int i) { return m.w[i >> 6] >> (i & 63) & 1; }
+static inline void tm_set(TaskMask *m, int i) { m->w[i >> 6] |= (uint64_t)1 << (i & 63); }
+static inline void tm_clear(TaskMask *m, int i) { m->w[i >> 6] &= ~((uint64_t)1 << (i & 63)); }
+static inline int tm_any(TaskMask m) { uint64_t o = 0; for (int k = 0; k < TASK_WORDS; k++) o |= m.w[k]; return o != 0; }
+static inline int tm_eq(TaskMask a, TaskMask b) { uint64_t o = 0; for (int k = 0; k < TASK_WORDS; k++) o |= a.w[k] ^ b.w[k]; return o == 0; }
+static inline TaskMask tm_and(TaskMask a, TaskMask b) { for (int k = 0; k < TASK_WORDS; k++) a.w[k] &= b.w[k]; return a; }
+static inline TaskMask tm_or(TaskMask a, TaskMask b) { for (int k = 0; k < TASK_WORDS; k++) a.w[k] |= b.w[k]; return a; }
+static inline TaskMask tm_andnot(TaskMask a, TaskMask b) { for (int k = 0; k < TASK_WORDS; k++) a.w[k] &= ~b.w[k]; return a; } // a & ~b
+static inline int tm_ctz(TaskMask m) { // lowest set bit, MAX_TASKS if none
+	for (int k = 0; k < TASK_WORDS; k++) {
+		if (m.w[k])
+			return k * 64 + __builtin_ctzll(m.w[k]);
+	}
+	return MAX_TASKS;
+}
+static inline int tm_pop(TaskMask *m) { // clears and returns the lowest set bit, -1 if none
+	for (int k = 0; k < TASK_WORDS; k++) {
+		if (m->w[k]) {
+			int i = __builtin_ctzll(m->w[k]);
+			m->w[k] &= m->w[k] - 1;
+			return k * 64 + i;
+		}
+	}
+	return -1;
+}
+// iterates i over the set bits of a snapshot of a task mask, lowest first
+#define TM_FOREACH(i, mask) for (TaskMask _tm_##i = (mask); ((i) = tm_pop(&_tm_##i)) >= 0;)
 static inline int mask_ctz(FrameMask m) {
 	#ifdef __SIZEOF_INT128__
 		uint64_t lo = (uint64_t)m;
@@ -425,7 +456,7 @@ typedef struct Edge264MvcContext {
 	int32_t CurrMbAddr;
 	int32_t mb_skip_run;
 	int8_t overrun; // the slice decoded past mb_bound before learning it, and is decoded again
-	int8_t task_id;
+	int16_t task_id;
 	int8_t currPic;
 	uint8_t *rec_buf; // start of the record buffer
 	uint8_t *rec_head; // next record to replay
@@ -542,6 +573,7 @@ struct Edge264MvcDecoder {
 	Edge264MvcGetBits gb; // must be first in the struct to use the same pointer for bitstream functions
 	int16_t n_threads; // 0 to disable multithreading
 	int16_t max_pics; // most pictures with slice tasks in flight, about the threads, bounding the memory
+	int16_t min_pics; // fewest of them however large the pictures (see pics_in_flight)
 	int16_t frame_slots; // one past the highest frame slot ever allocated (the lowest free slot is always taken), bounding the scans of slots
 	int8_t nal_unit_type; // 5 significant bits
 	int32_t plane_size_Y;
@@ -556,16 +588,16 @@ struct Edge264MvcDecoder {
 	uint8_t *samples_buffers[MAX_FRAMES];
 	Edge264MvcMacroblock *mb_buffers[MAX_FRAMES];
 	FrameMask stale_frames; // frames of a previous frame format held by the caller, freed when released
-	void *mbc_ring_allocs[MAX_TASKS + 1]; // per worker (thread_id + 1), see Edge264MvcMbCache
-	int32_t mbc_ring_sizes[MAX_TASKS + 1];
-	uint8_t *spec_rows_allocs[MAX_TASKS + 1]; // per worker, see spec_rows
-	size_t spec_rows_sizes[MAX_TASKS + 1];
+	void *mbc_ring_allocs[MAX_THREADS + 1]; // per worker (thread_id + 1), see Edge264MvcMbCache
+	int32_t mbc_ring_sizes[MAX_THREADS + 1];
+	uint8_t *spec_rows_allocs[MAX_THREADS + 1]; // per worker, see spec_rows
+	size_t spec_rows_sizes[MAX_THREADS + 1];
 	uint8_t *rec_pool[REC_MAX_ACTIVE]; // free buffers of REC_BUF_SIZE bytes for deferred reconstruction
 	int8_t rec_pool_size; // buffers in rec_pool
 	int8_t rec_active; // buffers held by recording slices
 	int8_t rec_max; // most buffers held at once
 	Parser parse_nal_unit[32];
-	pthread_t threads[MAX_TASKS];
+	pthread_t threads[MAX_THREADS];
 	pthread_mutex_t lock;
 	pthread_cond_t task_ready;
 	pthread_cond_t frame_progress[MAX_FRAMES]; // signals next_deblock_addr[i] has reached progress_wake_addr[i]
@@ -626,7 +658,7 @@ struct Edge264MvcDecoder {
 	TaskMask pending_tasks;
 	TaskMask busy_tasks; // bitmask for tasks that are either pending or processed in a thread
 	TaskMask ready_tasks;
-	int8_t held_task; // newest slice task, whose end the next NAL tells (mb_bound), or -1
+	int16_t held_task; // newest slice task, whose end the next NAL tells (mb_bound), or -1
 	uint64_t acked_tasks[MAX_TASKS / 64]; // tasks that know their mb_bound and decode no macroblock past it, atomic per word (see acked_load)
 	TaskMask task_after[MAX_TASKS]; // older tasks of the same picture whose macroblocks a task may share, to finish first
 	TaskMask chained_tasks; // pending slices taken by the worker finishing the slices before them in their picture, see worker_loop
@@ -1439,14 +1471,23 @@ static always_inline FrameMask ready_frames(Edge264MvcDecoder *c) {
 // needs in wait_frame_progress, which lets consecutive dependent frames overlap.
 static always_inline FrameMask writing_frames(Edge264MvcDecoder *dec) {
 	FrameMask writing = 0;
-	for (TaskMask b = dec->busy_tasks; b; b &= b - 1)
-		writing |= (FrameMask)1 << dec->taskPics[mask_ctz(b)];
+	int i;
+	TM_FOREACH(i, dec->busy_tasks)
+		writing |= (FrameMask)1 << dec->taskPics[i];
 	return writing;
 }
+// Most pictures with tasks in flight: max_pics at 1080p and below, and fewer
+// for larger pictures, down to min_pics, so that their bytes stay about the same.
+static always_inline int pics_in_flight(Edge264MvcDecoder *dec) {
+	int mbs = dec->sps.pic_width_in_mbs * dec->sps.pic_height_in_mbs;
+	int pics = mbs > 0 ? (int)((int64_t)dec->max_pics * 8160 / mbs) : dec->max_pics;
+	return min(max(pics, dec->min_pics), dec->max_pics);
+}
 static always_inline int oldest_task(Edge264MvcDecoder *dec, TaskMask tasks) {
-	int task_id = tasks ? mask_ctz(tasks) : 0;
-	for (TaskMask r = tasks & (tasks - 1); r; r &= r - 1) {
-		int i = mask_ctz(r);
+	int task_id = tm_pop(&tasks), i;
+	if (task_id < 0)
+		return 0;
+	TM_FOREACH(i, tasks) {
 		if ((int32_t)(dec->task_seq[i] - dec->task_seq[task_id]) < 0)
 			task_id = i;
 	}
@@ -1457,7 +1498,7 @@ static always_inline FrameMask usable_frames(Edge264MvcDecoder *c) {
 }
 #define BOUND_UNKNOWN (INT_MAX - 1) // mb_bound of a slice before the next NAL tells it
 static always_inline TaskMask held_tasks(Edge264MvcDecoder *c) {
-	return c->held_task >= 0 ? (TaskMask)1 << c->held_task : 0;
+	return c->held_task >= 0 ? tm_bit(c->held_task) : tm_none();
 }
 // acked_tasks is read and written atomically per 64-bit word, each bit pairing
 // a seq_cst store with a seq_cst load as a single word did.
@@ -1468,9 +1509,9 @@ static always_inline void acked_clear(Edge264MvcDecoder *dec, int task_id) {
 	__atomic_fetch_and(&dec->acked_tasks[task_id >> 6], ~((uint64_t)1 << (task_id & 63)), __ATOMIC_SEQ_CST);
 }
 static always_inline TaskMask acked_load(Edge264MvcDecoder *dec) {
-	TaskMask acked = 0;
-	for (int i = 0; i < MAX_TASKS / 64; i++)
-		acked |= (TaskMask)__atomic_load_n(&dec->acked_tasks[i], __ATOMIC_SEQ_CST) << (i * 64);
+	TaskMask acked;
+	for (int i = 0; i < TASK_WORDS; i++)
+		acked.w[i] = __atomic_load_n(&dec->acked_tasks[i], __ATOMIC_SEQ_CST);
 	return acked;
 }
 // The handle of an output frame (return_arg) names the slots of its views, as
@@ -1537,18 +1578,19 @@ static always_inline void queue_push(Edge264MvcDecoder *dec, int view, int pic) 
 // known_mb_bound and claim_after_older_slices).
 static always_inline TaskMask ready_tasks(Edge264MvcDecoder *c) {
 	FrameMask not_ready = ~usable_frames(c);
-	TaskMask ready = c->pending_tasks & ~(c->n_threads ? 0 : held_tasks(c));
-	for (TaskMask r = ready; r; r &= r - 1) {
-		int i = mask_ctz(r);
-		if ((c->task_dependencies[i] & not_ready) || (c->task_after[i] & c->busy_tasks))
-			ready &= ~((TaskMask)1 << i);
+	TaskMask ready = c->n_threads ? c->pending_tasks : tm_andnot(c->pending_tasks, held_tasks(c));
+	int i;
+	TM_FOREACH(i, ready) {
+		if ((c->task_dependencies[i] & not_ready) || tm_any(tm_and(c->task_after[i], c->busy_tasks)))
+			tm_clear(&ready, i);
 	}
 	return ready;
 }
 static always_inline FrameMask depended_frames(Edge264MvcDecoder *dec) {
 	FrameMask depended = 0; // the dependencies of idle tasks are cleared
-	for (TaskMask b = dec->busy_tasks; b; b &= b - 1)
-		depended |= dec->task_dependencies[mask_ctz(b)];
+	int i;
+	TM_FOREACH(i, dec->busy_tasks)
+		depended |= dec->task_dependencies[i];
 	return depended;
 }
 // Frames still being written by an in-flight decode task: the target picture

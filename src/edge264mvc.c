@@ -151,7 +151,7 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	// aligned on at least the maximal SIMD alignment, and to leave room for a
 	// worker id in the low bits, with a size that aligned_alloc requires to be a
 	// multiple of the alignment
-	Edge264MvcDecoder *dec = aligned_malloc(MAX_TASKS, (sizeof(*dec) + MAX_TASKS - 1) & ~(size_t)(MAX_TASKS - 1));
+	Edge264MvcDecoder *dec = aligned_malloc(MAX_THREADS, (sizeof(*dec) + MAX_THREADS - 1) & ~(size_t)(MAX_THREADS - 1));
 	if (dec == NULL)
 		return NULL;
 	memset(dec, 0, sizeof(*dec));
@@ -229,6 +229,7 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	#endif
 	
 	// get the number of logical cores available to the process if requested
+	int min_pics = 0;
 	if (n_threads < 0) {
 		int n_cpus = 0;
 		#ifdef _WIN32
@@ -244,7 +245,12 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 			if (n_cpus <= 0)
 				n_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 		#endif
-		n_threads = n_cpus > 1 ? n_cpus : 0; // a single core or a failed detection -> single-threaded
+		// A worker waiting for the rows of its references sleeps, so the workers
+		// outnumber the cores to keep them busy: at 1080p three per core decode
+		// about 1.4 times as fast as one per core. Larger pictures overlap fewer
+		// at once (see pics_in_flight), where more would only cost memory bandwidth.
+		min_pics = n_cpus;
+		n_threads = n_cpus > 1 ? n_cpus * 3 : 0; // a single core or a failed detection -> single-threaded
 	}
 	// reason: clamp to the fixed-size worker pool and persist the result, because
 	// free_decoder's join loop uses dec->n_threads as its bound (`i < dec->n_threads`).
@@ -258,12 +264,10 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	if (n_threads > max_threads)
 		n_threads = max_threads;
 	dec->n_threads = n_threads;
-	dec->rec_max = min(max(n_threads / 4, 2), REC_MAX_ACTIVE);
 	// tasks left waiting for a thread decode no sooner, but hold their pictures
-	#ifndef PICS_PER_THREAD_PCT
-		#define PICS_PER_THREAD_PCT 100
-	#endif
-	dec->max_pics = n_threads ? min(n_threads * PICS_PER_THREAD_PCT / 100, MAX_FRAMES) : MAX_FRAMES;
+	dec->max_pics = n_threads ? min(n_threads, MAX_FRAMES) : MAX_FRAMES;
+	dec->min_pics = min_pics > 0 ? min(min_pics, dec->max_pics) : dec->max_pics;
+	dec->rec_max = min(max(dec->min_pics / 4, 2), REC_MAX_ACTIVE);
 	
 	// if multithreading is disabled we are done, otherwise initialize all
 	if (n_threads == 0)
@@ -344,8 +348,8 @@ static void free_decoder(Edge264MvcDecoder **pdec) {
 		// that never comes in either mode; unlike the flush path, which waits on
 		// busy_tasks, nothing drains them. Call each pending task's unref_cb so
 		// a copied slice NAL (internal_unref_nal) is freed, not leaked here.
-		for (TaskMask p = dec->pending_tasks; p; p &= p - 1) {
-			int task_id = mask_ctz(p);
+		int task_id;
+		TM_FOREACH(task_id, dec->pending_tasks) {
 			if (dec->tasks[task_id].unref_cb)
 				dec->tasks[task_id].unref_cb(ECANCELED, dec->tasks[task_id].unref_arg);
 		}
@@ -353,7 +357,7 @@ static void free_decoder(Edge264MvcDecoder **pdec) {
 			if (dec->samples_buffers[i] != NULL)
 				dec->free_cb(dec->samples_buffers[i], dec->mb_buffers[i], dec->alloc_arg);
 		}
-		for (int i = 0; i < MAX_TASKS + 1; i++) {
+		for (int i = 0; i < MAX_THREADS + 1; i++) {
 			free(dec->mbc_ring_allocs[i]);
 			free(dec->spec_rows_allocs[i]);
 		}
@@ -675,8 +679,9 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		// or reorder bump) may momentarily have no busy task between two of its
 		// slices, so the scan below alone would let a later frame overtake it.
 		int in_flight = lowest_any_pic == dec->currPic;
-		for (TaskMask b = dec->busy_tasks; !in_flight && b; b &= b - 1) {
-			if (dec->taskPics[mask_ctz(b)] == lowest_any_pic) {
+		int i;
+		TM_FOREACH(i, dec->busy_tasks) {
+			if (dec->taskPics[i] == lowest_any_pic) {
 				in_flight = 1;
 				break;
 			}
@@ -889,7 +894,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 	// frame is waiting on. Yield once to a worker instead; the caller's drain
 	// loop retries and the hold resolves as soon as the dependency completes.
 	// Only fires at fullness, so pipelined non-blocking draining is unaffected.
-	if (res != 0 && !dropped_orphan && dec->n_threads && (dec->busy_tasks & ~held_tasks(dec))) {
+	if (res != 0 && !dropped_orphan && dec->n_threads && tm_any(tm_andnot(dec->busy_tasks, held_tasks(dec)))) {
 		int q0 = queue_len(dec, 0);
 		int q1 = queue_len(dec, 1);
 		int bumpable = max(1, mask_popcount(dec->to_get_frames & ~dec->output_frames));
@@ -1064,7 +1069,7 @@ int edge264mvc_receive_frame(Edge264MvcDecoder *dec, Edge264MvcFrame *frame) {
 			// finish its frames before counting a round without progress
 			if (dec->n_threads) {
 				pthread_mutex_lock(&dec->lock);
-				int busy = dec->busy_tasks != 0;
+				int busy = tm_any(dec->busy_tasks);
 				if (busy)
 					pthread_cond_wait(&dec->task_complete, &dec->lock);
 				pthread_mutex_unlock(&dec->lock);
@@ -1080,7 +1085,7 @@ int edge264mvc_receive_frame(Edge264MvcDecoder *dec, Edge264MvcFrame *frame) {
 		// completed the frame since get_frame looked.
 		if (dec->want_frame && dec->n_threads) {
 			pthread_mutex_lock(&dec->lock);
-			int busy = (dec->busy_tasks & ~held_tasks(dec)) != 0; // the held slice waits for a NAL
+			int busy = tm_any(tm_andnot(dec->busy_tasks, held_tasks(dec))); // the held slice waits for a NAL
 			if (busy)
 				pthread_cond_wait(&dec->task_complete, &dec->lock);
 			pthread_mutex_unlock(&dec->lock);

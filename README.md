@@ -176,7 +176,7 @@ The whole API is declared in [edge264mvc.h](edge264mvc.h), and the library is ca
 <code>void <b>edge264mvc_default_settings</b>(settings)</code>
 
 > Fill an `Edge264MvcSettings` with the defaults. Always call it before changing a field, so that a field added later keeps its default.
-> * `int32_t n_threads` - 0 (default): one worker thread per logical CPU available to the process; 1: decode synchronously inside `send_nal`, on the calling thread; N > 1: N worker threads (at most 128 are used)
+> * `int32_t n_threads` - 0 (default): three worker threads per logical CPU available to the process (a worker waiting for the rows of a reference picture sleeps, and the others keep the cores busy), with fewer pictures decoded at once above 1080p; 1: decode synchronously inside `send_nal`, on the calling thread; N > 1: N worker threads (at most 128 are used)
 > * `int32_t max_frame_pixels` - frames larger than this (in luma pixels, after cropping, so 1920x1080 for 1080p video) are reported as unsupported, as is a stream whose coded frame exceeds it by more than rounding each dimension up to a multiple of 16; 0 (default): 8192x4352, the largest frame any level of H.264 allows
 > * `void (* log_cb)(const char * line, void * log_arg)` - if not NULL, receives a YAML trace of every header (and macroblock with `log_mbs`), possibly from worker threads; requires the `logs` build variant, without which `edge264mvc_open` returns `EDGE264MVC_INVALID`
 > * `void * log_arg` - passed to `log_cb`

@@ -149,7 +149,7 @@ static int bump_all_frames(Edge264MvcDecoder *dec) {
 	if (dec->currPic >= 0)
 		unset_currPic(dec);
 	while (bump_frame(dec, 0, 0) | bump_frame(dec, 1, 0));
-	while (dec->busy_tasks)
+	while (tm_any(dec->busy_tasks))
 		progress_or_wait(dec);
 	// Forward progress on a flush drain: an errored picture that never finalized
 	// (its slice returned EBADMSG, so next_deblock_addr != INT_MAX) was bumped into
@@ -254,8 +254,8 @@ static void catch_up_dependent_bumps(Edge264MvcDecoder *dec) {
 static void flush_frames(Edge264MvcDecoder *dec) {
 	// FIXME interrupt all threads then wait until they are back to wait
 	release_held_task(dec, INT_MAX);
-	assert(!(dec->n_threads == 0 && dec->busy_tasks));
-	while (dec->busy_tasks)
+	assert(!(dec->n_threads == 0 && tm_any(dec->busy_tasks)));
+	while (tm_any(dec->busy_tasks))
 		progress_or_wait(dec);
 }
 
@@ -720,9 +720,8 @@ static int slice_turn(Edge264MvcContext *c, int currPic, uint32_t seq, int keep_
 			// (arbitrary slice order, or a damaged stream) must not be waited for,
 			// which made the outcome depend on the timing and could hold every
 			// worker in this wait while the slices they waited for found none.
-			int preceding = 0;
-			for (TaskMask b = dec->busy_tasks; b; b &= b - 1) {
-				int i = mask_ctz(b);
+			int preceding = 0, i;
+			TM_FOREACH(i, dec->busy_tasks) {
 				preceding |= dec->taskPics[i] == currPic && dec->tasks[i].first_mb_in_slice < first &&
 					(int32_t)(dec->task_seq[i] - seq) < 0;
 			}
@@ -834,8 +833,8 @@ static int spec_rows(Edge264MvcContext *c, int slot, int restore) {
  */
 void *ADD_VARIANT(worker_loop)(void *arg) {
 	Edge264MvcContext c, r; // r replays the reconstruction that c records
-	c.d = (void *)((uintptr_t)arg & -MAX_TASKS);
-	c.thread_id = c.d->n_threads ? (uintptr_t)arg & (MAX_TASKS - 1) : -1;
+	c.d = (void *)((uintptr_t)arg & -MAX_THREADS);
+	c.thread_id = c.d->n_threads ? (uintptr_t)arg & (MAX_THREADS - 1) : -1;
 	c.log_base_us = c.d->log_base_us;
 	c.log_cb = c.d->log_cb;
 	c.log_arg = c.d->log_arg;
@@ -856,8 +855,8 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		chain = -1;
 		if (task_id < 0) {
 			for (;;) {
-				TaskMask pool = c.d->pending_tasks & ~c.d->chained_tasks;
-				if (c.thread_id < 0 || c.d->shutdown || (pool && (c.d->ready_tasks >> (task_id = oldest_task(c.d, pool)) & 1)))
+				TaskMask pool = tm_andnot(c.d->pending_tasks, c.d->chained_tasks);
+				if (c.thread_id < 0 || c.d->shutdown || (tm_any(pool) && tm_has(c.d->ready_tasks, task_id = oldest_task(c.d, pool))))
 					break;
 				pthread_cond_wait(&c.d->task_ready, &c.d->lock);
 			}
@@ -868,25 +867,24 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		}
 		if (c.thread_id < 0)
 			task_id = oldest_task(c.d, c.d->ready_tasks);
-		assert(c.d->ready_tasks >> task_id & 1);
+		assert(tm_has(c.d->ready_tasks, task_id));
 		int currPic = c.d->taskPics[task_id];
-		c.d->pending_tasks &= ~((TaskMask)1 << task_id);
-		c.d->ready_tasks &= ~((TaskMask)1 << task_id);
-		c.d->chained_tasks &= ~((TaskMask)1 << task_id);
+		tm_clear(&c.d->pending_tasks, task_id);
+		tm_clear(&c.d->ready_tasks, task_id);
+		tm_clear(&c.d->chained_tasks, task_id);
 		// Ready tasks wake one worker at a time rather than all of them, which
 		// with many threads and short pictures kept them contending for the lock:
 		// each worker taking a task wakes the next one if another is ready.
-		TaskMask pool = c.d->pending_tasks & ~c.d->chained_tasks;
-		if (c.thread_id >= 0 && pool && (c.d->ready_tasks >> oldest_task(c.d, pool) & 1))
+		TaskMask pool = tm_andnot(c.d->pending_tasks, c.d->chained_tasks);
+		if (c.thread_id >= 0 && tm_any(pool) && tm_has(c.d->ready_tasks, oldest_task(c.d, pool)))
 			pthread_cond_signal(&c.d->task_ready);
 		int32_t mb_bound = __atomic_load_n(&c.d->task_bounds[task_id], __ATOMIC_ACQUIRE);
 		if (mb_bound != BOUND_UNKNOWN)
 			acked_set(c.d, task_id);
 		// an older slice of the picture that may still decode past its bound may
 		// roll its deblocking frontier back, so this one cannot deblock in its turn
-		int after_spec = 0;
-		for (TaskMask b = c.d->busy_tasks & ~acked_load(c.d); b; b &= b - 1) {
-			int i = mask_ctz(b);
+		int after_spec = 0, i;
+		TM_FOREACH(i, tm_andnot(c.d->busy_tasks, acked_load(c.d))) {
 			after_spec |= c.d->taskPics[i] == currPic && (int32_t)(c.d->task_seq[i] - c.d->task_seq[task_id]) < 0;
 		}
 		// A multithreaded P slice heavy enough in entropy decoding records its
@@ -1108,8 +1106,9 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			wake_frame_waiters(c.d, currPic);
 			if (remaining_mbs != 0) {
 				FrameMask writers = 0;
-				for (TaskMask b = c.d->busy_tasks & ~((TaskMask)1 << task_id); b; b &= b - 1)
-					writers |= (FrameMask)1 << c.d->taskPics[mask_ctz(b)];
+				int j;
+				TM_FOREACH(j, tm_andnot(c.d->busy_tasks, tm_bit(task_id)))
+					writers |= (FrameMask)1 << c.d->taskPics[j];
 				if (!(writers >> currPic & 1)) {
 					for (int i = 0; i < c.d->frame_slots; i++)
 						wake_frame_waiters(c.d, i);
@@ -1117,38 +1116,43 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			}
 			if (remaining_mbs == 0) {
 				c.d->ready_tasks = ready_tasks(c.d);
-				if (c.d->ready_tasks)
+				if (tm_any(c.d->ready_tasks))
 					pthread_cond_signal(&c.d->task_ready); // passed on by the worker taking a task
 			}
 		}
-		c.d->busy_tasks &= ~((TaskMask)1 << task_id);
+		tm_clear(&c.d->busy_tasks, task_id);
 		c.d->task_dependencies[task_id] = 0;
 		c.d->taskPics[task_id] = -1;
 		// let the tasks start that waited for this one to share its macroblocks,
 		// before its slot (and bit) can be reused by another task
-		TaskMask waiting = 0, freed = 0;
-		for (TaskMask b = c.d->busy_tasks; b; b &= b - 1) { // idle tasks get theirs anew when created
-			int i = mask_ctz(b);
-			waiting |= c.d->task_after[i] >> task_id & 1;
-			if (c.d->task_after[i] >> task_id & 1 && !(c.d->task_after[i] &= ~((TaskMask)1 << task_id)))
-				freed |= (TaskMask)1 << i;
+		TaskMask freed = tm_none();
+		int waiting = 0;
+		TM_FOREACH(i, c.d->busy_tasks) { // idle tasks get theirs anew when created
+			if (tm_has(c.d->task_after[i], task_id)) {
+				waiting = 1;
+				tm_clear(&c.d->task_after[i], task_id);
+				if (!tm_any(c.d->task_after[i]))
+					tm_set(&freed, i);
+			}
 		}
-		if (c.thread_id >= 0 && waiting && (c.d->ready_tasks = ready_tasks(c.d))) {
+		if (c.thread_id >= 0 && waiting && tm_any(c.d->ready_tasks = ready_tasks(c.d))) {
 			// Continue with the next slice of this picture rather than leave it to
 			// the pool, so that a picture's slices decode one after another, each
 			// deblocking its rows as it decodes them: decoded in parallel, the slices
 			// after the first deblock only once it is done, so a picture predicting
 			// from this one waits for most of it. A chained slice the last slice
 			// before it freed but that is not ready goes back to the pool.
-			TaskMask next = freed & c.d->chained_tasks;
-			if (next & c.d->ready_tasks)
-				chain = oldest_task(c.d, next & c.d->ready_tasks);
-			c.d->chained_tasks &= ~(next & ~c.d->ready_tasks);
-			TaskMask pool = c.d->pending_tasks & ~c.d->chained_tasks & ~(chain >= 0 ? (TaskMask)1 << chain : 0);
-			if (pool && (c.d->ready_tasks >> oldest_task(c.d, pool) & 1))
+			TaskMask next = tm_and(freed, c.d->chained_tasks);
+			if (tm_any(tm_and(next, c.d->ready_tasks)))
+				chain = oldest_task(c.d, tm_and(next, c.d->ready_tasks));
+			c.d->chained_tasks = tm_andnot(c.d->chained_tasks, tm_andnot(next, c.d->ready_tasks));
+			TaskMask pool = tm_andnot(c.d->pending_tasks, c.d->chained_tasks);
+			if (chain >= 0)
+				tm_clear(&pool, chain);
+			if (tm_any(pool) && tm_has(c.d->ready_tasks, oldest_task(c.d, pool)))
 				pthread_cond_signal(&c.d->task_ready);
 		} else if (c.thread_id >= 0) {
-			c.d->chained_tasks &= ~(freed & c.d->chained_tasks); // not ready yet, back to the pool
+			c.d->chained_tasks = tm_andnot(c.d->chained_tasks, freed); // not ready yet, back to the pool
 		}
 		if (c.thread_id >= 0)
 			release_terminal_task_dependencies(c.d);
@@ -1728,7 +1732,7 @@ static int conceal_frame(Edge264MvcDecoder *dec, int id) {
 // progress of a pending task that depends on it. Conformant streams never enter
 // this path: an incomplete dependency retains a writer until it reaches INT_MAX.
 static int release_terminal_task_dependencies(Edge264MvcDecoder *dec) {
-	if (!dec->n_threads && (dec->ready_tasks || dec->pending_tasks != dec->busy_tasks))
+	if (!dec->n_threads && (tm_any(dec->ready_tasks) || !tm_eq(dec->pending_tasks, dec->busy_tasks)))
 		return 0;
 	// Pictures awaiting output are concealed as soon as they are terminal too, so
 	// that get_frame never delivers later pictures past them while they wait (the
@@ -1741,7 +1745,7 @@ static int release_terminal_task_dependencies(Edge264MvcDecoder *dec) {
 		concealed |= (FrameMask)conceal_frame(dec, mask_ctz(b)) << mask_ctz(b);
 	if (concealed) {
 		dec->ready_tasks = ready_tasks(dec);
-		if (dec->ready_tasks && dec->n_threads)
+		if (tm_any(dec->ready_tasks) && dec->n_threads)
 			pthread_cond_signal(&dec->task_ready);
 	}
 	return concealed != 0;
@@ -1751,7 +1755,7 @@ static int release_terminal_task_dependencies(Edge264MvcDecoder *dec) {
 // for the quiescent abandoned-reference state first; if concealment made a task
 // runnable, let the caller re-evaluate its wait predicate without sleeping.
 static void progress_or_wait(Edge264MvcDecoder *dec) {
-	if (release_terminal_task_dependencies(dec) && dec->ready_tasks)
+	if (release_terminal_task_dependencies(dec) && tm_any(dec->ready_tasks))
 		return;
 	pthread_cond_wait(&dec->task_complete, &dec->lock);
 }
@@ -1789,16 +1793,16 @@ static void release_held_task(Edge264MvcDecoder *dec, int32_t mb_bound) {
 		wake_frame_waiters(dec, dec->taskPics[i]); // a worker done with the slice waits there
 	} else {
 		dec->ready_tasks = ready_tasks(dec);
-		while (dec->busy_tasks) {
-			if (!dec->ready_tasks) {
+		while (tm_any(dec->busy_tasks)) {
+			if (!tm_any(dec->ready_tasks)) {
 				// Keep damaged-stream concealment deterministic across threading
 				// modes. A terminal incomplete dependency has no writer here either;
 				// conceal it before falling back to the historical force-run valve.
 				release_terminal_task_dependencies(dec);
-				if (!dec->ready_tasks) {
+				if (!tm_any(dec->ready_tasks)) {
 					// ready_tasks can also be 0 when task_dependencies includes the
 					// current frame's own slot in a transitional state.
-					dec->ready_tasks |= (TaskMask)1 << oldest_task(dec, dec->pending_tasks);
+					tm_set(&dec->ready_tasks, oldest_task(dec, dec->pending_tasks));
 				}
 			}
 			dec->worker_loop(dec);
@@ -1817,20 +1821,20 @@ static void settle_mb_bounds(Edge264MvcDecoder *dec, int pic) {
 	if (!dec->n_threads)
 		return;
 	for (;;) {
-		TaskMask unsettled = 0;
+		TaskMask unsettled = tm_none();
 		TaskMask acked = acked_load(dec);
-		for (TaskMask b = dec->busy_tasks & ~dec->pending_tasks & ~acked; b; b &= b - 1) {
-			int i = mask_ctz(b);
+		int i;
+		TM_FOREACH(i, tm_andnot(tm_andnot(dec->busy_tasks, dec->pending_tasks), acked)) {
 			if (dec->taskPics[i] == pic && __atomic_load_n(&dec->task_bounds[i], __ATOMIC_RELAXED) != INT_MAX) {
-				unsettled |= (TaskMask)1 << i;
+				tm_set(&unsettled, i);
 				if (dec->task_wait_pic[i] >= 0) // waiting for a reference, it learns the bound there
 					wake_frame_waiters(dec, dec->task_wait_pic[i]);
 			}
 		}
-		if (!unsettled)
+		if (!tm_any(unsettled))
 			return;
 		__atomic_store_n(&dec->progress_wake_addr[pic], INT_MIN, __ATOMIC_SEQ_CST);
-		if (!(acked_load(dec) & unsettled))
+		if (!tm_any(tm_and(acked_load(dec), unsettled)))
 			pthread_cond_wait(&dec->frame_progress[pic], &dec->lock);
 	}
 }
@@ -1865,17 +1869,18 @@ static noinline int claim_after_older_slices(Edge264MvcContext *ctx) {
 		return 0;
 	pthread_mutex_lock(&dec->lock);
 	for (;;) {
-		TaskMask unacked = 0;
+		TaskMask unacked = tm_none();
 		TaskMask acked = acked_load(dec);
-		for (TaskMask b = dec->busy_tasks & ~acked; b; b &= b - 1) {
-			int i = mask_ctz(b);
-			unacked |= (TaskMask)(dec->taskPics[i] == ctx->currPic && (int32_t)dec->tasks[i].first_mb_in_slice < ctx->CurrMbAddr &&
-				(int32_t)(dec->task_seq[i] - dec->task_seq[ctx->task_id]) < 0) << i;
+		int i;
+		TM_FOREACH(i, tm_andnot(dec->busy_tasks, acked)) {
+			if (dec->taskPics[i] == ctx->currPic && (int32_t)dec->tasks[i].first_mb_in_slice < ctx->CurrMbAddr &&
+				(int32_t)(dec->task_seq[i] - dec->task_seq[ctx->task_id]) < 0)
+				tm_set(&unacked, i);
 		}
-		if (!unacked)
+		if (!tm_any(unacked))
 			break;
 		__atomic_store_n(&dec->progress_wake_addr[ctx->currPic], INT_MIN, __ATOMIC_SEQ_CST);
-		if (!(acked_load(dec) & unacked))
+		if (!tm_any(tm_and(acked_load(dec), unacked)))
 			pthread_cond_wait(&dec->frame_progress[ctx->currPic], &dec->lock);
 	}
 	pthread_mutex_unlock(&dec->lock);
@@ -1904,7 +1909,7 @@ static int output_stalled(Edge264MvcDecoder *dec) {
 	}
 	if (dec->undelivered)
 		return 1;
-	if (dec->busy_tasks & ~held_tasks(dec)) // the held slice belongs to the open picture
+	if (tm_any(tm_andnot(dec->busy_tasks, held_tasks(dec)))) // the held slice belongs to the open picture
 		return 0;
 	dec->undelivered = 1;
 	return 0;
@@ -1967,9 +1972,9 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	// find and reserve an empty task to fill, with no more pictures in flight
 	// than set for the threads (a picture has a task per slice)
 	TaskMask avail_tasks;
-	while (mask_popcount(writing_frames(dec)) > dec->max_pics || !(avail_tasks = ALL_TASKS & ~dec->busy_tasks))
+	while (mask_popcount(writing_frames(dec)) > pics_in_flight(dec) || !tm_any(avail_tasks = tm_andnot(tm_all(), dec->busy_tasks)))
 		progress_or_wait(dec);
-	Edge264MvcTask *t = dec->tasks + mask_ctz(avail_tasks);
+	Edge264MvcTask *t = dec->tasks + tm_ctz(avail_tasks);
 	t->unref_cb = unref_cb;
 	t->unref_arg = unref_arg;
 	t->RefPicList_v[0] = t->RefPicList_v[1] = t->RefPicList_v[2] = t->RefPicList_v[3] =
@@ -2534,20 +2539,22 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	// it, as it does single-threaded, where every older slice is done.
 	// Multithreaded, every slice starts after the older busy slices of its
 	// picture, and the worker decoding them continues with it (chained_tasks).
-	TaskMask after = 0;
-	for (TaskMask b = dec->busy_tasks; b; b &= b - 1) {
-		int j = mask_ctz(b);
+	TaskMask after = tm_none();
+	int j;
+	TM_FOREACH(j, dec->busy_tasks) {
 		if (dec->taskPics[j] == dec->currPic &&
 			(dec->n_threads || __atomic_load_n(&dec->task_bounds[j], __ATOMIC_RELAXED) > (int32_t)t->first_mb_in_slice))
-			after |= (TaskMask)1 << j;
+			tm_set(&after, j);
 	}
 	dec->task_after[task_id] = after;
-	dec->chained_tasks = (dec->chained_tasks & ~((TaskMask)1 << task_id)) | (dec->n_threads && after ? (TaskMask)1 << task_id : 0);
+	tm_clear(&dec->chained_tasks, task_id);
+	if (dec->n_threads && tm_any(after))
+		tm_set(&dec->chained_tasks, task_id);
 	acked_clear(dec, task_id);
 	t->mb_bound = BOUND_UNKNOWN;
 	__atomic_store_n(&dec->task_bounds[task_id], BOUND_UNKNOWN, __ATOMIC_RELAXED);
-	dec->busy_tasks |= (TaskMask)1 << task_id;
-	dec->pending_tasks |= (TaskMask)1 << task_id;
+	tm_set(&dec->busy_tasks, task_id);
+	tm_set(&dec->pending_tasks, task_id);
 	dec->task_dependencies[task_id] = refs_to_mask(t);
 	// FIXME check against dependencies on non-reference slots
 	dec->taskPics[task_id] = dec->currPic;
@@ -2558,10 +2565,10 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		// A reference that has no writer left can only be completed by
 		// concealing it, which no other event may trigger before the workers,
 		// taking the oldest pending task first, all wait for this one.
-		if (!(dec->ready_tasks >> task_id & 1))
+		if (!tm_has(dec->ready_tasks, task_id))
 			release_terminal_task_dependencies(dec);
 		// a chained slice is taken by the worker of the slice before it
-		if (!(dec->chained_tasks >> task_id & 1))
+		if (!tm_has(dec->chained_tasks, task_id))
 			pthread_cond_signal(&dec->task_ready);
 	}
 	return print_dec(dec, "  decode_NAL_result: %s\n", 0);

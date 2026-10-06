@@ -109,7 +109,7 @@ typedef void (*Edge264MvcLogCb)(const char *line, void *log_arg);
 typedef struct Edge264MvcSettings {
 	// 0 (default): one worker thread per logical CPU available to the process;
 	// 1: decode synchronously inside edge264mvc_send_nal, on the calling thread;
-	// N > 1: N worker threads (at most 16 are used).
+	// N > 1: N worker threads (at most 128 are used).
 	int32_t n_threads;
 	// Largest frame size in luma pixels, after cropping (as width_Y * height_Y
 	// of the frames). Larger frames are reported as EDGE264MVC_UNSUPPORTED, and

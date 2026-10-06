@@ -456,7 +456,7 @@ static always_inline void decode_direct_temporal_mv_pred(Edge264MvcContext *ctx,
 	// load refPicCol and mvCol
 	const Edge264MvcMacroblock *mbCol = ctx->mbCol;
 	i8x16 refPicColL0 = (i32x4){mbCol->refPic_s[0]};
-	i8x16 offsets = refPicColL0 & 32;
+	i8x16 offsets = (refPicColL0 < 0) & 32; // slots reach 63, so test the sign rather than bit 5
 	i16x8 mvCol0 = *(i16x8*)(mbCol->mvs + offsets[0]);
 	i16x8 mvCol1 = *(i16x8*)(mbCol->mvs + offsets[1] + 8);
 	i16x8 mvCol2 = *(i16x8*)(mbCol->mvs + offsets[2] + 16);
@@ -472,7 +472,9 @@ static always_inline void decode_direct_temporal_mv_pred(Edge264MvcContext *ctx,
 	}
 	
 	// conditional memory storage
-	i8x16 refIdx = shuffle2z(ctx->MapPicToList0_v[0], ctx->MapPicToList0_v[1], refPicCol);
+	i8x16 refIdx = {};
+	for (int i = 0; i < 4; i++) // MapPicToList0 has a slot per frame, more than a 2-vector shuffle covers
+		refIdx[i] = refPicCol[i] >= 0 ? ctx->MapPicToList0[refPicCol[i]] : 0;
 	mb->refPic_s[0] = ((i32x4)shufflen(ctx->t.RefPicList_v[0], refIdx))[0]; // overwritten by parse_ref_idx later if refIdx!=0
 	mb->refPic_s[1] = ((i32x4)broadcast8(ctx->t.RefPicList_v[2], 0))[0]; // refIdxL1 is 0
 	if (direct_flags & 1) {

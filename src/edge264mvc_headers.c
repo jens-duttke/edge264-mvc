@@ -72,13 +72,12 @@ static void unset_currPic(Edge264MvcDecoder *dec) {
 	// a picture the reference marking ran for sets PrevRefFrameNum (7.4.3) and
 	// commits the marking, even when it discarded the picture itself
 	if (dec->currPic_marked) {
-		unsigned same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
+		FrameMask same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
 		dec->PrevRefFrameNum[non_base_view] = dec->FrameNums[dec->currPic];
 		dec->prevPicOrderCnt[non_base_view] = dec->FieldOrderCnt[0][dec->currPic];
 		dec->prev_short_term_frames = (dec->prev_short_term_frames & ~same_views) | dec->short_term_frames;
 		dec->prev_long_term_frames = (dec->prev_long_term_frames & ~same_views) | dec->long_term_frames;
-		dec->prev_LongTermFrameIdx_v[0] = dec->LongTermFrameIdx_v[0];
-		dec->prev_LongTermFrameIdx_v[1] = dec->LongTermFrameIdx_v[1];
+		memcpy(dec->prev_LongTermFrameIdx, dec->LongTermFrameIdx, sizeof(dec->LongTermFrameIdx));
 	}
 	if (!non_base_view)
 		dec->basePic = dec->currPic;
@@ -88,22 +87,22 @@ static void unset_currPic(Edge264MvcDecoder *dec) {
 /**
  * Removes entry i of an output queue and closes the gap, so that the entries
  * stay packed at the front. bump_frame shifts a new entry in at index 0 and
- * drops index 15, and the fullness gate in decode_nal counts the
+ * drops the last one, and the fullness gate in decode_nal counts the
  * entries before the first empty one, so a gap left in the middle let later
  * bumps push a queued picture out of the queue, where get_frame never sees it.
  */
 static void dequeue_frame(Edge264MvcDecoder *dec, int view, int i) {
-	for (; i < 15; i++)
+	for (; i < QUEUE_SIZE - 1; i++)
 		dec->get_frame_queue[view][i] = dec->get_frame_queue[view][i + 1];
-	dec->get_frame_queue[view][15] = -1;
+	dec->get_frame_queue[view][QUEUE_SIZE - 1] = -1;
 }
 
-static int bump_frame(Edge264MvcDecoder *dec, int non_base_view, unsigned ignored) {
+static int bump_frame(Edge264MvcDecoder *dec, int non_base_view, FrameMask ignored) {
 	int pic = -1;
 	int lowest_poc = INT_MAX;
-	unsigned same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
-	for (unsigned o = dec->to_get_frames & ~dec->output_frames & same_views & ~ignored; o; o &= o - 1) {
-		int i = __builtin_ctz(o);
+	FrameMask same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
+	for (FrameMask o = dec->to_get_frames & ~dec->output_frames & same_views & ~ignored; o; o &= o - 1) {
+		int i = mask_ctz(o);
 		// Keep MVC output base-driven: never queue a dependent while its base is
 		// still held. get_frame delivers by scanning the base queue and pairing each
 		// base with its dependent, so a dependent queued ahead of its base cannot be
@@ -115,8 +114,8 @@ static int bump_frame(Edge264MvcDecoder *dec, int non_base_view, unsigned ignore
 		// get_frame's orphan valve, not here.
 		if (non_base_view) {
 			int paired = 0;
-			for (unsigned b = dec->output_frames & ~dec->non_base_frames; b; b &= b - 1) {
-				int bb = __builtin_ctz(b);
+			for (FrameMask b = dec->output_frames & ~dec->non_base_frames; b; b &= b - 1) {
+				int bb = mask_ctz(b);
 				if (dec->FrameNums[bb] == dec->FrameNums[i] &&
 					dec->FieldOrderCnt[0][bb] == dec->FieldOrderCnt[0][i]) {
 					paired = 1;
@@ -138,8 +137,8 @@ static int bump_frame(Edge264MvcDecoder *dec, int non_base_view, unsigned ignore
 	// monotonic across a POC reset (IDR) and would otherwise let a new GOP's
 	// low-POC frame overtake the previous GOP's frames still in the queue.
 	dec->DispOrder[pic] = dec->next_dispnum++;
-	dec->output_frames |= 1u << pic;
-	dec->get_frame_queue_v[non_base_view] = shrd128(set8(pic), dec->get_frame_queue_v[non_base_view], 15);
+	dec->output_frames |= (FrameMask)1 << pic;
+	queue_push(dec, non_base_view, pic);
 	return 1;
 }
 
@@ -154,46 +153,46 @@ static int bump_all_frames(Edge264MvcDecoder *dec) {
 		progress_or_wait(dec);
 	// Forward progress on a flush drain: an errored picture that never finalized
 	// (its slice returned EBADMSG, so next_deblock_addr != INT_MAX) was bumped into
-	// the 16-entry output queue but later shifted out by other bumps without being
+	// the output queue but later shifted out by other bumps without being
 	// delivered - the flushing valve in get_frame skips an unfinished picture
 	// mid-stream. Left in to_get_frames yet absent from the queue it is unreachable,
 	// so this used to return ENOBUFS forever and a draining caller stalled. Conceal
 	// it (finalize) and slot it back into the queue so the drain terminates - ffmpeg
 	// likewise emits a damaged picture from such a corrupt stream. Inert for
 	// well-formed streams, where every pending picture is finalized and still queued.
-	unsigned queued = 0;
-	for (int i = 0; i < 16; i++) {
+	FrameMask queued = 0;
+	for (int i = 0; i < QUEUE_SIZE; i++) {
 		if (dec->get_frame_queue[0][i] >= 0)
-			queued |= 1u << dec->get_frame_queue[0][i];
+			queued |= (FrameMask)1 << dec->get_frame_queue[0][i];
 		if (dec->get_frame_queue[1][i] >= 0)
-			queued |= 1u << dec->get_frame_queue[1][i];
+			queued |= (FrameMask)1 << dec->get_frame_queue[1][i];
 	}
 	// Any picture still incomplete has no writer left (busy_tasks is empty) and
 	// no slice to come, so conceal it now rather than let get_frame emit its
 	// undecoded part with whatever its slot held before - which depends on the
 	// slot allocation, hence on the thread timing. Bases first, since a damaged
 	// dependent view is concealed from its base.
-	for (unsigned o = dec->to_get_frames & ~dec->non_base_frames; o; o &= o - 1) {
-		int i = __builtin_ctz(o);
+	for (FrameMask o = dec->to_get_frames & ~dec->non_base_frames; o; o &= o - 1) {
+		int i = mask_ctz(o);
 		if (__atomic_load_n(&dec->next_deblock_addr[i], __ATOMIC_ACQUIRE) != INT_MAX)
 			conceal_frame(dec, i);
 	}
-	for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
-		int i = __builtin_ctz(o);
+	for (FrameMask o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
+		int i = mask_ctz(o);
 		if (__atomic_load_n(&dec->next_deblock_addr[i], __ATOMIC_ACQUIRE) != INT_MAX)
 			conceal_frame(dec, i);
 	}
-	for (unsigned o = dec->to_get_frames & ~queued; o; o &= o - 1) {
-		int i = __builtin_ctz(o);
+	for (FrameMask o = dec->to_get_frames & ~queued; o; o &= o - 1) {
+		int i = mask_ctz(o);
 		int v = dec->non_base_frames >> i & 1;
-		for (int j = 0; j < 16; j++) {
+		for (int j = 0; j < QUEUE_SIZE; j++) {
 			if (dec->get_frame_queue[v][j] < 0) {
 				dec->get_frame_queue[v][j] = i;
 				// a queued picture is marked for output, as by every other path
 				// that queues one (a dependent view decoded before its base view
 				// may not be yet), so that it is neither queued again nor dropped
 				// while the caller holds it
-				dec->output_frames |= 1u << i;
+				dec->output_frames |= (FrameMask)1 << i;
 				break;
 			}
 		}
@@ -221,22 +220,22 @@ static int bump_all_frames(Edge264MvcDecoder *dec) {
 static void catch_up_dependent_bumps(Edge264MvcDecoder *dec) {
 	if (dec->ssps.BitDepth_Y == 0)
 		return;
-	unsigned done = 0;
+	FrameMask done = 0;
 	for (;;) {
 		int front = -1;
 		int lowest = INT_MAX;
-		for (int i = 0; i < 16; i++) {
+		for (int i = 0; i < QUEUE_SIZE && dec->get_frame_queue[0][i] >= 0; i++) { // packed at the front
 			int q = dec->get_frame_queue[0][i];
-			if (q >= 0 && !(done & 1u << q) && dec->DispOrder[q] < lowest)
+			if (!(done & (FrameMask)1 << q) && dec->DispOrder[q] < lowest)
 				lowest = dec->DispOrder[front = q];
 		}
 		if (front < 0)
 			return;
-		done |= 1u << front;
+		done |= (FrameMask)1 << front;
 		// the two views of one access unit share a FrameNum and a POC
 		int dep = -1;
-		for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
-			int d = __builtin_ctz(o);
+		for (FrameMask o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
+			int d = mask_ctz(o);
 			if (dec->FrameNums[d] == dec->FrameNums[front] &&
 				dec->FieldOrderCnt[0][d] == dec->FieldOrderCnt[0][front]) {
 				dep = d;
@@ -245,9 +244,9 @@ static void catch_up_dependent_bumps(Edge264MvcDecoder *dec) {
 		}
 		if (dep < 0)
 			return; // not parsed yet - a single-threaded draining caller would hold here
-		if (!(dec->output_frames & 1u << dep)) {
-			dec->output_frames |= 1u << dep;
-			dec->get_frame_queue_v[1] = shrd128(set8(dep), dec->get_frame_queue_v[1], 15);
+		if (!(dec->output_frames & (FrameMask)1 << dep)) {
+			dec->output_frames |= (FrameMask)1 << dep;
+			queue_push(dec, 1, dep);
 		}
 	}
 }
@@ -284,6 +283,8 @@ static int alloc_frame(Edge264MvcDecoder *dec, int id) {
 			if (i + dec->sps.pic_width_in_mbs < mbs)
 				m[i + dec->sps.pic_width_in_mbs] = unavail_mb;
 		}
+		if (id >= dec->frame_slots)
+			__atomic_store_n(&dec->frame_slots, id + 1, __ATOMIC_RELAXED);
 		return 0;
 	} else {
 		dec->free_cb(dec->samples_buffers[id], m, dec->alloc_arg);
@@ -295,14 +296,15 @@ static int alloc_frame(Edge264MvcDecoder *dec, int id) {
 
 static void clear_decoder(Edge264MvcDecoder *dec) {
 	// frames received but not released yet keep their slots until released
-	uint32_t held = dec->output_frames & ~dec->to_get_frames;
+	FrameMask held = dec->output_frames & ~dec->to_get_frames;
 	memset((void *)dec + offsetof(Edge264MvcDecoder, nal_ref_idc), 0, offsetof(Edge264MvcDecoder, log_base_us) - offsetof(Edge264MvcDecoder, nal_ref_idc));
 	dec->output_frames = held;
 	dec->currPic = dec->basePic = -1;
 	dec->held_task = -1;
 	memset(dec->task_wait_pic, -1, sizeof(dec->task_wait_pic));
 	dec->PrevRefFrameNum[0] = dec->PrevRefFrameNum[1] = -1;
-	dec->taskPics_v = dec->get_frame_queue_v[0] = dec->get_frame_queue_v[1] = set8(-1);
+	memset(dec->get_frame_queue, -1, sizeof(dec->get_frame_queue));
+	memset(dec->taskPics, -1, sizeof(dec->taskPics));
 }
 
 int ADD_VARIANT(parse_end_of_sequence)(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg) {
@@ -356,7 +358,7 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 		0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39,
 		39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39};
 	
-	union { int8_t q[32]; i8x16 v[2]; } tb, td;
+	union { int8_t q[MAX_FRAMES]; i8x16 v[MAX_FRAMES / 16]; } tb, td;
 	ctx->CurrMbAddr = ctx->t.first_mb_in_slice;
 	ctx->mby = (unsigned)ctx->t.first_mb_in_slice / (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->mbx = (unsigned)ctx->t.first_mb_in_slice % (unsigned)ctx->t.pic_width_in_mbs;
@@ -426,21 +428,21 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 				// tb and td are clipped to 8 bits only now (8.4.1.2.3), from distances
 				// subtracted modulo 2^32, so that two large ones cannot wrap their difference
 				const i32x4 *d = ctx->t.diff_poc_v;
-				tb.v[0] = packs16(packs32(d[0], d[1]), packs32(d[2], d[3]));
-				tb.v[1] = packs16(packs32(d[4], d[5]), packs32(d[6], d[7]));
-				ctx->MapPicToList0_v[0] = ctx->MapPicToList0_v[1] = (i8x16){}; // FIXME pictures not found in RefPicList0 should point to self
+				for (int i = 0; i < MAX_FRAMES / 16; i++)
+					tb.v[i] = packs16(packs32(d[i * 4], d[i * 4 + 1]), packs32(d[i * 4 + 2], d[i * 4 + 3]));
+				memset(ctx->MapPicToList0, 0, sizeof(ctx->MapPicToList0)); // FIXME pictures not found in RefPicList0 should point to self
 				for (int refIdxL0 = ctx->t.pps.num_ref_idx_active[0], DistScaleFactor = 0; refIdxL0-- > 0; ) {
 					int pic0 = ctx->t.RefPicList[0][refIdxL0];
 					ctx->MapPicToList0[pic0] = refIdxL0;
 					u32x4 diff0 = set32(ctx->t.diff_poc[pic0]);
-					td.v[0] = packs16(packs32(diff0 - d[0], diff0 - d[1]), packs32(diff0 - d[2], diff0 - d[3]));
-					td.v[1] = packs16(packs32(diff0 - d[4], diff0 - d[5]), packs32(diff0 - d[6], diff0 - d[7]));
+					for (int i = 0; i < MAX_FRAMES / 16; i++)
+						td.v[i] = packs16(packs32(diff0 - d[i * 4], diff0 - d[i * 4 + 1]), packs32(diff0 - d[i * 4 + 2], diff0 - d[i * 4 + 3]));
 					for (int refIdxL1 = rangeL1, implicit_weight; refIdxL1-- > 0; ) {
 						int pic1 = ctx->t.RefPicList[1][refIdxL1];
-						if (td.q[pic1] != 0 && !(ctx->t.prev_long_term_frames & 1u << pic0)) {
+						if (td.q[pic1] != 0 && !(ctx->t.prev_long_term_frames & (FrameMask)1 << pic0)) {
 							int tx = (16384 + abs(td.q[pic1] / 2)) / td.q[pic1];
 							DistScaleFactor = min(max((tb.q[pic0] * tx + 32) >> 6, -1024), 1023);
-							implicit_weight = (!(ctx->t.prev_long_term_frames & 1u << pic1) && DistScaleFactor >= -256 && DistScaleFactor <= 515) ? DistScaleFactor >> 2 : 32;
+							implicit_weight = (!(ctx->t.prev_long_term_frames & (FrameMask)1 << pic1) && DistScaleFactor >= -256 && DistScaleFactor <= 515) ? DistScaleFactor >> 2 : 32;
 						} else {
 							DistScaleFactor = 256;
 							implicit_weight = 32;
@@ -719,8 +721,8 @@ static int slice_turn(Edge264MvcContext *c, int currPic, uint32_t seq, int keep_
 			// which made the outcome depend on the timing and could hold every
 			// worker in this wait while the slices they waited for found none.
 			int preceding = 0;
-			for (unsigned b = dec->busy_tasks; b; b &= b - 1) {
-				int i = __builtin_ctz(b);
+			for (TaskMask b = dec->busy_tasks; b; b &= b - 1) {
+				int i = mask_ctz(b);
 				preceding |= dec->taskPics[i] == currPic && dec->tasks[i].first_mb_in_slice < first &&
 					(int32_t)(dec->task_seq[i] - seq) < 0;
 			}
@@ -757,7 +759,7 @@ static void process_pending_slices(Edge264MvcContext *c, int currPic, int32_t fr
 		pthread_mutex_lock(&dec->lock);
 		int slot = -1;
 		for (uint64_t b = dec->deblock_pending_slices; b; b &= b - 1) {
-			int i = __builtin_ctzll(b);
+			int i = mask_ctz(b);
 			if (dec->deblock_pending[i].pic == currPic && dec->deblock_pending[i].first_mb == frontier)
 				slot = i;
 		}
@@ -831,9 +833,9 @@ static int spec_rows(Edge264MvcContext *c, int slot, int restore) {
  * tasks continuously until stopped by the parent process.
  */
 void *ADD_VARIANT(worker_loop)(void *arg) {
-	Edge264MvcContext c;
-	c.d = (void *)((uintptr_t)arg & -16);
-	c.thread_id = c.d->n_threads ? (uintptr_t)arg & 15 : -1;
+	Edge264MvcContext c, r; // r replays the reconstruction that c records
+	c.d = (void *)((uintptr_t)arg & -MAX_TASKS);
+	c.thread_id = c.d->n_threads ? (uintptr_t)arg & (MAX_TASKS - 1) : -1;
 	c.log_base_us = c.d->log_base_us;
 	c.log_cb = c.d->log_cb;
 	c.log_arg = c.d->log_arg;
@@ -841,16 +843,26 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 	c.log_pos = 0;
 	if (c.thread_id >= 0)
 		pthread_mutex_lock(&c.d->lock);
+	int chain = -1; // slice of the same picture to decode next, see the end of the loop
 	while (1) {
 		// Wait until the oldest pending task is ready and reserve it. Taking tasks
 		// strictly in decoding order guarantees that every frame a running task
 		// waits on (in wait_frame_progress) has its writers already running, and
 		// that the oldest running task only depends on complete frames, so it
-		// never waits and at least one worker always progresses.
-		int task_id;
-		while (c.thread_id >= 0 && !(c.d->ready_tasks >> (task_id = oldest_task(c.d, c.d->pending_tasks)) & 1) && !c.d->shutdown)
-			pthread_cond_wait(&c.d->task_ready, &c.d->lock);
-		if (c.thread_id >= 0 && c.d->shutdown) { // free_decoder requested a clean exit
+		// never waits and at least one worker always progresses. A chained slice
+		// is left out, since the worker decoding the slices before it continues
+		// with it, thus is a writer already running.
+		int task_id = chain;
+		chain = -1;
+		if (task_id < 0) {
+			for (;;) {
+				TaskMask pool = c.d->pending_tasks & ~c.d->chained_tasks;
+				if (c.thread_id < 0 || c.d->shutdown || (pool && (c.d->ready_tasks >> (task_id = oldest_task(c.d, pool)) & 1)))
+					break;
+				pthread_cond_wait(&c.d->task_ready, &c.d->lock);
+			}
+		}
+		if (c.thread_id >= 0 && c.d->shutdown && task_id < 0) { // free_decoder requested a clean exit
 			pthread_mutex_unlock(&c.d->lock);
 			return NULL;
 		}
@@ -858,17 +870,34 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			task_id = oldest_task(c.d, c.d->ready_tasks);
 		assert(c.d->ready_tasks >> task_id & 1);
 		int currPic = c.d->taskPics[task_id];
-		c.d->pending_tasks &= ~(1 << task_id);
-		c.d->ready_tasks &= ~(1 << task_id);
+		c.d->pending_tasks &= ~((TaskMask)1 << task_id);
+		c.d->ready_tasks &= ~((TaskMask)1 << task_id);
+		c.d->chained_tasks &= ~((TaskMask)1 << task_id);
+		// Ready tasks wake one worker at a time rather than all of them, which
+		// with many threads and short pictures kept them contending for the lock:
+		// each worker taking a task wakes the next one if another is ready.
+		TaskMask pool = c.d->pending_tasks & ~c.d->chained_tasks;
+		if (c.thread_id >= 0 && pool && (c.d->ready_tasks >> oldest_task(c.d, pool) & 1))
+			pthread_cond_signal(&c.d->task_ready);
 		int32_t mb_bound = __atomic_load_n(&c.d->task_bounds[task_id], __ATOMIC_ACQUIRE);
 		if (mb_bound != BOUND_UNKNOWN)
-			__atomic_fetch_or(&c.d->acked_tasks, 1u << task_id, __ATOMIC_SEQ_CST);
+			acked_set(c.d, task_id);
 		// an older slice of the picture that may still decode past its bound may
 		// roll its deblocking frontier back, so this one cannot deblock in its turn
 		int after_spec = 0;
-		for (unsigned b = c.d->busy_tasks & ~__atomic_load_n(&c.d->acked_tasks, __ATOMIC_SEQ_CST); b; b &= b - 1) {
-			int i = __builtin_ctz(b);
+		for (TaskMask b = c.d->busy_tasks & ~acked_load(c.d); b; b &= b - 1) {
+			int i = mask_ctz(b);
 			after_spec |= c.d->taskPics[i] == currPic && (int32_t)(c.d->task_seq[i] - c.d->task_seq[task_id]) < 0;
+		}
+		// A multithreaded P slice heavy enough in entropy decoding records its
+		// reconstruction, replayed as its references allow, so that parsing never
+		// waits for them (see Edge264MvcRecord). Take a buffer for it.
+		uint8_t *rec_buf = NULL;
+		const Edge264MvcTask *next = &c.d->tasks[task_id];
+		if (c.thread_id >= 0 && next->slice_type < REC_SLICE_TYPES && !c.log_cb && c.d->rec_active < c.d->rec_max &&
+			next->gb.end - next->gb.CPB >= (ptrdiff_t)REC_MIN_BYTES_PER_MB * next->pic_width_in_mbs * next->pic_height_in_mbs) {
+			rec_buf = c.d->rec_pool_size > 0 ? c.d->rec_pool[--c.d->rec_pool_size] : malloc(REC_BUF_SIZE);
+			c.d->rec_active += rec_buf != NULL;
 		}
 		if (c.thread_id >= 0)
 			pthread_mutex_unlock(&c.d->lock);
@@ -927,6 +956,18 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		}
 		initialize_context(&c, currPic);
 		
+		// record with the replay context starting at the same state
+		c.rec_tail = NULL;
+		c.rc = c.pc = NULL;
+		if (rec_buf) {
+			r = c;
+			r.pc = &c;
+			r.rec_pending = 0;
+			c.rc = &r;
+			c.rec_buf = c.rec_head = c.rec_tail = rec_buf;
+			c.rec_end = c.rec_buf + REC_BUF_SIZE - REC_MB_MAX;
+		}
+
 		// call the function containing the macroblock decoding loop
 		ret = 0;
 		if (!c.d->mbc_ring_allocs[slot]) {
@@ -957,6 +998,13 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 				    c.CurrMbAddr < c.t.pic_width_in_mbs * c.t.pic_height_in_mbs)
 					ret = EBADMSG; // FIXME error_flag
 			}
+		}
+
+		// finish the recorded reconstruction, waiting for the references now
+		if (c.rec_tail) {
+			replay_records(&c, 1);
+			c.t.next_deblock_addr = r.t.next_deblock_addr;
+			c.rec_tail = NULL;
 		}
 
 		// A slice that decoded all its data before the next NAL bounded it waits for
@@ -1045,35 +1093,63 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		// if multi-threaded, check if we are the last task to touch this frame and ensure it is complete
 		if (c.thread_id >= 0) {
 			pthread_mutex_lock(&c.d->lock);
+			if (rec_buf) {
+				c.d->rec_pool[c.d->rec_pool_size++] = rec_buf;
+				c.d->rec_active--;
+			}
 			pthread_cond_signal(&c.d->task_complete);
 			// Wake the slices waiting for this one in wait_slice_turn, which also
 			// wait on its leaving when it stops before them. A frame this task
 			// leaves incomplete may now have no writer left, so wake all waiters
 			// then, for them to conceal it if they need it.
-			if (remaining_mbs == 0) {
-				wake_frame_waiters(c.d, currPic);
-			} else {
-				for (int i = 0; i < 32; i++)
-					wake_frame_waiters(c.d, i);
+			// With other slices of the frame still to decode it keeps a writer, so
+			// only its own waiters are woken (waking every frame's at each slice
+			// sent them all contending for the lock on streams with many slices).
+			wake_frame_waiters(c.d, currPic);
+			if (remaining_mbs != 0) {
+				FrameMask writers = 0;
+				for (TaskMask b = c.d->busy_tasks & ~((TaskMask)1 << task_id); b; b &= b - 1)
+					writers |= (FrameMask)1 << c.d->taskPics[mask_ctz(b)];
+				if (!(writers >> currPic & 1)) {
+					for (int i = 0; i < c.d->frame_slots; i++)
+						wake_frame_waiters(c.d, i);
+				}
 			}
 			if (remaining_mbs == 0) {
 				c.d->ready_tasks = ready_tasks(c.d);
 				if (c.d->ready_tasks)
-					pthread_cond_broadcast(&c.d->task_ready);
+					pthread_cond_signal(&c.d->task_ready); // passed on by the worker taking a task
 			}
 		}
-		c.d->busy_tasks &= ~(1 << task_id);
+		c.d->busy_tasks &= ~((TaskMask)1 << task_id);
 		c.d->task_dependencies[task_id] = 0;
 		c.d->taskPics[task_id] = -1;
 		// let the tasks start that waited for this one to share its macroblocks,
 		// before its slot (and bit) can be reused by another task
-		unsigned waiting = 0;
-		for (int i = 0; i < 16; i++) {
+		TaskMask waiting = 0, freed = 0;
+		for (TaskMask b = c.d->busy_tasks; b; b &= b - 1) { // idle tasks get theirs anew when created
+			int i = mask_ctz(b);
 			waiting |= c.d->task_after[i] >> task_id & 1;
-			c.d->task_after[i] &= ~(1u << task_id);
+			if (c.d->task_after[i] >> task_id & 1 && !(c.d->task_after[i] &= ~((TaskMask)1 << task_id)))
+				freed |= (TaskMask)1 << i;
 		}
-		if (c.thread_id >= 0 && waiting && (c.d->ready_tasks = ready_tasks(c.d)))
-			pthread_cond_broadcast(&c.d->task_ready);
+		if (c.thread_id >= 0 && waiting && (c.d->ready_tasks = ready_tasks(c.d))) {
+			// Continue with the next slice of this picture rather than leave it to
+			// the pool, so that a picture's slices decode one after another, each
+			// deblocking its rows as it decodes them: decoded in parallel, the slices
+			// after the first deblock only once it is done, so a picture predicting
+			// from this one waits for most of it. A chained slice the last slice
+			// before it freed but that is not ready goes back to the pool.
+			TaskMask next = freed & c.d->chained_tasks;
+			if (next & c.d->ready_tasks)
+				chain = oldest_task(c.d, next & c.d->ready_tasks);
+			c.d->chained_tasks &= ~(next & ~c.d->ready_tasks);
+			TaskMask pool = c.d->pending_tasks & ~c.d->chained_tasks & ~(chain >= 0 ? (TaskMask)1 << chain : 0);
+			if (pool && (c.d->ready_tasks >> oldest_task(c.d, pool) & 1))
+				pthread_cond_signal(&c.d->task_ready);
+		} else if (c.thread_id >= 0) {
+			c.d->chained_tasks &= ~(freed & c.d->chained_tasks); // not ready yet, back to the pool
+		}
 		if (c.thread_id >= 0)
 			release_terminal_task_dependencies(c.d);
 		if (c.thread_id < 0)
@@ -1110,14 +1186,14 @@ static void parse_dec_ref_pic_marking(Edge264MvcDecoder *dec, Edge264MvcSeqParam
 	if (dec->IdrPicFlag) {
 		int no_output_of_prior_pics_flag = get_u1(&dec->gb);
 		int long_term_flag = get_u1(&dec->gb);
-		dec->short_term_frames = (unsigned)(long_term_flag ^ 1) << dec->currPic;
-		dec->long_term_frames = (unsigned)long_term_flag << dec->currPic;
-		dec->LongTermFrameIdx_v[0] = dec->LongTermFrameIdx_v[1] = (i8x16){};
+		dec->short_term_frames = (FrameMask)(long_term_flag ^ 1) << dec->currPic;
+		dec->long_term_frames = (FrameMask)long_term_flag << dec->currPic;
+		memset(dec->LongTermFrameIdx, 0, sizeof(dec->LongTermFrameIdx));
 		log_dec(dec, "  no_output_of_prior_pics_flag: %d\n"
 			"  long_term_reference_flag: %d\n",
 			no_output_of_prior_pics_flag,
-			dec->long_term_frames >> dec->currPic);
-		while (bump_frame(dec, dec->nal_unit_type == 20, 1u << dec->currPic));
+			long_term_flag);
+		while (bump_frame(dec, dec->nal_unit_type == 20, (FrameMask)1 << dec->currPic));
 		return;
 	}
 	
@@ -1132,12 +1208,12 @@ static void parse_dec_ref_pic_marking(Edge264MvcDecoder *dec, Edge264MvcSeqParam
 			if (10 & 1 << memory_management_control_operation) { // 1 or 3
 				// target and dereference a given short-term or non-existing frame
 				FrameNum = dec->FrameNum - 1 - get_ue32(&dec->gb, 4294967294);
-				for (unsigned r = dec->short_term_frames; r; r &= r - 1) {
-					int j = __builtin_ctz(r);
+				for (FrameMask r = dec->short_term_frames; r; r &= r - 1) {
+					int j = mask_ctz(r);
 					if (dec->FrameNums[j] == FrameNum) {
 						target = j;
-						dec->short_term_frames ^= 1u << j;
-						dec->long_term_frames &= ~(1u << j);
+						dec->short_term_frames ^= (FrameMask)1 << j;
+						dec->long_term_frames &= ~((FrameMask)1 << j);
 					}
 				}
 			}
@@ -1145,17 +1221,17 @@ static void parse_dec_ref_pic_marking(Edge264MvcDecoder *dec, Edge264MvcSeqParam
 				long_term_frame_idx = get_ue16(&dec->gb, sps->max_num_ref_frames - (memory_management_control_operation != 4));
 				int up = (memory_management_control_operation == 4) ? INT_MAX : long_term_frame_idx;
 				// dereference one or many long-term frames
-				for (unsigned r = dec->long_term_frames & ~dec->short_term_frames; r; r &= r - 1) {
-					int j = __builtin_ctz(r);
+				for (FrameMask r = dec->long_term_frames & ~dec->short_term_frames; r; r &= r - 1) {
+					int j = mask_ctz(r);
 					if (dec->LongTermFrameIdx[j] >= long_term_frame_idx && dec->LongTermFrameIdx[j] <= up)
-						dec->long_term_frames ^= 1u << j;
+						dec->long_term_frames ^= (FrameMask)1 << j;
 				}
 				if (72 & 1 << memory_management_control_operation) { // 3 or 6
 					dec->LongTermFrameIdx[target] = long_term_frame_idx;
 					if (memory_management_control_operation == 6)
 						long_term_frame = 1;
 					else if (target != dec->currPic)
-						dec->long_term_frames |= 1u << target;
+						dec->long_term_frames |= (FrameMask)1 << target;
 				}
 			}
 			if (memory_management_control_operation == 5) { // dereference all frames
@@ -1164,16 +1240,16 @@ static void parse_dec_ref_pic_marking(Edge264MvcDecoder *dec, Edge264MvcSeqParam
 				// Reset only the current view's long-term indices. The short/long-term
 				// bitmaps above are view-masked working copies (merged per-view in
 				// unset_currPic), but LongTermFrameIdx is seeded and written back
-				// wholesale, so zeroing all 32 slots would clobber the co-decoded other
+				// wholesale, so zeroing all slots would clobber the co-decoded other
 				// view's live long-term indices while its long-term flags survive the
 				// masked merge. 8.2.5 marks reference pictures per view component.
-				unsigned same_views = (dec->non_base_frames >> dec->currPic & 1) ? dec->non_base_frames : ~dec->non_base_frames;
-				for (unsigned r = same_views; r; r &= r - 1)
-					dec->LongTermFrameIdx[__builtin_ctz(r)] = 0;
+				FrameMask same_views = (dec->non_base_frames >> dec->currPic & 1) ? dec->non_base_frames : ~dec->non_base_frames;
+				for (FrameMask r = same_views; r; r &= r - 1)
+					dec->LongTermFrameIdx[mask_ctz(r)] = 0;
 				int tempPicOrderCnt = minw(dec->TopFieldOrderCnt, dec->BottomFieldOrderCnt);
 				dec->FieldOrderCnt[0][dec->currPic] = (int)((unsigned)dec->TopFieldOrderCnt - tempPicOrderCnt);
 				dec->FieldOrderCnt[1][dec->currPic] = (int)((unsigned)dec->BottomFieldOrderCnt - tempPicOrderCnt);
-				while (bump_frame(dec, dec->nal_unit_type == 20, 1u << dec->currPic));
+				while (bump_frame(dec, dec->nal_unit_type == 20, (FrameMask)1 << dec->currPic));
 			}
 			// one format per operation, since a format may not skip an argument
 			// with %2$ (glibc's fortified printf aborts on it)
@@ -1194,19 +1270,19 @@ static void parse_dec_ref_pic_marking(Edge264MvcDecoder *dec, Edge264MvcSeqParam
 	// leaves short_term_frames == 0, so the loop below would not run, `next`
 	// would stay 0, and the toggle would spuriously mark slot 0 short-term (and
 	// demote it out of long_term_frames). Inert whenever a short-term ref exists.
-	if (dec->short_term_frames && __builtin_popcount(dec->short_term_frames | dec->long_term_frames) >= sps->max_num_ref_frames) {
+	if (dec->short_term_frames && mask_popcount(dec->short_term_frames | dec->long_term_frames) >= sps->max_num_ref_frames) {
 		int best = INT_MAX;
 		int next = 0;
 		// iterate on short-term and non-existing frames
-		for (unsigned r = dec->short_term_frames; r != 0; r &= r - 1) {
-			int i = __builtin_ctz(r);
+		for (FrameMask r = dec->short_term_frames; r != 0; r &= r - 1) {
+			int i = mask_ctz(r);
 			if (best > dec->FrameNums[i])
 				best = dec->FrameNums[next = i];
 		}
-		dec->short_term_frames ^= 1u << next;
-		dec->long_term_frames &= ~(1u << next);
+		dec->short_term_frames ^= (FrameMask)1 << next;
+		dec->long_term_frames &= ~((FrameMask)1 << next);
 	}
-	*(long_term_frame ? &dec->long_term_frames : &dec->short_term_frames) |= 1u << dec->currPic;
+	*(long_term_frame ? &dec->long_term_frames : &dec->short_term_frames) |= (FrameMask)1 << dec->currPic;
 	
 	// A non-conformant stream may now hold more references than
 	// max_num_ref_frames (long-term ones the sliding window does not retire, or
@@ -1215,23 +1291,23 @@ static void parse_dec_ref_pic_marking(Edge264MvcDecoder *dec, Edge264MvcSeqParam
 	// if it is the only short-term one, or the long-term reference with the
 	// lowest LongTermFrameIdx if there is no short-term one. JM rejects the
 	// stream instead.
-	if (__builtin_popcount(dec->short_term_frames | dec->long_term_frames) > sps->max_num_ref_frames) {
-		unsigned candidates = dec->short_term_frames & ~(1u << dec->currPic);
+	if (mask_popcount(dec->short_term_frames | dec->long_term_frames) > sps->max_num_ref_frames) {
+		FrameMask candidates = dec->short_term_frames & ~((FrameMask)1 << dec->currPic);
 		int unref = dec->currPic, lowest = INT_MAX;
 		if (!dec->short_term_frames) {
-			for (unsigned r = dec->long_term_frames; r; r &= r - 1) {
-				int i = __builtin_ctz(r);
+			for (FrameMask r = dec->long_term_frames; r; r &= r - 1) {
+				int i = mask_ctz(r);
 				if (dec->LongTermFrameIdx[i] < lowest)
 					lowest = dec->LongTermFrameIdx[unref = i];
 			}
 		}
-		for (unsigned r = candidates; r; r &= r - 1) {
-			int i = __builtin_ctz(r);
+		for (FrameMask r = candidates; r; r &= r - 1) {
+			int i = mask_ctz(r);
 			if (dec->FrameNums[i] < lowest)
 				lowest = dec->FrameNums[unref = i];
 		}
-		dec->short_term_frames &= ~(1u << unref);
-		dec->long_term_frames &= ~(1u << unref);
+		dec->short_term_frames &= ~((FrameMask)1 << unref);
+		dec->long_term_frames &= ~((FrameMask)1 << unref);
 	}
 }
 
@@ -1298,19 +1374,19 @@ static int parse_ref_pic_list_modification(Edge264MvcDecoder *dec, Edge264MvcSeq
 	if (!dec->IdrPicFlag) {
 		const int32_t *values = (t->slice_type == 0) ? dec->FrameNums : dec->FieldOrderCnt[0];
 		int pic_value = (t->slice_type == 0) ? dec->FrameNum : dec->TopFieldOrderCnt;
-		unsigned refs = (t->slice_type != 0 && sps->pic_order_cnt_type == 0) ?
+		FrameMask refs = (t->slice_type != 0 && sps->pic_order_cnt_type == 0) ?
 			dec->short_term_frames ^ dec->long_term_frames :
 			dec->short_term_frames | dec->long_term_frames;
 		// sort key = class (0 before, 1 after, 2 long-term) above the distance, in
 		// 64 bits since a damaged stream can put references up to 2^32 away
-		for (unsigned next = 0; refs; refs ^= 1u << next) {
+		for (unsigned next = 0; refs; refs ^= (FrameMask)1 << next) {
 			int64_t best = INT64_MAX;
-			for (unsigned r = refs; r; r &= r - 1) {
-				int i = __builtin_ctz(r);
+			for (FrameMask r = refs; r; r &= r - 1) {
+				int i = mask_ctz(r);
 				int64_t diff = (int64_t)values[i] - pic_value;
 				int64_t ShortTermNum = (diff <= 0) ? -diff : (1ll << 32) + diff;
 				int64_t LongTermNum = dec->prev_LongTermFrameIdx[i] + (2ll << 32);
-				int64_t v = (dec->short_term_frames & 1u << i) ? ShortTermNum : LongTermNum;
+				int64_t v = (dec->short_term_frames & (FrameMask)1 << i) ? ShortTermNum : LongTermNum;
 				if (v < best)
 					best = v, next = i;
 			}
@@ -1353,7 +1429,7 @@ static int parse_ref_pic_list_modification(Edge264MvcDecoder *dec, Edge264MvcSeq
 				} else break; // end of long term refs, break
 			}
 			int pic = RefFrameList.q[i++];
-			if (dec->prev_short_term_frames & 1u << pic) {
+			if (dec->prev_short_term_frames & (FrameMask)1 << pic) {
 				t->RefPicList[l][size++] = pic;
 				if (j < lim_j) { // swap parity if we have not emptied other parity yet
 					k = i, i = j, j = k;
@@ -1403,18 +1479,18 @@ static int parse_ref_pic_list_modification(Edge264MvcDecoder *dec, Edge264MvcSeq
 					// below replaces - rather than the last frame iterated, which
 					// depended on the DPB slot allocation and thus on threading
 					pic = -1;
-					for (unsigned r = dec->short_term_frames; r; r &= r - 1) {
-						if (!((dec->FrameNums[__builtin_ctz(r)] ^ picNumLX) & MaskFrameNum)) {
-							pic = __builtin_ctz(r);
+					for (FrameMask r = dec->short_term_frames; r; r &= r - 1) {
+						if (!((dec->FrameNums[mask_ctz(r)] ^ picNumLX) & MaskFrameNum)) {
+							pic = mask_ctz(r);
 							break;
 						}
 					}
 				} else if (modification_of_pic_nums_idc == 2) {
 					// iterate on long-term frames only
 					pic = -1;
-					for (unsigned r = dec->long_term_frames & ~dec->short_term_frames; r; r &= r - 1) {
-						if (dec->prev_LongTermFrameIdx[__builtin_ctz(r)] == num) {
-							pic = __builtin_ctz(r);
+					for (FrameMask r = dec->long_term_frames & ~dec->short_term_frames; r; r &= r - 1) {
+						if (dec->prev_LongTermFrameIdx[mask_ctz(r)] == num) {
+							pic = mask_ctz(r);
 							break;
 						}
 					}
@@ -1447,13 +1523,13 @@ static int parse_ref_pic_list_modification(Edge264MvcDecoder *dec, Edge264MvcSeq
 	for (int l = 0; l <= t->slice_type; l++) {
 		int valid = -1;
 		for (int i = 0; i < t->pps.num_ref_idx_active[l] && valid < 0; i++) {
-			if ((unsigned)t->RefPicList[l][i] < 32 && t->RefPicList[l][i] != dec->currPic)
+			if ((unsigned)t->RefPicList[l][i] < MAX_FRAMES && t->RefPicList[l][i] != dec->currPic)
 				valid = t->RefPicList[l][i];
 		}
 		if (valid < 0)
 			return EBADMSG;
 		for (int i = 0; i < t->pps.num_ref_idx_active[l]; i++) {
-			if ((unsigned)t->RefPicList[l][i] >= 32 || t->RefPicList[l][i] == dec->currPic)
+			if ((unsigned)t->RefPicList[l][i] >= MAX_FRAMES || t->RefPicList[l][i] == dec->currPic)
 				t->RefPicList[l][i] = valid;
 		}
 	}
@@ -1535,7 +1611,7 @@ static void initialize_task(Edge264MvcDecoder *dec, Edge264MvcSeqParameterSet *s
 		if (t->pps.weighted_bipred_idc == 2 || !t->direct_spatial_mv_pred_flag) {
 			// distances from the current picture, unclipped (see initialize_context)
 			u32x4 poc = set32(minw(dec->TopFieldOrderCnt, dec->BottomFieldOrderCnt));
-			for (int i = 0; i < 8; i++)
+			for (int i = 0; i < MAX_FRAMES / 4; i++)
 				t->diff_poc_v[i] = poc - minw32(dec->FieldOrderCnt_v[0][i], dec->FieldOrderCnt_v[1][i]);
 		}
 	}
@@ -1576,10 +1652,10 @@ static int conceal_frame(Edge264MvcDecoder *dec, int id) {
 	// on thread timing.
 	int base = -1;
 	if (dec->non_base_frames >> id & 1) {
-		unsigned live = (dec->short_term_frames | dec->long_term_frames | dec->to_get_frames | dec->output_frames) &
+		FrameMask live = (dec->short_term_frames | dec->long_term_frames | dec->to_get_frames | dec->output_frames) &
 			~dec->non_base_frames;
-		for (unsigned b = live; b; b &= b - 1) {
-			int i = __builtin_ctz(b);
+		for (FrameMask b = live; b; b &= b - 1) {
+			int i = mask_ctz(b);
 			if (dec->samples_buffers[i] && dec->FrameNums[i] == dec->FrameNums[id] &&
 				dec->FieldOrderCnt[0][i] == dec->FieldOrderCnt[0][id] &&
 				dec->FrameIds[i] < dec->FrameIds[id] &&
@@ -1657,16 +1733,16 @@ static int release_terminal_task_dependencies(Edge264MvcDecoder *dec) {
 	// Pictures awaiting output are concealed as soon as they are terminal too, so
 	// that get_frame never delivers later pictures past them while they wait (the
 	// number of pictures overtaking them would depend on the thread timing).
-	unsigned terminal = (depended_frames(dec) | dec->to_get_frames) & ~ready_frames(dec) & ~writing_frames(dec);
+	FrameMask terminal = (depended_frames(dec) | dec->to_get_frames) & ~ready_frames(dec) & ~writing_frames(dec);
 	if (dec->currPic >= 0)
-		terminal &= ~(1u << dec->currPic);
-	unsigned concealed = 0;
-	for (unsigned b = terminal; b; b &= b - 1)
-		concealed |= (unsigned)conceal_frame(dec, __builtin_ctz(b)) << __builtin_ctz(b);
+		terminal &= ~((FrameMask)1 << dec->currPic);
+	FrameMask concealed = 0;
+	for (FrameMask b = terminal; b; b &= b - 1)
+		concealed |= (FrameMask)conceal_frame(dec, mask_ctz(b)) << mask_ctz(b);
 	if (concealed) {
 		dec->ready_tasks = ready_tasks(dec);
 		if (dec->ready_tasks && dec->n_threads)
-			pthread_cond_broadcast(&dec->task_ready);
+			pthread_cond_signal(&dec->task_ready);
 	}
 	return concealed != 0;
 }
@@ -1685,7 +1761,7 @@ static void progress_or_wait(Edge264MvcDecoder *dec) {
 // store-then-load pairs with the waiter's, so either it sees the ack or this
 // sees it waiting.
 static void ack_mb_bound(Edge264MvcDecoder *dec, int task_id, int pic) {
-	__atomic_fetch_or(&dec->acked_tasks, 1u << task_id, __ATOMIC_SEQ_CST);
+	acked_set(dec, task_id);
 	if (__atomic_load_n(&dec->progress_wake_addr[pic], __ATOMIC_SEQ_CST) != INT_MAX) {
 		pthread_mutex_lock(&dec->lock);
 		wake_frame_waiters(dec, pic);
@@ -1722,7 +1798,7 @@ static void release_held_task(Edge264MvcDecoder *dec, int32_t mb_bound) {
 				if (!dec->ready_tasks) {
 					// ready_tasks can also be 0 when task_dependencies includes the
 					// current frame's own slot in a transitional state.
-					dec->ready_tasks |= 1 << oldest_task(dec, dec->pending_tasks);
+					dec->ready_tasks |= (TaskMask)1 << oldest_task(dec, dec->pending_tasks);
 				}
 			}
 			dec->worker_loop(dec);
@@ -1741,12 +1817,12 @@ static void settle_mb_bounds(Edge264MvcDecoder *dec, int pic) {
 	if (!dec->n_threads)
 		return;
 	for (;;) {
-		unsigned unsettled = 0;
-		unsigned acked = __atomic_load_n(&dec->acked_tasks, __ATOMIC_SEQ_CST);
-		for (unsigned b = dec->busy_tasks & ~dec->pending_tasks & ~acked; b; b &= b - 1) {
-			int i = __builtin_ctz(b);
+		TaskMask unsettled = 0;
+		TaskMask acked = acked_load(dec);
+		for (TaskMask b = dec->busy_tasks & ~dec->pending_tasks & ~acked; b; b &= b - 1) {
+			int i = mask_ctz(b);
 			if (dec->taskPics[i] == pic && __atomic_load_n(&dec->task_bounds[i], __ATOMIC_RELAXED) != INT_MAX) {
-				unsettled |= 1u << i;
+				unsettled |= (TaskMask)1 << i;
 				if (dec->task_wait_pic[i] >= 0) // waiting for a reference, it learns the bound there
 					wake_frame_waiters(dec, dec->task_wait_pic[i]);
 			}
@@ -1754,7 +1830,7 @@ static void settle_mb_bounds(Edge264MvcDecoder *dec, int pic) {
 		if (!unsettled)
 			return;
 		__atomic_store_n(&dec->progress_wake_addr[pic], INT_MIN, __ATOMIC_SEQ_CST);
-		if (!(__atomic_load_n(&dec->acked_tasks, __ATOMIC_SEQ_CST) & unsettled))
+		if (!(acked_load(dec) & unsettled))
 			pthread_cond_wait(&dec->frame_progress[pic], &dec->lock);
 	}
 }
@@ -1789,17 +1865,17 @@ static noinline int claim_after_older_slices(Edge264MvcContext *ctx) {
 		return 0;
 	pthread_mutex_lock(&dec->lock);
 	for (;;) {
-		unsigned unacked = 0;
-		unsigned acked = __atomic_load_n(&dec->acked_tasks, __ATOMIC_SEQ_CST);
-		for (unsigned b = dec->busy_tasks & ~acked; b; b &= b - 1) {
-			int i = __builtin_ctz(b);
-			unacked |= (dec->taskPics[i] == ctx->currPic && (int32_t)dec->tasks[i].first_mb_in_slice < ctx->CurrMbAddr &&
+		TaskMask unacked = 0;
+		TaskMask acked = acked_load(dec);
+		for (TaskMask b = dec->busy_tasks & ~acked; b; b &= b - 1) {
+			int i = mask_ctz(b);
+			unacked |= (TaskMask)(dec->taskPics[i] == ctx->currPic && (int32_t)dec->tasks[i].first_mb_in_slice < ctx->CurrMbAddr &&
 				(int32_t)(dec->task_seq[i] - dec->task_seq[ctx->task_id]) < 0) << i;
 		}
 		if (!unacked)
 			break;
 		__atomic_store_n(&dec->progress_wake_addr[ctx->currPic], INT_MIN, __ATOMIC_SEQ_CST);
-		if (!(__atomic_load_n(&dec->acked_tasks, __ATOMIC_SEQ_CST) & unacked))
+		if (!(acked_load(dec) & unacked))
 			pthread_cond_wait(&dec->frame_progress[ctx->currPic], &dec->lock);
 	}
 	pthread_mutex_unlock(&dec->lock);
@@ -1812,10 +1888,14 @@ static noinline int claim_after_older_slices(Edge264MvcContext *ctx) {
  * Tells whether a full DPB or output queue is a stall that waiting cannot
  * resolve. A caller holding frames makes room by releasing them, and under
  * multithreading the pictures still being decoded come out once their tasks
- * finish. So the first time the caller holds no frame, finish the running
- * tasks and let the caller receive as usual (ENOBUFS). Only if no frame came
- * out of that round either, nothing but a valve can make progress. The tasks
- * are finished at both rounds, so the outcome does not depend on the threads.
+ * finish. While a task runs, let the caller receive as usual (ENOBUFS):
+ * receive_frame then waits for the next picture only, and the other tasks keep
+ * decoding. Waiting here for all of them instead drained the frame pipeline at
+ * every full DPB, which a stream with many reference frames hits every few
+ * pictures. Once no task is left and the caller holds no frame, a further
+ * round without any frame coming out leaves nothing but a valve to make
+ * progress. That round starts with every task finished, so the outcome does
+ * not depend on the threads.
  */
 static int output_stalled(Edge264MvcDecoder *dec) {
 	if (dec->output_frames & ~dec->to_get_frames) {
@@ -1824,8 +1904,8 @@ static int output_stalled(Edge264MvcDecoder *dec) {
 	}
 	if (dec->undelivered)
 		return 1;
-	while (dec->busy_tasks & ~held_tasks(dec)) // the held slice belongs to the open picture
-		progress_or_wait(dec);
+	if (dec->busy_tasks & ~held_tasks(dec)) // the held slice belongs to the open picture
+		return 0;
 	dec->undelivered = 1;
 	return 0;
 }
@@ -1850,24 +1930,24 @@ static int make_room(Edge264MvcDecoder *dec, int non_base_view) {
 		dec->flushing = 1; // cleared by the next NAL
 		return 1;
 	}
-	unsigned same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
-	unsigned refs = dec->prev_short_term_frames & ~dec->prev_long_term_frames;
+	FrameMask same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
+	FrameMask refs = dec->prev_short_term_frames & ~dec->prev_long_term_frames;
 	refs = (refs & same_views) ? refs & same_views : refs;
 	int unref = -1, lowest = INT_MAX;
-	for (unsigned r = refs; r; r &= r - 1) {
-		int i = __builtin_ctz(r);
+	for (FrameMask r = refs; r; r &= r - 1) {
+		int i = mask_ctz(r);
 		if (dec->FrameIds[i] < lowest)
 			lowest = dec->FrameIds[unref = i];
 	}
 	if (unref < 0) // only long-term references left
-		for (unsigned r = dec->prev_long_term_frames; r; r &= r - 1) {
-			int i = __builtin_ctz(r);
+		for (FrameMask r = dec->prev_long_term_frames; r; r &= r - 1) {
+			int i = mask_ctz(r);
 			if (dec->FrameIds[i] < lowest)
 				lowest = dec->FrameIds[unref = i];
 		}
 	if (unref >= 0) {
-		dec->prev_short_term_frames &= ~(1u << unref);
-		dec->prev_long_term_frames &= ~(1u << unref);
+		dec->prev_short_term_frames &= ~((FrameMask)1 << unref);
+		dec->prev_long_term_frames &= ~((FrameMask)1 << unref);
 	}
 	return 0;
 }
@@ -1884,11 +1964,12 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	static const char * const disable_deblocking_filter_idc_names[3] = {"enabled", "disabled", "sliced"};
 	int ret;
 
-	// find and reserve an empty task to fill
-	unsigned avail_tasks;
-	while (!(avail_tasks = 0xffff & ~dec->busy_tasks))
+	// find and reserve an empty task to fill, with no more pictures in flight
+	// than set for the threads (a picture has a task per slice)
+	TaskMask avail_tasks;
+	while (mask_popcount(writing_frames(dec)) > dec->max_pics || !(avail_tasks = ALL_TASKS & ~dec->busy_tasks))
 		progress_or_wait(dec);
-	Edge264MvcTask *t = dec->tasks + __builtin_ctz(avail_tasks);
+	Edge264MvcTask *t = dec->tasks + mask_ctz(avail_tasks);
 	t->unref_cb = unref_cb;
 	t->unref_arg = unref_arg;
 	t->RefPicList_v[0] = t->RefPicList_v[1] = t->RefPicList_v[2] = t->RefPicList_v[3] =
@@ -1896,7 +1977,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	
 	// check on view_id
 	int non_base_view = 1;
-	unsigned same_views = dec->non_base_frames;
+	FrameMask same_views = dec->non_base_frames;
 	Edge264MvcSeqParameterSet *sps = &dec->ssps;
 	if (dec->nal_unit_type != 20) {
 		non_base_view = 0;
@@ -2146,17 +2227,17 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	// stream, 7.4.1.2.1), which leaves more references than it allows: drop the
 	// oldest ones, as the sliding window would (8.2.5.3), and long-term ones only
 	// when no short-term one is left.
-	while (__builtin_popcount((dec->prev_short_term_frames | dec->prev_long_term_frames) & same_views) > sps->max_num_ref_frames) {
-		unsigned shorts = dec->prev_short_term_frames & same_views;
+	while (mask_popcount((dec->prev_short_term_frames | dec->prev_long_term_frames) & same_views) > sps->max_num_ref_frames) {
+		FrameMask shorts = dec->prev_short_term_frames & same_views;
 		int unref = -1, lowest = INT_MAX;
-		for (unsigned r = shorts ? shorts : dec->prev_long_term_frames & same_views; r; r &= r - 1) {
-			int i = __builtin_ctz(r);
+		for (FrameMask r = shorts ? shorts : dec->prev_long_term_frames & same_views; r; r &= r - 1) {
+			int i = mask_ctz(r);
 			int key = shorts ? dec->FrameNums[i] : dec->prev_LongTermFrameIdx[i];
 			if (key < lowest)
 				lowest = key, unref = i;
 		}
-		dec->prev_short_term_frames &= ~(1u << unref);
-		dec->prev_long_term_frames &= ~(1u << unref);
+		dec->prev_short_term_frames &= ~((FrameMask)1 << unref);
+		dec->prev_long_term_frames &= ~((FrameMask)1 << unref);
 	}
 	
 	// check for gaps in frame_num (8.2.5.2), which only non-IDR pictures have:
@@ -2170,13 +2251,13 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		// from one otherwise read whatever the reused slot held, which depended on
 		// thread timing. Find it before the sliding window below may dereference it.
 		int prev = -1;
-		for (unsigned r = same_views & dec->prev_short_term_frames; r; r &= r - 1) {
-			int i = __builtin_ctz(r);
+		for (FrameMask r = same_views & dec->prev_short_term_frames; r; r &= r - 1) {
+			int i = mask_ctz(r);
 			if (dec->samples_buffers[i] && (prev < 0 || dec->FrameIds[i] > dec->FrameIds[prev]))
 				prev = i;
 		}
 		// make enough non-reference slots by dereferencing short-term and non-existing frames
-		int sref_slots = sps->max_num_ref_frames - __builtin_popcount(same_views & dec->prev_long_term_frames & ~dec->prev_short_term_frames);
+		int sref_slots = sps->max_num_ref_frames - mask_popcount(same_views & dec->prev_long_term_frames & ~dec->prev_short_term_frames);
 		// A frame_num gap needs a short-term slot to hold the inferred
 		// non-existing frames. If every reference slot is already long-term there
 		// is none to reclaim - a non-conformant stream. Reject it gracefully (no
@@ -2185,48 +2266,48 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		if (sref_slots <= 0)
 			return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
 		int non_existing = min(gap - 1, sref_slots);
-		for (int num_srefs = non_existing + __builtin_popcount(same_views & dec->prev_short_term_frames); num_srefs > sref_slots; num_srefs--) {
+		for (int num_srefs = non_existing + mask_popcount(same_views & dec->prev_short_term_frames); num_srefs > sref_slots; num_srefs--) {
 			int unref = 0, lowest = INT_MAX;
-			for (unsigned r = same_views & dec->prev_short_term_frames; r; r &= r - 1) {
-				int i = __builtin_ctz(r);
+			for (FrameMask r = same_views & dec->prev_short_term_frames; r; r &= r - 1) {
+				int i = mask_ctz(r);
 				if (dec->FrameNums[i] < lowest)
 					lowest = dec->FrameNums[unref = i];
 			}
-			dec->prev_short_term_frames &= ~(1u << unref);
-			dec->prev_long_term_frames &= ~(1u << unref);
+			dec->prev_short_term_frames &= ~((FrameMask)1 << unref);
+			dec->prev_long_term_frames &= ~((FrameMask)1 << unref);
 		}
 		// bump frames until there are enough available slots in the DPB
-		unsigned reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames;
+		FrameMask reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames;
 		assert(dec->currPic < 0);
-		while (non_existing + __builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) > sps->max_dec_frame_buffering && bump_frame(dec, non_base_view, 0));
-		// Bound the assert by the physical DPB capacity (32 slots), not the signaled
-		// max_dec_frame_buffering: an MVC stream whose two views together need more
-		// held frames than the base-derived MFB (a deep-B pyramid, or a frame_num
-		// gap that inserts non-existing references into an already-full view set)
-		// legitimately overshoots MFB while staying within the 32 physical slots.
-		// The bump loop above relieves what it can; the real overflow guard is the
-		// > 32 ENOBUFS backpressure below. Keying this to MFB aborted such streams
+		while (non_existing + mask_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) > sps->max_dec_frame_buffering && bump_frame(dec, non_base_view, 0));
+		// Bound the assert by the physical DPB capacity (MAX_FRAMES slots), not the
+		// signaled max_dec_frame_buffering: an MVC stream whose two views together
+		// need more held frames than the base-derived MFB (a deep-B pyramid, or a
+		// frame_num gap that inserts non-existing references into an already-full
+		// view set) legitimately overshoots MFB while staying within the physical
+		// slots. The bump loop above relieves what it can; the real overflow guard
+		// is the ENOBUFS backpressure below. Keying this to MFB aborted such streams
 		// (issue #2). Conformant streams stay <= MFB, so this is inert for them.
-		assert(non_existing + __builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) <= 32);
-		while (non_existing + __builtin_popcount(reference_frames | dec->to_get_frames | dec->output_frames) > 32) {
+		assert(non_existing + mask_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) <= MAX_FRAMES);
+		while (non_existing + mask_popcount(reference_frames | dec->to_get_frames | dec->output_frames) > MAX_FRAMES) {
 			if (!output_stalled(dec) || make_room(dec, non_base_view))
 				return ENOBUFS; // exit here if we must wait for get_frame to consume and return enough frames
 			reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames;
 		}
 		// wait until enough empty slots are undepended and not written by in-flight tasks
-		unsigned unavail;
-		while (non_existing + __builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) > 32)
+		FrameMask unavail;
+		while (non_existing + mask_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) > MAX_FRAMES)
 			progress_or_wait(dec);
 		// finally insert the last non-existing frames one by one
 		for (unsigned FrameNum = dec->FrameNum - non_existing; FrameNum < dec->FrameNum; FrameNum++) {
-			int i = __builtin_ctz(~unavail);
+			int i = mask_ctz(~unavail);
 			if (dec->samples_buffers[i] == NULL &&
 				(ret = alloc_frame(dec, i)))
 				return ret;
-			unavail |= 1u << i;
-			dec->prev_short_term_frames |= 1u << i;
-			dec->prev_long_term_frames |= 1u << i;
-			dec->non_base_frames = dec->non_base_frames & ~(1u << i) | (unsigned)non_base_view << i;
+			unavail |= (FrameMask)1 << i;
+			dec->prev_short_term_frames |= (FrameMask)1 << i;
+			dec->prev_long_term_frames |= (FrameMask)1 << i;
+			dec->non_base_frames = dec->non_base_frames & ~((FrameMask)1 << i) | (FrameMask)non_base_view << i;
 			dec->FrameNums[i] = dec->PrevRefFrameNum[non_base_view] = FrameNum;
 			dec->FrameIds[i] = ++dec->prevFrameId;
 			int PicOrderCnt = 0;
@@ -2281,13 +2362,13 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		// inter-view prediction and would corrupt them by overwriting. Count it
 		// as taken from the start, since a slot found free only before excluding
 		// it left no slot at all (and a slot index past the DPB).
-		unsigned reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames |
-			(non_base_view && dec->basePic >= 0 ? 1u << dec->basePic : 0);
-		while (__builtin_popcount(reference_frames | dec->to_get_frames | dec->output_frames) == 32) {
+		FrameMask reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames |
+			(non_base_view && dec->basePic >= 0 ? (FrameMask)1 << dec->basePic : 0);
+		while (mask_popcount(reference_frames | dec->to_get_frames | dec->output_frames) == MAX_FRAMES) {
 			if (!output_stalled(dec) || make_room(dec, non_base_view))
 				return ENOBUFS; // exit here if we must wait for get_frame to consume and return a frame slot
 			reference_frames = dec->prev_short_term_frames | dec->prev_long_term_frames |
-				(non_base_view && dec->basePic >= 0 ? 1u << dec->basePic : 0);
+				(non_base_view && dec->basePic >= 0 ? (FrameMask)1 << dec->basePic : 0);
 		}
 		// wait until at least one empty slot is undepended and not written by an
 		// in-flight task (or returned in the meantime). inflight_frames matters
@@ -2295,10 +2376,10 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		// still run (e.g. get_frame's orphan-dependent valve on a base-less
 		// dependent tail): without it the slot is reallocated mid-decode and the
 		// stale tasks corrupt the new picture's remaining_mbs (see inflight_frames).
-		unsigned unavail;
-		while (__builtin_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) >= 32)
+		FrameMask unavail;
+		while (mask_popcount(unavail = reference_frames | dec->to_get_frames | dec->output_frames | depended_frames(dec) | inflight_frames(dec)) >= MAX_FRAMES)
 			progress_or_wait(dec);
-		int currPic = __builtin_ctz(~unavail);
+		int currPic = mask_ctz(~unavail);
 		if (dec->samples_buffers[currPic] == NULL &&
 			(ret = alloc_frame(dec, currPic)))
 			return ret;
@@ -2307,8 +2388,8 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		dec->frame_flags[currPic] = dec->IdrPicFlag ? EDGE264MVC_VIEW_IDR : 0;
 		dec->frame_pts[currPic] = dec->in_pts;
 		dec->frame_user_data[currPic] = dec->in_user_data;
-		dec->non_base_frames = dec->non_base_frames & ~(1u << currPic) | (unsigned)non_base_view << currPic;
-		dec->frame_flip_bits ^= 1u << currPic;
+		dec->non_base_frames = dec->non_base_frames & ~((FrameMask)1 << currPic) | (FrameMask)non_base_view << currPic;
+		dec->frame_flip_bits ^= (FrameMask)1 << currPic;
 		dec->FrameIds[currPic] = ++dec->prevFrameId;
 		dec->FrameNums[currPic] = dec->FrameNum;
 		dec->FieldOrderCnt[0][currPic] = dec->TopFieldOrderCnt;
@@ -2328,8 +2409,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	dec->currPic_marked = 0;
 	dec->short_term_frames = dec->prev_short_term_frames & same_views;
 	dec->long_term_frames = dec->prev_long_term_frames & same_views;
-	dec->LongTermFrameIdx_v[0] = dec->prev_LongTermFrameIdx_v[0];
-	dec->LongTermFrameIdx_v[1] = dec->prev_LongTermFrameIdx_v[1];
+	memcpy(dec->LongTermFrameIdx, dec->prev_LongTermFrameIdx, sizeof(dec->LongTermFrameIdx));
 	
 	// P/B slices
 	if (t->slice_type < 2) {
@@ -2388,26 +2468,26 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	t->QP[3] = (t->FilterOffsetA >> 1 & 15) | (t->FilterOffsetB >> 1) * 16;
 	
 	// add the new frame into the DPB if not done already (C.4.5)
-	if (!(dec->to_get_frames & 1u << dec->currPic)) {
-		unsigned short_term_frames = dec->prev_short_term_frames & ~same_views | dec->short_term_frames;
-		unsigned long_term_frames = dec->prev_long_term_frames & ~same_views | dec->long_term_frames;
-		unsigned reference_frames = short_term_frames | long_term_frames;
-		assert(__builtin_popcount(reference_frames & same_views) <= sps->max_num_ref_frames);
+	if (!(dec->to_get_frames & (FrameMask)1 << dec->currPic)) {
+		FrameMask short_term_frames = dec->prev_short_term_frames & ~same_views | dec->short_term_frames;
+		FrameMask long_term_frames = dec->prev_long_term_frames & ~same_views | dec->long_term_frames;
+		FrameMask reference_frames = short_term_frames | long_term_frames;
+		assert(mask_popcount(reference_frames & same_views) <= sps->max_num_ref_frames);
 		// See the frame_num-gap assert above: the held set (both views' references
 		// plus the other view's undrained pictures) can exceed the signaled
 		// max_dec_frame_buffering on a legal MVC stream whose combined DPB need
-		// outgrows the base-view-derived MFB, so bound only by the 32 physical
+		// outgrows the base-view-derived MFB, so bound only by the physical
 		// slots. Inert for conformant streams (which stay <= MFB).
-		assert(__builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames & ~same_views) <= 32);
+		assert(mask_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames & ~same_views) <= MAX_FRAMES);
 		int max_bump = sps->max_num_ref_frames;
 		if (!dec->nal_ref_idc) {
 			max_bump = 0;
-			for (unsigned o = dec->to_get_frames & ~dec->output_frames & same_views; o; o &= o - 1)
-				max_bump += dec->FieldOrderCnt[0][__builtin_ctz(o)] < dec->TopFieldOrderCnt;
+			for (FrameMask o = dec->to_get_frames & ~dec->output_frames & same_views; o; o &= o - 1)
+				max_bump += dec->FieldOrderCnt[0][mask_ctz(o)] < dec->TopFieldOrderCnt;
 		}
-		while (__builtin_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) > sps->max_dec_frame_buffering && max_bump--)
+		while (mask_popcount(reference_frames | dec->to_get_frames & ~dec->output_frames) > sps->max_dec_frame_buffering && max_bump--)
 			bump_frame(dec, non_base_view, 0);
-		dec->to_get_frames |= 1u << dec->currPic;
+		dec->to_get_frames |= (FrameMask)1 << dec->currPic;
 		if (max_bump < 0) {
 			// This immediate-output path bypasses bump_frame, so it must consume a
 			// display rank the same way: DispOrder[currPic] otherwise keeps the
@@ -2418,22 +2498,22 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 			// (max_bump < 0 means all lower-POC waiting frames were just bumped),
 			// so the next counter value is its correct rank.
 			dec->DispOrder[dec->currPic] = dec->next_dispnum++;
-			dec->output_frames |= 1u << dec->currPic;
-			dec->get_frame_queue_v[non_base_view] = shrd128(set8(dec->currPic), dec->get_frame_queue_v[non_base_view], 15);
-		} else if (__builtin_popcount(dec->to_get_frames & ~dec->output_frames) > sps->max_num_reorder_frames) {
+			dec->output_frames |= (FrameMask)1 << dec->currPic;
+			queue_push(dec, non_base_view, dec->currPic);
+		} else if (mask_popcount(dec->to_get_frames & ~dec->output_frames) > sps->max_num_reorder_frames) {
 			bump_frame(dec, non_base_view, 0);
 		}
 		#ifdef LOGS
 			log_dec(dec, "  DecodedPictureBuffer:\n");
-			unsigned reordered_frames = dec->to_get_frames & ~dec->output_frames;
-			for (int i = 0; i < 32 - __builtin_clzg(short_term_frames | long_term_frames | reordered_frames, 32); i++) {
+			FrameMask reordered_frames = dec->to_get_frames & ~dec->output_frames;
+			for (int i = 0; i < mask_bits(short_term_frames | long_term_frames | reordered_frames); i++) {
 				log_dec(dec, "  - {id: %u", dec->FrameIds[i]);
-				if ((short_term_frames | long_term_frames) & 1u << i)
-					log_dec(dec, ~long_term_frames & 1u << i ? ", sref: %u" : ~short_term_frames & 1u << i ? ", lref: %u" : ", nref: %u", short_term_frames & 1u << i ? dec->FrameNums[i] : dec->LongTermFrameIdx[i]);
-				if (reordered_frames & 1u << i)
+				if ((short_term_frames | long_term_frames) & (FrameMask)1 << i)
+					log_dec(dec, ~long_term_frames & (FrameMask)1 << i ? ", sref: %u" : ~short_term_frames & (FrameMask)1 << i ? ", lref: %u" : ", nref: %u", short_term_frames & (FrameMask)1 << i ? dec->FrameNums[i] : dec->LongTermFrameIdx[i]);
+				if (reordered_frames & (FrameMask)1 << i)
 					log_dec(dec, ", poc: %d", minw(dec->FieldOrderCnt[0][i], dec->FieldOrderCnt[1][i]));
 				if (dec->ssps.BitDepth_Y)
-					log_dec(dec, ", view: %u", dec->non_base_frames >> i & 1);
+					log_dec(dec, ", view: %u", (unsigned)(dec->non_base_frames >> i & 1));
 				log_dec(dec, "}\n");
 			}
 		#endif
@@ -2452,19 +2532,22 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	// A slice whose macroblocks may overlap those of an older one still busy (a
 	// lower slice arriving later, or one before it that had no bound) starts after
 	// it, as it does single-threaded, where every older slice is done.
-	unsigned after = 0;
-	for (unsigned b = dec->busy_tasks; b; b &= b - 1) {
-		int j = __builtin_ctz(b);
+	// Multithreaded, every slice starts after the older busy slices of its
+	// picture, and the worker decoding them continues with it (chained_tasks).
+	TaskMask after = 0;
+	for (TaskMask b = dec->busy_tasks; b; b &= b - 1) {
+		int j = mask_ctz(b);
 		if (dec->taskPics[j] == dec->currPic &&
-			__atomic_load_n(&dec->task_bounds[j], __ATOMIC_RELAXED) > (int32_t)t->first_mb_in_slice)
-			after |= 1u << j;
+			(dec->n_threads || __atomic_load_n(&dec->task_bounds[j], __ATOMIC_RELAXED) > (int32_t)t->first_mb_in_slice))
+			after |= (TaskMask)1 << j;
 	}
 	dec->task_after[task_id] = after;
-	__atomic_fetch_and(&dec->acked_tasks, ~(1u << task_id), __ATOMIC_SEQ_CST);
+	dec->chained_tasks = (dec->chained_tasks & ~((TaskMask)1 << task_id)) | (dec->n_threads && after ? (TaskMask)1 << task_id : 0);
+	acked_clear(dec, task_id);
 	t->mb_bound = BOUND_UNKNOWN;
 	__atomic_store_n(&dec->task_bounds[task_id], BOUND_UNKNOWN, __ATOMIC_RELAXED);
-	dec->busy_tasks |= 1 << task_id;
-	dec->pending_tasks |= 1 << task_id;
+	dec->busy_tasks |= (TaskMask)1 << task_id;
+	dec->pending_tasks |= (TaskMask)1 << task_id;
 	dec->task_dependencies[task_id] = refs_to_mask(t);
 	// FIXME check against dependencies on non-reference slots
 	dec->taskPics[task_id] = dec->currPic;
@@ -2477,7 +2560,9 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		// taking the oldest pending task first, all wait for this one.
 		if (!(dec->ready_tasks >> task_id & 1))
 			release_terminal_task_dependencies(dec);
-		pthread_cond_signal(&dec->task_ready);
+		// a chained slice is taken by the worker of the slice before it
+		if (!(dec->chained_tasks >> task_id & 1))
+			pthread_cond_signal(&dec->task_ready);
 	}
 	return print_dec(dec, "  decode_NAL_result: %s\n", 0);
 }
@@ -3346,8 +3431,8 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 			dec->plane_size_C = format.stride_C * (sps.chroma_format_idc == 1 ? height >> 1 : height);
 			dec->frame_flip_bits = 0;
 			dec->stale_frames |= dec->output_frames; // freed by return_frame
-			for (int i = 0; i < 32; i++) {
-				if (dec->samples_buffers[i] != NULL && !(dec->stale_frames & 1u << i)) {
+			for (int i = 0; i < MAX_FRAMES; i++) {
+				if (dec->samples_buffers[i] != NULL && !(dec->stale_frames & (FrameMask)1 << i)) {
 					dec->free_cb(dec->samples_buffers[i], dec->mb_buffers[i], dec->alloc_arg);
 					dec->samples_buffers[i] = NULL;
 					dec->mb_buffers[i] = NULL;

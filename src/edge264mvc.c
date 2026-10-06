@@ -148,7 +148,10 @@ static int corrupt_NAL(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void 
 
 
 static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, void *log_arg, int log_mbs) {
-	Edge264MvcDecoder *dec = aligned_malloc(64, sizeof(*dec)); // maximal SIMD type alignment used in edge264-mvc
+	// aligned on at least the maximal SIMD alignment, and to leave room for a
+	// worker id in the low bits, with a size that aligned_alloc requires to be a
+	// multiple of the alignment
+	Edge264MvcDecoder *dec = aligned_malloc(MAX_TASKS, (sizeof(*dec) + MAX_TASKS - 1) & ~(size_t)(MAX_TASKS - 1));
 	if (dec == NULL)
 		return NULL;
 	memset(dec, 0, sizeof(*dec));
@@ -157,7 +160,8 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	dec->held_task = -1;
 	memset(dec->task_wait_pic, -1, sizeof(dec->task_wait_pic));
 	dec->PrevRefFrameNum[0] = dec->PrevRefFrameNum[1] = dec->prevFrameId = -1;
-	dec->taskPics_v = dec->get_frame_queue_v[0] = dec->get_frame_queue_v[1] = set8(-1);
+	memset(dec->get_frame_queue, -1, sizeof(dec->get_frame_queue));
+	memset(dec->taskPics, -1, sizeof(dec->taskPics));
 	dec->n_threads = n_threads;
 	dec->alloc_cb = internal_alloc;
 	dec->free_cb = internal_free;
@@ -254,6 +258,12 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	if (n_threads > max_threads)
 		n_threads = max_threads;
 	dec->n_threads = n_threads;
+	dec->rec_max = min(max(n_threads / 4, 2), REC_MAX_ACTIVE);
+	// tasks left waiting for a thread decode no sooner, but hold their pictures
+	#ifndef PICS_PER_THREAD_PCT
+		#define PICS_PER_THREAD_PCT 100
+	#endif
+	dec->max_pics = n_threads ? min(n_threads * PICS_PER_THREAD_PCT / 100, MAX_FRAMES) : MAX_FRAMES;
 	
 	// if multithreading is disabled we are done, otherwise initialize all
 	if (n_threads == 0)
@@ -261,9 +271,9 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	if (pthread_mutex_init(&dec->lock, NULL) == 0) {
 		if (pthread_cond_init(&dec->task_ready, NULL) == 0) {
 			int conds = 0;
-			while (conds < 32 && pthread_cond_init(&dec->frame_progress[conds], NULL) == 0)
+			while (conds < MAX_FRAMES && pthread_cond_init(&dec->frame_progress[conds], NULL) == 0)
 				dec->progress_wake_addr[conds++] = INT_MAX;
-			if (conds == 32) {
+			if (conds == MAX_FRAMES) {
 				if (pthread_cond_init(&dec->task_complete, NULL) == 0) {
 					int i = 0;
 					while (i < n_threads && pthread_create(&dec->threads[i], NULL, dec->worker_loop, (void *)((uintptr_t)dec + i)) == 0)
@@ -325,7 +335,7 @@ static void free_decoder(Edge264MvcDecoder **pdec) {
 				pthread_join(dec->threads[i], NULL);
 			pthread_mutex_destroy(&dec->lock);
 			pthread_cond_destroy(&dec->task_ready);
-			for (int i = 0; i < 32; i++)
+			for (int i = 0; i < MAX_FRAMES; i++)
 				pthread_cond_destroy(&dec->frame_progress[i]);
 			pthread_cond_destroy(&dec->task_complete);
 		}
@@ -334,19 +344,21 @@ static void free_decoder(Edge264MvcDecoder **pdec) {
 		// that never comes in either mode; unlike the flush path, which waits on
 		// busy_tasks, nothing drains them. Call each pending task's unref_cb so
 		// a copied slice NAL (internal_unref_nal) is freed, not leaked here.
-		for (unsigned p = dec->pending_tasks; p; p &= p - 1) {
-			int task_id = __builtin_ctz(p);
+		for (TaskMask p = dec->pending_tasks; p; p &= p - 1) {
+			int task_id = mask_ctz(p);
 			if (dec->tasks[task_id].unref_cb)
 				dec->tasks[task_id].unref_cb(ECANCELED, dec->tasks[task_id].unref_arg);
 		}
-		for (int i = 0; i < 32; i++) {
+		for (int i = 0; i < MAX_FRAMES; i++) {
 			if (dec->samples_buffers[i] != NULL)
 				dec->free_cb(dec->samples_buffers[i], dec->mb_buffers[i], dec->alloc_arg);
 		}
-		for (int i = 0; i < 17; i++) {
+		for (int i = 0; i < MAX_TASKS + 1; i++) {
 			free(dec->mbc_ring_allocs[i]);
 			free(dec->spec_rows_allocs[i]);
 		}
+		for (int i = 0; i < dec->rec_pool_size; i++)
+			free(dec->rec_pool[i]);
 		aligned_free(dec);
 	}
 }
@@ -363,27 +375,27 @@ static void free_decoder(Edge264MvcDecoder **pdec) {
  */
 static void unblock_output(Edge264MvcDecoder *dec) {
 	for (int v = 0; v < 2; v++)
-		while (__builtin_ctz(movemask(dec->get_frame_queue_v[v]) | 1 << 16) < 16 && bump_frame(dec, v, 0));
+		while (queue_len(dec, v) < QUEUE_SIZE && bump_frame(dec, v, 0));
 	// A dependent view is queued only after its base view, so one whose base
 	// view is missing never reaches the queue, where get_frame drops such
 	// orphans - and enough of them keep the gate closed forever. Drop them here
 	// (the tasks are finished, see output_stalled), except the picture being
 	// parsed, whose base view may still be sent.
-	unsigned live_bases = dec->to_get_frames & ~dec->non_base_frames;
-	for (unsigned o = dec->to_get_frames & ~dec->output_frames & dec->non_base_frames; o; o &= o - 1) {
-		int d = __builtin_ctz(o);
+	FrameMask live_bases = dec->to_get_frames & ~dec->non_base_frames;
+	for (FrameMask o = dec->to_get_frames & ~dec->output_frames & dec->non_base_frames; o; o &= o - 1) {
+		int d = mask_ctz(o);
 		if (d == dec->currPic)
 			continue;
 		int has_base = 0;
-		for (unsigned b = live_bases; b; b &= b - 1) {
-			int i = __builtin_ctz(b);
+		for (FrameMask b = live_bases; b; b &= b - 1) {
+			int i = mask_ctz(b);
 			if (dec->FrameNums[i] == dec->FrameNums[d] && dec->FieldOrderCnt[0][i] == dec->FieldOrderCnt[0][d]) {
 				has_base = 1;
 				break;
 			}
 		}
 		if (!has_base)
-			dec->to_get_frames &= ~(1u << d);
+			dec->to_get_frames &= ~((FrameMask)1 << d);
 	}
 	dec->flushing = 1; // cleared by the next NAL that passes the gate
 }
@@ -434,6 +446,29 @@ static int decode_nal(Edge264MvcDecoder *dec, const uint8_t *buf, const uint8_t 
 	// initial checks before parsing
 	if (dec == NULL || buf == NULL)
 		return EINVAL;
+
+	// Decode from a decoder-owned copy of the NAL, so that the caller's buffer
+	// is free the moment this returns (worker threads decode slices after that),
+	// and so that the reads around the NAL stay inside memory the decoder owns:
+	// the bitstream reader does an unaligned load from CPB-2 (the two bytes
+	// before the NAL must be readable and must not spoof a 00 00 0x escape -
+	// emulate the end of a 00 00 01 start code) and aligned 16-byte loads around
+	// `end` (the allocation must be 16-byte aligned and extend past `end`).
+	// Hence: 16-byte front pad ending in 00 00 01, then the NAL, then a
+	// >=16-byte trailing pad, 16-aligned. A slice task frees its copy when done.
+	// The copy is made before taking the lock, which it does not need.
+	uint8_t *nal_base = NULL;
+	size_t nal_len = end - buf;
+	if (buf < end) {
+		size_t cap = (16 + nal_len + 32 + 15) & ~(size_t)15;
+		nal_base = aligned_malloc(16, cap);
+		if (nal_base == NULL)
+			return ENOMEM;
+		memset(nal_base, 0, 16);
+		nal_base[15] = 1; // buf[-1]=01, buf[-2]=00, buf[-3]=00 -> a 00 00 01 start code
+		memcpy(nal_base + 16, buf, nal_len);
+		memset(nal_base + 16 + nal_len, 0, cap - 16 - nal_len); // trailing pad for read-ahead
+	}
 	if (dec->n_threads)
 		pthread_mutex_lock(&dec->lock);
 
@@ -452,24 +487,24 @@ static int decode_nal(Edge264MvcDecoder *dec, const uint8_t *buf, const uint8_t 
 	}
 
 	// There has to be enough buffer space for any NAL to flush the entire DPB.
-	// get_frame_queue is 16 entries *per view*, and a flush routes base pictures to
-	// queue[0] and dependents to queue[1] (bump_all_frames), so the two views must
-	// be gated independently: a combined queued0 + queued1 + total-pending <= 16
-	// test halves the effective capacity for MVC, where each view can legitimately
-	// hold up to 16 - it left no room past the reorder window (also up to 16) and
-	// deadlocked a deep-B two-view stream that had genuinely filled both view
-	// queues (issue #2). Per-view the base and dependent each keep their full 16
-	// slots. Inert for 2D (queued1 and the dependent pending are both zero, so this
-	// reduces to the original single-queue test).
-	int queued0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
-	int queued1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
-	int pending_base = __builtin_popcount(dec->to_get_frames & ~dec->output_frames & ~dec->non_base_frames);
-	int pending_dep = __builtin_popcount(dec->to_get_frames & ~dec->output_frames & dec->non_base_frames);
-	if (queued0 + max(1, pending_base) > 16 || queued1 + max(1, pending_dep) > 16) {
+	// get_frame_queue is QUEUE_SIZE entries *per view*, and a flush routes base
+	// pictures to queue[0] and dependents to queue[1] (bump_all_frames), so the two
+	// views must be gated independently: a combined queued0 + queued1 +
+	// total-pending test halves the effective capacity for MVC, where each view
+	// can legitimately hold a full queue - it left no room past the reorder window
+	// and deadlocked a deep-B two-view stream that had genuinely filled both view
+	// queues (issue #2). Inert for 2D (queued1 and the dependent pending are both
+	// zero, so this reduces to the single-queue test).
+	int queued0 = queue_len(dec, 0);
+	int queued1 = queue_len(dec, 1);
+	int pending_base = mask_popcount(dec->to_get_frames & ~dec->output_frames & ~dec->non_base_frames);
+	int pending_dep = mask_popcount(dec->to_get_frames & ~dec->output_frames & dec->non_base_frames);
+	if (queued0 + max(1, pending_base) > QUEUE_SIZE || queued1 + max(1, pending_dep) > QUEUE_SIZE) {
 		if (output_stalled(dec))
 			unblock_output(dec);
 		if (dec->n_threads)
 			pthread_mutex_unlock(&dec->lock);
+		aligned_free(nal_base);
 		return ENOBUFS;
 	}
 	
@@ -482,28 +517,6 @@ static int decode_nal(Edge264MvcDecoder *dec, const uint8_t *buf, const uint8_t 
 		return ret ?: ENODATA;
 	}
 	dec->flushing = 0;
-
-	// Decode from a decoder-owned copy of the NAL, so that the caller's buffer
-	// is free the moment this returns (worker threads decode slices after that),
-	// and so that the reads around the NAL stay inside memory the decoder owns:
-	// the bitstream reader does an unaligned load from CPB-2 (the two bytes
-	// before the NAL must be readable and must not spoof a 00 00 0x escape -
-	// emulate the end of a 00 00 01 start code) and aligned 16-byte loads around
-	// `end` (the allocation must be 16-byte aligned and extend past `end`).
-	// Hence: 16-byte front pad ending in 00 00 01, then the NAL, then a
-	// >=16-byte trailing pad, 16-aligned. A slice task frees its copy when done.
-	size_t nal_len = end - buf;
-	size_t cap = (16 + nal_len + 32 + 15) & ~(size_t)15;
-	uint8_t *nal_base = aligned_malloc(16, cap);
-	if (nal_base == NULL) {
-		if (dec->n_threads)
-			pthread_mutex_unlock(&dec->lock);
-		return ENOMEM;
-	}
-	memset(nal_base, 0, 16);
-	nal_base[15] = 1; // buf[-1]=01, buf[-2]=00, buf[-3]=00 -> a 00 00 01 start code
-	memcpy(nal_base + 16, buf, nal_len);
-	memset(nal_base + 16 + nal_len, 0, cap - 16 - nal_len); // trailing pad for read-ahead
 	buf = nal_base + 16;
 	end = buf + nal_len;
 	int is_slice = 0x100022 >> (buf[0] & 0x1f) & 1; // types 1, 5, 20
@@ -613,10 +626,10 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 	int lowest_order = INT_MAX; // lowest display rank among ready (deliverable) base frames
 	int lowest_any_order = INT_MAX; // lowest display rank among ALL queued base frames, ready or not
 	int lowest_any_pic = -1; // its slot, to test whether it is still being decoded
-	for (int i = 0; i < 16; ++i) {
+	for (int i = 0; i < QUEUE_SIZE; ++i) {
 		int queued = dec->get_frame_queue[0][i];
 		if (queued < 0)
-			continue;
+			break; // the entries stay packed at the front (see dequeue_frame)
 		// Order output by the monotonic display rank assigned at bump time, not
 		// the raw POC: POC is reset by every IDR, so across a GOP boundary a new
 		// GOP's low-POC frame would otherwise overtake the previous GOP's frames
@@ -662,8 +675,8 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		// or reorder bump) may momentarily have no busy task between two of its
 		// slices, so the scan below alone would let a later frame overtake it.
 		int in_flight = lowest_any_pic == dec->currPic;
-		for (unsigned b = dec->busy_tasks; !in_flight && b; b &= b - 1) {
-			if (dec->taskPics[__builtin_ctz(b)] == lowest_any_pic) {
+		for (TaskMask b = dec->busy_tasks; !in_flight && b; b &= b - 1) {
+			if (dec->taskPics[mask_ctz(b)] == lowest_any_pic) {
 				in_flight = 1;
 				break;
 			}
@@ -674,10 +687,10 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 	if (idx0 >= 0) {
 		if (dec->ssps.BitDepth_Y != 0) {
 			int32_t base_poc = dec->FieldOrderCnt[0][pic0]; // pair the dependent view by POC
-			for (int i = 0; i < 16; ++i) {
+			for (int i = 0; i < QUEUE_SIZE; ++i) {
 				int queued = dec->get_frame_queue[1][i];
 				if (queued < 0)
-					continue;
+					break; // the entries stay packed at the front (see dequeue_frame)
 				if (__atomic_load_n(&dec->next_deblock_addr[queued], __ATOMIC_ACQUIRE) != INT_MAX)
 					continue;
 				// Match on (FrameNum, POC), not POC alone: two access units in
@@ -722,13 +735,13 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		// multithreading is left to the hold path below instead.
 		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
 			int32_t base_fn = dec->FrameNums[pic0], base_poc = dec->FieldOrderCnt[0][pic0];
-			for (unsigned o = dec->to_get_frames & ~dec->output_frames & dec->non_base_frames; o; o &= o - 1) {
-				int d = __builtin_ctz(o);
+			for (FrameMask o = dec->to_get_frames & ~dec->output_frames & dec->non_base_frames; o; o &= o - 1) {
+				int d = mask_ctz(o);
 				if (dec->FrameNums[d] != base_fn || dec->FieldOrderCnt[0][d] != base_poc)
 					continue;
 				if (__atomic_load_n(&dec->next_deblock_addr[d], __ATOMIC_ACQUIRE) == INT_MAX) {
-					dec->output_frames |= 1u << d;
-					dec->get_frame_queue_v[1] = shrd128(set8(d), dec->get_frame_queue_v[1], 15);
+					dec->output_frames |= (FrameMask)1 << d;
+					queue_push(dec, 1, d);
 					idx1 = 0;
 					pic1 = d;
 				}
@@ -757,19 +770,19 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 			// dependent several FrameIds past the base and stranding it forever).
 			int dependent_in_flight = 0;
 			int32_t base_fn = dec->FrameNums[pic0], base_poc = dec->FieldOrderCnt[0][pic0];
-			for (unsigned o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
-				int d = __builtin_ctz(o);
+			for (FrameMask o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
+				int d = mask_ctz(o);
 				if (dec->FrameNums[d] == base_fn && dec->FieldOrderCnt[0][d] == base_poc) {
 					dependent_in_flight = 1;
 					break;
 				}
 			}
 			if (!dependent_in_flight) {
-				int queued0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
-				int queued1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
-				int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
+				int queued0 = queue_len(dec, 0);
+				int queued1 = queue_len(dec, 1);
+				int bumpable = max(1, mask_popcount(dec->to_get_frames & ~dec->output_frames));
 				// fullness (would-be ENOBUFS) mid-stream, or end-of-stream drain
-				force_unpaired = dec->flushing || queued0 + queued1 + bumpable > 16;
+				force_unpaired = dec->flushing || queued0 + queued1 + bumpable > QUEUE_SIZE;
 			}
 		}
 		if (dec->ssps.BitDepth_Y == 0 || idx1 >= 0 || force_unpaired) {
@@ -781,8 +794,8 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		int topC = dec->sps.chroma_format_idc == 3 ? top : top >> 1;
 		int leftC = dec->sps.chroma_format_idc == 1 ? left >> 1 : left;
 		int offC = dec->plane_size_Y + topC * dec->out.stride_C + (dec->out.bit_depth_C == 8 ? leftC : leftC << 1);
-		assert(dec->to_get_frames & dec->output_frames & 1u << pic0);
-		dec->to_get_frames &= ~(1u << pic0);
+		assert(dec->to_get_frames & dec->output_frames & (FrameMask)1 << pic0);
+		dec->to_get_frames &= ~((FrameMask)1 << pic0);
 		out->samples[0] = dec->samples_buffers[pic0] + offY;
 		out->samples[1] = dec->samples_buffers[pic0] + offC;
 		out->samples[2] = dec->samples_buffers[pic0] + offC + (dec->out.stride_C >> 1);
@@ -791,23 +804,23 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		out->Poc_mvc = 0;
 		out->DisplayPoc = edge264mvc_unwrap_output_poc(dec, 0, out->Poc);
 		out->DisplayPoc_mvc = 0;
-		out->return_arg = (void *)((uintptr_t)1 << pic0);
+		out->return_arg = handle_of(pic0, -1);
 		if (idx1 >= 0) {
 			dequeue_frame(dec, 1, idx1);
-			assert(dec->to_get_frames & dec->output_frames & 1u << pic1);
-			dec->to_get_frames ^= 1u << pic1;
+			assert(dec->to_get_frames & dec->output_frames & (FrameMask)1 << pic1);
+			dec->to_get_frames ^= (FrameMask)1 << pic1;
 			out->samples_mvc[0] = dec->samples_buffers[pic1] + offY;
 			out->samples_mvc[1] = dec->samples_buffers[pic1] + offC;
 			out->samples_mvc[2] = dec->samples_buffers[pic1] + offC + (dec->out.stride_C >> 1);
 			out->FrameId_mvc = dec->FrameIds[pic1];
 			out->Poc_mvc = dec->FieldOrderCnt[0][pic1];
 			out->DisplayPoc_mvc = edge264mvc_unwrap_output_poc(dec, 1, out->Poc_mvc);
-			out->return_arg = (void *)((uintptr_t)1 << pic0 | (uintptr_t)1 << pic1);
+			out->return_arg = handle_of(pic0, pic1);
 		}
 		res = 0;
 		dec->undelivered = 0;
 		if (!borrow)
-			dec->output_frames &= ~(uintptr_t)out->return_arg;
+			dec->output_frames &= ~handle_frames(out->return_arg);
 		}
 	}
 	// MVC orphan-dependent liveness valve: the mirror of the unpaired-base valve
@@ -827,14 +840,12 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 	// it live too); this therefore never fires on a conformant stream.
 	int dropped_orphan = 0;
 	if (res != 0 && dec->ssps.BitDepth_Y != 0) {
-		uint32_t inflight = 0;
-		for (unsigned b = dec->busy_tasks; b; b &= b - 1)
-			inflight |= 1u << dec->taskPics[__builtin_ctz(b)];
-		uint32_t live_bases = (dec->to_get_frames | inflight) & ~dec->non_base_frames;
-		for (int i = 0; i < 16; ++i) {
+		FrameMask inflight = writing_frames(dec);
+		FrameMask live_bases = (dec->to_get_frames | inflight) & ~dec->non_base_frames;
+		for (int i = 0; i < QUEUE_SIZE; ++i) {
 			int dep = dec->get_frame_queue[1][i];
 			if (dep < 0)
-				continue;
+				break; // the entries stay packed at the front (see dequeue_frame)
 			// Never drop a dependent that is still being parsed (currPic) or
 			// still written by in-flight decode tasks: clearing its
 			// to_get_frames/output_frames bits frees its DPB slot, and the
@@ -846,12 +857,12 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 			// trimmed real 3D-BD stream). Defer the drop: a genuinely orphaned
 			// dependent completes shortly and is dropped on a later call, so
 			// the liveness purpose of this valve is preserved.
-			if (dep == dec->currPic || (inflight & 1u << dep))
+			if (dep == dec->currPic || (inflight & (FrameMask)1 << dep))
 				continue;
 			int32_t base_fn = dec->FrameNums[dep], base_poc = dec->FieldOrderCnt[0][dep];
 			int has_base = 0;
-			for (unsigned o = live_bases; o; o &= o - 1) {
-				int b = __builtin_ctz(o);
+			for (FrameMask o = live_bases; o; o &= o - 1) {
+				int b = mask_ctz(o);
 				if (dec->FrameNums[b] == base_fn && dec->FieldOrderCnt[0][b] == base_poc) {
 					has_base = 1;
 					break;
@@ -863,8 +874,8 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 				// frame was bumped, headers.c bump_frame) - bump_all_frames keeps
 				// returning ENOBUFS at end-of-stream while either bit is set.
 				dequeue_frame(dec, 1, i--);
-				dec->to_get_frames &= ~(1u << dep);
-				dec->output_frames &= ~(1u << dep);
+				dec->to_get_frames &= ~((FrameMask)1 << dep);
+				dec->output_frames &= ~((FrameMask)1 << dep);
 				dropped_orphan = 1;
 				dec->undelivered = 0;
 			}
@@ -879,10 +890,10 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 	// loop retries and the hold resolves as soon as the dependency completes.
 	// Only fires at fullness, so pipelined non-blocking draining is unaffected.
 	if (res != 0 && !dropped_orphan && dec->n_threads && (dec->busy_tasks & ~held_tasks(dec))) {
-		int q0 = __builtin_ctz(movemask(dec->get_frame_queue_v[0]) | 1 << 16);
-		int q1 = __builtin_ctz(movemask(dec->get_frame_queue_v[1]) | 1 << 16);
-		int bumpable = max(1, __builtin_popcount(dec->to_get_frames & ~dec->output_frames));
-		if (q0 + q1 + bumpable > 16)
+		int q0 = queue_len(dec, 0);
+		int q1 = queue_len(dec, 1);
+		int bumpable = max(1, mask_popcount(dec->to_get_frames & ~dec->output_frames));
+		if (q0 + q1 + bumpable > QUEUE_SIZE)
 			progress_or_wait(dec);
 	}
 	if (dec->n_threads)
@@ -897,16 +908,17 @@ static void return_frame(Edge264MvcDecoder *dec, void *return_arg) {
 		return;
 	if (dec->n_threads)
 		pthread_mutex_lock(&dec->lock);
-	dec->output_frames &= ~(size_t)return_arg;
+	FrameMask frames = handle_frames(return_arg);
+	dec->output_frames &= ~frames;
 	// the buffers of a frame in a previous frame format are freed once released
 	// (see parse_seq_parameter_set)
-	for (uint32_t s = dec->stale_frames & (size_t)return_arg; s; s &= s - 1) {
-		int i = __builtin_ctz(s);
+	for (FrameMask s = dec->stale_frames & frames; s; s &= s - 1) {
+		int i = mask_ctz(s);
 		dec->free_cb(dec->samples_buffers[i], dec->mb_buffers[i], dec->alloc_arg);
 		dec->samples_buffers[i] = NULL;
 		dec->mb_buffers[i] = NULL;
 	}
-	dec->stale_frames &= ~(size_t)return_arg;
+	dec->stale_frames &= ~frames;
 	if (dec->n_threads)
 		pthread_mutex_unlock(&dec->lock);
 }
@@ -996,13 +1008,11 @@ int edge264mvc_send_end(Edge264MvcDecoder *dec) {
 // Fill a frame of the public API from one of get_frame, while its slots are held.
 static void export_frame(Edge264MvcDecoder *dec, const Edge264MvcOutput *f, Edge264MvcFrame *out) {
 	memset(out, 0, sizeof(*out));
-	uint32_t slots = (uint32_t)(uintptr_t)f->return_arg;
 	for (int view = 0; view < 2; view++) {
 		const uint8_t * const *planes = view ? f->samples_mvc : f->samples;
 		if (planes[0] == NULL)
 			continue;
-		uint32_t base = view ? dec->non_base_frames : ~dec->non_base_frames;
-		int pic = __builtin_ctz(slots & base);
+		int pic = handle_pic(f->return_arg, view);
 		Edge264MvcView *v = &out->views[view];
 		v->planes[0] = planes[0];
 		v->planes[1] = planes[1];

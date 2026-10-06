@@ -268,6 +268,52 @@ typedef struct {
 
 
 /**
+ * Frame threading overlaps as many pictures as it has slots for them: a
+ * picture in flight holds a frame slot (beside the references and the pictures
+ * awaiting output) and a task slot, which it keeps while it waits on the
+ * progress of its references. So the slots, not the cores, bound how deep a
+ * chain of reference pictures pipelines, and a stream with 16 reference frames
+ * fills half of a 32-slot DPB with them alone. Frame and task sets are 128-bit
+ * masks (FrameMask, TaskMask) where the compiler has them, else 64-bit, and a
+ * worker's id travels in the low bits of the decoder pointer, aligned on
+ * MAX_TASKS bytes.
+ */
+#ifdef __SIZEOF_INT128__
+	#define MAX_FRAMES 128
+	#define MAX_TASKS 128
+	typedef unsigned __int128 FrameMask;
+#else
+	#define MAX_FRAMES 64
+	#define MAX_TASKS 64
+	typedef uint64_t FrameMask;
+#endif
+typedef FrameMask TaskMask;
+#define ALL_TASKS (~(TaskMask)0)
+static inline int mask_ctz(FrameMask m) {
+	#ifdef __SIZEOF_INT128__
+		uint64_t lo = (uint64_t)m;
+		return lo ? __builtin_ctzll(lo) : 64 + __builtin_ctzll((uint64_t)(m >> 64));
+	#else
+		return __builtin_ctzll(m);
+	#endif
+}
+static inline int mask_popcount(FrameMask m) {
+	#ifdef __SIZEOF_INT128__
+		return __builtin_popcountll((uint64_t)m) + __builtin_popcountll((uint64_t)(m >> 64));
+	#else
+		return __builtin_popcountll(m);
+	#endif
+}
+static inline int mask_bits(FrameMask m) { // index of the highest set bit plus one
+	int n = 0;
+	for (; m; m >>= 1)
+		n++;
+	return n;
+}
+
+
+
+/**
  * This structure stores all the data necessary to decode a slice, such that it
  * can be copied into Edge264MvcContext when a worker starts decoding it.
  */
@@ -297,20 +343,70 @@ typedef struct {
 	int32_t next_deblock_addr; // INT_MIN..INT_MAX
 	uint32_t first_mb_in_slice; // 0..139263
 	int32_t mb_bound; // first macroblock of the next slice in decoding order if after this one, else INT_MAX (BOUND_UNKNOWN until then)
-	uint32_t prev_long_term_frames;
+	FrameMask prev_long_term_frames;
 	union { int8_t QP[4]; i8x4 QP_s; }; // same as mb
 	Edge264MvcUnrefCb unref_cb; // copy from decode_NAL
 	void *unref_arg; // copy from decode_NAL
 	Edge264MvcMacroblock *mb_buffer;
 	Edge264MvcMacroblock *mbCol_buffer;
-	uint8_t *samples_buffers[32];
+	uint8_t *samples_buffers[MAX_FRAMES];
 	union { uint16_t samples_clip[3][8]; i16x8 samples_clip_v[3]; }; // [iYCbCr], maximum sample value
 	union { int8_t RefPicList[2][32]; int64_t RefPicList_l[8]; i8x16 RefPicList_v[4]; };
-	union { int32_t diff_poc[32]; i32x4 diff_poc_v[8]; };
+	union { int32_t diff_poc[MAX_FRAMES]; i32x4 diff_poc_v[MAX_FRAMES / 4]; };
 	Edge264MvcPicParameterSet pps;
 	int16_t explicit_weights[3][64]; // [iYCbCr][LX][RefIdx]
 	int8_t explicit_offsets[3][64];
 } Edge264MvcTask;
+
+
+
+/**
+ * Deferred reconstruction: a multithreaded P slice heavy in entropy decoding
+ * parses its macroblocks without waiting for its references, recording each
+ * reconstruction step (motion compensation, intra prediction, residual
+ * transform) with the values it reads that parsing changes afterwards (the
+ * coefficients and QP), and a replay context runs the records in order as soon
+ * as the reference rows they read are final, deblocking and publishing the
+ * rows as the macroblock loop would. Entropy decoding, which depends on no
+ * other picture, thus leaves the chains of P pictures, which then wait for
+ * reconstruction only. B slices gain nothing (no picture waits on most of
+ * them, and their parsing waits on colocated macroblocks anyway), and light
+ * slices spend too little in entropy decoding. A record is a 16-byte header,
+ * followed by the coefficients of a transform.
+ */
+enum {
+	REC_MB, // x = CurrMbAddr, starting the records of a macroblock
+	REC_INTER, // a = partition index, b = width, qp = height
+	REC_INTRA4x4, // a = mode, b = iYCbCr, p = samples
+	REC_INTRA8x8,
+	REC_INTRA16x16,
+	REC_INTRA_CHROMA,
+	REC_IDCT4x4, // a = iYCbCr, b = DCidx, qp, x = DC coefficient, p = samples, then 16 coefficients
+	REC_IDCT4x4_16, // the same with 16-bit coefficients
+	REC_DC4x4, // a = iYCbCr, b = DCidx, x = DC coefficient, p = samples
+	REC_IDCT8x8, // a = iYCbCr, qp, p = samples, then 64 coefficients
+	REC_IDCT8x8_16, // the same with 16-bit coefficients
+	REC_DC16x16, // transform_dc4x4 adding to the samples: a = iYCbCr, qp, then 16 coefficients
+	REC_DC_CHROMA, // transform_dc2x2 adding to the samples: qp = Cb QP, b = Cr QP, then 8 coefficients
+};
+typedef struct {
+	uint8_t op;
+	int8_t a, b;
+	uint8_t qp;
+	int32_t x;
+	uint8_t *p;
+} Edge264MvcRecord;
+#ifndef REC_BUF_SIZE
+	#define REC_BUF_SIZE (8 << 20) // most of a heavy 1080p P picture, whose parsing runs ahead
+#endif
+#define REC_MB_MAX 8192 // room left before a macroblock, more than its records can take
+#ifndef REC_SLICE_TYPES
+	#define REC_SLICE_TYPES 1 // slice_type below which a slice records: P slices form the chains, B slices gain nothing
+#endif
+#ifndef REC_MIN_BYTES_PER_MB
+	#define REC_MIN_BYTES_PER_MB 16 // a lighter slice spends too little in entropy decoding to gain from recording
+#endif
+#define REC_MAX_ACTIVE 64 // most slices recording at once, a quarter of the threads (rec_max) bounding the memory of their buffers
 
 
 
@@ -323,6 +419,7 @@ typedef struct Edge264MvcContext {
 	int8_t thread_id;
 	int8_t mb_qp_delta_nz; // 0..1
 	int8_t col_short_term; // 0..1
+	int8_t rec_pending; // in the replay context, the current macroblock still has its deblocking and publishing to do
 	int16_t mbx;
 	int16_t mby;
 	int32_t CurrMbAddr;
@@ -330,6 +427,12 @@ typedef struct Edge264MvcContext {
 	int8_t overrun; // the slice decoded past mb_bound before learning it, and is decoded again
 	int8_t task_id;
 	int8_t currPic;
+	uint8_t *rec_buf; // start of the record buffer
+	uint8_t *rec_head; // next record to replay
+	uint8_t *rec_tail; // end of the records, NULL when reconstructing at once (and in the replay context)
+	uint8_t *rec_end; // last start of a macroblock's records that leaves it REC_MB_MAX bytes
+	struct Edge264MvcContext *rc; // replay context of a parsing context that records
+	struct Edge264MvcContext *pc; // parsing context of a replay context, which learns the slice bound
 	uint8_t *samples_mb[3]; // address of top-left byte of each plane in current macroblock
 	Edge264MvcMacroblock * _mb; // backup storage for macro mb
 	Edge264MvcMbCache * _mbc; // backup storage for macro mbc, the ring entry of mb
@@ -364,7 +467,7 @@ typedef struct Edge264MvcContext {
 	uint8_t num_ref_idx_mask;
 	int16_t DistScaleFactor[32]; // [refIdxL0]
 	union { int8_t clip_ref_idx[8]; i8x8 clip_ref_idx_v; };
-	union { int8_t MapPicToList0[32]; i8x16 MapPicToList0_v[2]; };
+	int8_t MapPicToList0[MAX_FRAMES];
 	union { uint8_t implicit_weights[32][32]; i8x16 implicit_weights_v[32][2]; }; // w1 for [ref0][ref1], stored with +64 offset
 	union { uint8_t edge_buf[2016]; int64_t edge_buf_l[252]; i8x16 edge_buf_v[126]; };
 	
@@ -423,6 +526,11 @@ typedef struct Edge264MvcContext {
  * _ pictures sent to get_frame and waiting to be returned have values (0, 1)
  */
 typedef int (*Parser)(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
+// Entries of each view's output queue. Pictures are queued when bumped, which
+// under frame threading is mostly before they are decoded, and decode_nal keeps
+// the queue able to take every picture awaiting output, so the queue bounds the
+// pictures in flight as much as the DPB slots do.
+#define QUEUE_SIZE MAX_FRAMES
 typedef struct {
 	int8_t pic;
 	int8_t deblock;
@@ -432,29 +540,35 @@ typedef struct {
 struct Edge264MvcDecoder {
 	// minimal set of fields preserved across flushes
 	Edge264MvcGetBits gb; // must be first in the struct to use the same pointer for bitstream functions
-	int8_t n_threads; // 0 to disable multithreading
+	int16_t n_threads; // 0 to disable multithreading
+	int16_t max_pics; // most pictures with slice tasks in flight, about the threads, bounding the memory
+	int16_t frame_slots; // one past the highest frame slot ever allocated (the lowest free slot is always taken), bounding the scans of slots
 	int8_t nal_unit_type; // 5 significant bits
 	int32_t plane_size_Y;
 	int32_t plane_size_C;
 	int32_t prevFrameId;
 	int32_t next_dispnum; // monotonic display-order counter, assigned to each frame when it is bumped for output
-	uint32_t frame_flip_bits; // bitfield storing target values of bit 0 in mb->recovery_bits for each frame
+	FrameMask frame_flip_bits; // bitfield storing target values of bit 0 in mb->recovery_bits for each frame
 	Edge264MvcAllocCb alloc_cb;
 	Edge264MvcFreeCb free_cb;
 	void *alloc_arg;
 	void *(*worker_loop)(void *);
-	uint8_t *samples_buffers[32];
-	Edge264MvcMacroblock *mb_buffers[32];
-	uint32_t stale_frames; // frames of a previous frame format held by the caller, freed when released
-	void *mbc_ring_allocs[17]; // per worker (thread_id + 1), see Edge264MvcMbCache
-	int32_t mbc_ring_sizes[17];
-	uint8_t *spec_rows_allocs[17]; // per worker, see spec_rows
-	size_t spec_rows_sizes[17];
+	uint8_t *samples_buffers[MAX_FRAMES];
+	Edge264MvcMacroblock *mb_buffers[MAX_FRAMES];
+	FrameMask stale_frames; // frames of a previous frame format held by the caller, freed when released
+	void *mbc_ring_allocs[MAX_TASKS + 1]; // per worker (thread_id + 1), see Edge264MvcMbCache
+	int32_t mbc_ring_sizes[MAX_TASKS + 1];
+	uint8_t *spec_rows_allocs[MAX_TASKS + 1]; // per worker, see spec_rows
+	size_t spec_rows_sizes[MAX_TASKS + 1];
+	uint8_t *rec_pool[REC_MAX_ACTIVE]; // free buffers of REC_BUF_SIZE bytes for deferred reconstruction
+	int8_t rec_pool_size; // buffers in rec_pool
+	int8_t rec_active; // buffers held by recording slices
+	int8_t rec_max; // most buffers held at once
 	Parser parse_nal_unit[32];
-	pthread_t threads[16];
+	pthread_t threads[MAX_TASKS];
 	pthread_mutex_t lock;
 	pthread_cond_t task_ready;
-	pthread_cond_t frame_progress[32]; // signals next_deblock_addr[i] has reached progress_wake_addr[i]
+	pthread_cond_t frame_progress[MAX_FRAMES]; // signals next_deblock_addr[i] has reached progress_wake_addr[i]
 	pthread_cond_t task_complete;
 	Edge264MvcOutput out;
 	int32_t max_frame_pixels; // largest frame accepted after cropping, 0 for the largest any level allows
@@ -491,43 +605,44 @@ struct Edge264MvcDecoder {
 	Edge264MvcPicParameterSet PPS[4];
 	
 	// frame buffer as a Structure Of Arrays
-	uint32_t short_term_frames; // bitfield for indices of short-term or non-existing frame/view references for current view
-	uint32_t long_term_frames; // bitfield for indices of long-term or non-existing frame/view references for current view
-	uint32_t to_get_frames; // bitfield for frames waiting to be output
-	uint32_t output_frames; // bitfield for frames that are owned by the caller after get_frame and not yet returned
-	uint32_t non_base_frames; // bitfield for frames that are non-base views in MVC
-	uint32_t prev_short_term_frames; // state of short_term_frames for both views before current frame
-	uint32_t prev_long_term_frames; // state of long_term_frames for both views before current frame
-	int32_t FrameNums[32]; // signed to be used along FieldOrderCnt in initial reference ordering
-	int32_t FrameIds[32]; // unique identifiers for each frame, incremented in decoding order
-	int32_t DispOrder[32]; // monotonic display-order rank, assigned when a frame is bumped for output (see next_dispnum)
-	union { int8_t get_frame_queue[2][16]; i8x16 get_frame_queue_v[2]; }; // FIFO with insertion at 0 for both views, and empty slots having value -1
-	union { int8_t LongTermFrameIdx[32]; i8x16 LongTermFrameIdx_v[2]; };
-	union { int8_t prev_LongTermFrameIdx[32]; i8x16 prev_LongTermFrameIdx_v[2]; }; // state of LongTermFrameIdx before current frame
-	union { int32_t FieldOrderCnt[2][32]; i32x4 FieldOrderCnt_v[2][8]; }; // lower/higher half for top/bottom fields
-	int32_t remaining_mbs[32] __attribute__((aligned(64))); // when 0 all mbs have been decoded yet not deblocked
-	union { int32_t next_deblock_addr[32]; i32x4 next_deblock_addr_v[8]; }; // next CurrMbAddr value for which mbB will be deblocked, when INT_MAX the picture is complete
+	FrameMask short_term_frames; // bitfield for indices of short-term or non-existing frame/view references for current view
+	FrameMask long_term_frames; // bitfield for indices of long-term or non-existing frame/view references for current view
+	FrameMask to_get_frames; // bitfield for frames waiting to be output
+	FrameMask output_frames; // bitfield for frames that are owned by the caller after get_frame and not yet returned
+	FrameMask non_base_frames; // bitfield for frames that are non-base views in MVC
+	FrameMask prev_short_term_frames; // state of short_term_frames for both views before current frame
+	FrameMask prev_long_term_frames; // state of long_term_frames for both views before current frame
+	int32_t FrameNums[MAX_FRAMES]; // signed to be used along FieldOrderCnt in initial reference ordering
+	int32_t FrameIds[MAX_FRAMES]; // unique identifiers for each frame, incremented in decoding order
+	int32_t DispOrder[MAX_FRAMES]; // monotonic display-order rank, assigned when a frame is bumped for output (see next_dispnum)
+	int8_t get_frame_queue[2][QUEUE_SIZE]; // FIFO with insertion at 0 for both views, and empty slots having value -1
+	int8_t LongTermFrameIdx[MAX_FRAMES];
+	int8_t prev_LongTermFrameIdx[MAX_FRAMES]; // state of LongTermFrameIdx before current frame
+	union { int32_t FieldOrderCnt[2][MAX_FRAMES]; i32x4 FieldOrderCnt_v[2][MAX_FRAMES / 4]; }; // lower/higher half for top/bottom fields
+	int32_t remaining_mbs[MAX_FRAMES] __attribute__((aligned(64))); // when 0 all mbs have been decoded yet not deblocked
+	int32_t next_deblock_addr[MAX_FRAMES]; // next CurrMbAddr value for which mbB will be deblocked, when INT_MAX the picture is complete
 	
 	// fields accessed concurrently from multiple threads
-	uint16_t pending_tasks;
-	uint16_t busy_tasks; // bitmask for tasks that are either pending or processed in a thread
-	uint16_t ready_tasks;
+	TaskMask pending_tasks;
+	TaskMask busy_tasks; // bitmask for tasks that are either pending or processed in a thread
+	TaskMask ready_tasks;
 	int8_t held_task; // newest slice task, whose end the next NAL tells (mb_bound), or -1
-	uint16_t acked_tasks; // tasks that know their mb_bound and decode no macroblock past it
-	uint16_t task_after[16]; // older tasks of the same picture whose macroblocks a task may share, to finish first
-	int32_t task_bounds[16]; // mb_bound of each task, written by the parser once known
-	int8_t task_wait_pic[16]; // frame whose progress each task waits for in wait_frame_progress, or -1
-	volatile union { uint32_t task_dependencies[16]; i32x4 task_dependencies_v[4]; }; // frames on which each task depends to start
-	union { int8_t taskPics[16]; i8x16 taskPics_v; }; // values of currPic for each task
+	uint64_t acked_tasks[MAX_TASKS / 64]; // tasks that know their mb_bound and decode no macroblock past it, atomic per word (see acked_load)
+	TaskMask task_after[MAX_TASKS]; // older tasks of the same picture whose macroblocks a task may share, to finish first
+	TaskMask chained_tasks; // pending slices taken by the worker finishing the slices before them in their picture, see worker_loop
+	int32_t task_bounds[MAX_TASKS]; // mb_bound of each task, written by the parser once known
+	int8_t task_wait_pic[MAX_TASKS]; // frame whose progress each task waits for in wait_frame_progress, or -1
+	volatile FrameMask task_dependencies[MAX_TASKS]; // frames on which each task depends to start
+	int8_t taskPics[MAX_TASKS]; // values of currPic for each task
 	uint64_t deblock_pending_slices; // used entries of deblock_pending
 	Edge264MvcPendingSlice deblock_pending[64];
-	int32_t progress_wake_addr[32]; // lowest next_deblock_addr a task waits for on each frame, or INT_MAX
-	uint32_t task_seq[16]; // decoding order of each task, workers pick the oldest ready task
+	int32_t progress_wake_addr[MAX_FRAMES]; // lowest next_deblock_addr a task waits for on each frame, or INT_MAX
+	uint32_t task_seq[MAX_TASKS]; // decoding order of each task, workers pick the oldest ready task
 	uint32_t next_task_seq;
-	Edge264MvcTask tasks[16];
-	uint32_t frame_flags[32]; // EDGE264MVC_VIEW_* of each frame, OR-ed atomically by the workers
-	int64_t frame_pts[32]; // values sent with the NAL starting each frame
-	int64_t frame_user_data[32];
+	Edge264MvcTask tasks[MAX_TASKS];
+	uint32_t frame_flags[MAX_FRAMES]; // EDGE264MVC_VIEW_* of each frame, OR-ed atomically by the workers
+	int64_t frame_pts[MAX_FRAMES]; // values sent with the NAL starting each frame
+	int64_t frame_user_data[MAX_FRAMES];
 	
 	// Logging context
 	uint64_t log_base_us; // timestamp of decoder initialization
@@ -1297,81 +1412,144 @@ static always_inline int rbsp_end(Edge264MvcGetBits *gb, int trailing_bit) {
 		return (c & 0xf) | (c >> 12 & 0xf0);
 	}
 #endif
-static unsigned refs_to_mask(Edge264MvcTask *t) {
-	i8x16 a = t->RefPicList_v[0];
-	i8x16 b = t->RefPicList_v[2];
-	i16x8 a07 = cvtlo8s16(a);
-	i16x8 a8F = cvthi8s16(a);
-	i16x8 b07 = cvtlo8s16(b);
-	i16x8 b8F = cvthi8s16(b);
-	u32x4 c = pow2x4(cvtlo16s32(a07)) | pow2x4(cvthi16s32(a07)) |
-		pow2x4(cvtlo16s32(a8F)) | pow2x4(cvthi16s32(a8F)) |
-		pow2x4(cvtlo16s32(b07)) | pow2x4(cvthi16s32(b07)) |
-		pow2x4(cvtlo16s32(b8F)) | pow2x4(cvthi16s32(b8F));
-	u32x4 d = c | (u32x4)((u64x2)c >> 32);
-	u32x4 e = d | (u32x4)shr128(d, 8);
-	return e[0];
+static FrameMask refs_to_mask(Edge264MvcTask *t) {
+	FrameMask refs = 0;
+	for (int i = 0; i < 64; i++) {
+		int pic = t->RefPicList[i >> 5][i & 31];
+		if (pic >= 0)
+			refs |= (FrameMask)1 << pic;
+	}
+	return refs;
 }
-static always_inline unsigned ready_frames(Edge264MvcDecoder *c) {
+static always_inline FrameMask ready_frames(Edge264MvcDecoder *c) {
 	// next_deblock_addr is written without the lock by worker threads (the
 	// deblock frontier and the INT_MAX completion flag), so read every entry
 	// atomically here rather than with a wide vector load: a non-atomic vector
 	// read racing the workers' atomic stores is undefined behaviour and, on a
 	// weakly-ordered target, could observe a torn or stale completion flag.
-	unsigned ready = 0;
-	for (int i = 0; i < 32; i++)
-		ready |= (unsigned)(__atomic_load_n(&c->next_deblock_addr[i], __ATOMIC_ACQUIRE) == INT_MAX) << i;
+	// Slots past frame_slots never held a picture, so none of them is wanted.
+	FrameMask ready = 0;
+	for (int i = 0, n = __atomic_load_n(&c->frame_slots, __ATOMIC_RELAXED); i < n; i++)
+		ready |= (FrameMask)(__atomic_load_n(&c->next_deblock_addr[i], __ATOMIC_ACQUIRE) == INT_MAX) << i;
 	return ready;
 }
 // Frames targeted by a busy (pending or running) task, i.e. that will make
 // progress. In multithreaded mode a task may start as soon as each of its
 // references is complete or has such a writer, and then waits for the rows it
 // needs in wait_frame_progress, which lets consecutive dependent frames overlap.
-static always_inline unsigned writing_frames(Edge264MvcDecoder *dec) {
-	unsigned writing = 0;
-	for (unsigned b = dec->busy_tasks; b; b &= b - 1)
-		writing |= 1u << dec->taskPics[__builtin_ctz(b)];
+static always_inline FrameMask writing_frames(Edge264MvcDecoder *dec) {
+	FrameMask writing = 0;
+	for (TaskMask b = dec->busy_tasks; b; b &= b - 1)
+		writing |= (FrameMask)1 << dec->taskPics[mask_ctz(b)];
 	return writing;
 }
-static always_inline int oldest_task(Edge264MvcDecoder *dec, unsigned tasks) {
-	int task_id = tasks ? __builtin_ctz(tasks) : 0;
-	for (unsigned r = tasks & (tasks - 1); r; r &= r - 1) {
-		int i = __builtin_ctz(r);
+static always_inline int oldest_task(Edge264MvcDecoder *dec, TaskMask tasks) {
+	int task_id = tasks ? mask_ctz(tasks) : 0;
+	for (TaskMask r = tasks & (tasks - 1); r; r &= r - 1) {
+		int i = mask_ctz(r);
 		if ((int32_t)(dec->task_seq[i] - dec->task_seq[task_id]) < 0)
 			task_id = i;
 	}
 	return task_id;
 }
-static always_inline unsigned usable_frames(Edge264MvcDecoder *c) {
+static always_inline FrameMask usable_frames(Edge264MvcDecoder *c) {
 	return ready_frames(c) | (c->n_threads ? writing_frames(c) : 0);
 }
 #define BOUND_UNKNOWN (INT_MAX - 1) // mb_bound of a slice before the next NAL tells it
-static always_inline unsigned held_tasks(Edge264MvcDecoder *c) {
-	return c->held_task >= 0 ? 1u << c->held_task : 0;
+static always_inline TaskMask held_tasks(Edge264MvcDecoder *c) {
+	return c->held_task >= 0 ? (TaskMask)1 << c->held_task : 0;
+}
+// acked_tasks is read and written atomically per 64-bit word, each bit pairing
+// a seq_cst store with a seq_cst load as a single word did.
+static always_inline void acked_set(Edge264MvcDecoder *dec, int task_id) {
+	__atomic_fetch_or(&dec->acked_tasks[task_id >> 6], (uint64_t)1 << (task_id & 63), __ATOMIC_SEQ_CST);
+}
+static always_inline void acked_clear(Edge264MvcDecoder *dec, int task_id) {
+	__atomic_fetch_and(&dec->acked_tasks[task_id >> 6], ~((uint64_t)1 << (task_id & 63)), __ATOMIC_SEQ_CST);
+}
+static always_inline TaskMask acked_load(Edge264MvcDecoder *dec) {
+	TaskMask acked = 0;
+	for (int i = 0; i < MAX_TASKS / 64; i++)
+		acked |= (TaskMask)__atomic_load_n(&dec->acked_tasks[i], __ATOMIC_SEQ_CST) << (i * 64);
+	return acked;
+}
+// The handle of an output frame (return_arg) names the slots of its views, as
+// slot + 1 in the low byte for the base view and the next byte for the
+// dependent view (0 when absent), so it is never NULL and holds any slot even
+// in a 32-bit pointer.
+static always_inline void *handle_of(int pic0, int pic1) {
+	return (void *)(uintptr_t)((pic0 + 1) | (pic1 + 1) << 8);
+}
+static always_inline int handle_pic(const void *handle, int view) {
+	return ((uintptr_t)handle >> (view * 8) & 255) - 1;
+}
+static always_inline FrameMask handle_frames(const void *handle) {
+	FrameMask frames = 0;
+	for (int view = 0; view < 2; view++) {
+		int pic = handle_pic(handle, view);
+		if (pic >= 0)
+			frames |= (FrameMask)1 << pic;
+	}
+	return frames;
+}
+// Appends n 32-bit coefficients after a record, as 16-bit ones if they all fit
+// (the coefficient levels of 8-bit video do), and tells which it stored.
+static always_inline int record_coeffs(Edge264MvcContext *ctx, const i32x4 *c, int n) {
+	i32x4 fits = set32(-1);
+	for (int i = 0; i < n / 4; i += 2) {
+		i16x8 p = packs32(c[i], c[i + 1]);
+		fits &= (cvtlo16s32(p) == c[i]) & (cvthi16s32(p) == c[i + 1]);
+		*(i16x8 *)(ctx->rec_tail + i * 8) = p;
+	}
+	if (movemask(fits) == 0xffff) {
+		ctx->rec_tail += n * 2;
+		return 1;
+	}
+	memcpy(ctx->rec_tail, c, n * 4);
+	ctx->rec_tail += n * 4;
+	return 0;
+}
+// Appends a reconstruction record (see Edge264MvcRecord).
+static always_inline void record(Edge264MvcContext *ctx, int op, int a, int b, int qp, int32_t x, uint8_t *p) {
+	Edge264MvcRecord *r = (Edge264MvcRecord *)ctx->rec_tail;
+	r->op = op;
+	r->a = a;
+	r->b = b;
+	r->qp = qp;
+	r->x = x;
+	r->p = p;
+	ctx->rec_tail += sizeof(*r);
+}
+// Number of pictures in the output queue of a view, which stay packed at its front.
+static always_inline int queue_len(const Edge264MvcDecoder *dec, int view) {
+	int n = 0;
+	while (n < QUEUE_SIZE && dec->get_frame_queue[view][n] >= 0)
+		n++;
+	return n;
+}
+// Shifts a picture in at the front of the output queue of a view, dropping the last entry.
+static always_inline void queue_push(Edge264MvcDecoder *dec, int view, int pic) {
+	memmove(dec->get_frame_queue[view] + 1, dec->get_frame_queue[view], QUEUE_SIZE - 1);
+	dec->get_frame_queue[view][0] = pic;
 }
 // Single-threaded, the newest slice task is held until the next NAL bounds it.
 // Multithreaded, it starts at once and learns its bound as it goes (see
 // known_mb_bound and claim_after_older_slices).
-static always_inline unsigned ready_tasks(Edge264MvcDecoder *c) {
-	i32x4 not_ready = ~set32(usable_frames(c));
-	i32x4 a = (c->task_dependencies_v[0] & not_ready) == 0;
-	i32x4 b = (c->task_dependencies_v[1] & not_ready) == 0;
-	i32x4 d = (c->task_dependencies_v[2] & not_ready) == 0;
-	i32x4 e = (c->task_dependencies_v[3] & not_ready) == 0;
-	unsigned ready = c->pending_tasks & ~(c->n_threads ? 0 : held_tasks(c)) & movemask(packs16(packs32(a, b), packs32(d, e)));
-	for (unsigned r = ready; r; r &= r - 1) {
-		int i = __builtin_ctz(r);
-		if (c->task_after[i] & c->busy_tasks)
-			ready &= ~(1u << i);
+static always_inline TaskMask ready_tasks(Edge264MvcDecoder *c) {
+	FrameMask not_ready = ~usable_frames(c);
+	TaskMask ready = c->pending_tasks & ~(c->n_threads ? 0 : held_tasks(c));
+	for (TaskMask r = ready; r; r &= r - 1) {
+		int i = mask_ctz(r);
+		if ((c->task_dependencies[i] & not_ready) || (c->task_after[i] & c->busy_tasks))
+			ready &= ~((TaskMask)1 << i);
 	}
 	return ready;
 }
-static always_inline unsigned depended_frames(Edge264MvcDecoder *dec) {
-	u32x4 a = dec->task_dependencies_v[0] | dec->task_dependencies_v[1] |
-	          dec->task_dependencies_v[2] | dec->task_dependencies_v[3];
-	u32x4 b = a | (u32x4)shr128(a, 8);
-	u32x4 c = b | (u32x4)shr128(b, 4);
-	return c[0];
+static always_inline FrameMask depended_frames(Edge264MvcDecoder *dec) {
+	FrameMask depended = 0; // the dependencies of idle tasks are cleared
+	for (TaskMask b = dec->busy_tasks; b; b &= b - 1)
+		depended |= dec->task_dependencies[mask_ctz(b)];
+	return depended;
 }
 // Frames still being written by an in-flight decode task: the target picture
 // (taskPics) of every busy task whose frame has not completed. These slots must
@@ -1384,11 +1562,8 @@ static always_inline unsigned depended_frames(Edge264MvcDecoder *dec) {
 // its last write to the frame, so the window between it and the busy-bit clear
 // (taken under the lock after the benchmark log) is benign and excluding it
 // avoids stalling the parser on every frame completion.
-static always_inline unsigned inflight_frames(Edge264MvcDecoder *dec) {
-	unsigned inflight = 0;
-	for (unsigned b = dec->busy_tasks; b; b &= b - 1)
-		inflight |= 1u << dec->taskPics[__builtin_ctz(b)];
-	return inflight & ~ready_frames(dec);
+static always_inline FrameMask inflight_frames(Edge264MvcDecoder *dec) {
+	return writing_frames(dec) & ~ready_frames(dec);
 }
 // Wake the tasks waiting on the progress of frame pic (lock held).
 static always_inline void wake_frame_waiters(Edge264MvcDecoder *dec, int pic) {

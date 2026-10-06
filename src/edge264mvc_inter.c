@@ -31,12 +31,14 @@ static noinline void wait_frame_progress(Edge264MvcContext *ctx, int pic, int32_
 	while (__atomic_load_n(&dec->next_deblock_addr[pic], __ATOMIC_ACQUIRE) < addr) {
 		// A slice started before its bound was known learns it here too, as the
 		// parser waits for that before starting a later picture (settle_mb_bounds),
-		// and wakes it through task_wait_pic.
+		// and wakes it through task_wait_pic. When replaying, the parsing context
+		// learns it, whose position tells whether the slice went past it.
+		Edge264MvcContext *pctx = ctx->pc ? ctx->pc : ctx;
 		int32_t mb_bound;
-		if (ctx->t.mb_bound == BOUND_UNKNOWN &&
+		if (pctx->t.mb_bound == BOUND_UNKNOWN &&
 			(mb_bound = __atomic_load_n(&dec->task_bounds[ctx->task_id], __ATOMIC_ACQUIRE)) != BOUND_UNKNOWN) {
 			pthread_mutex_unlock(&dec->lock);
-			known_mb_bound(ctx, mb_bound, 1);
+			known_mb_bound(pctx, mb_bound, pctx == ctx);
 			pthread_mutex_lock(&dec->lock);
 			continue;
 		}
@@ -53,6 +55,15 @@ static noinline void wait_frame_progress(Edge264MvcContext *ctx, int pic, int32_
 static always_inline void await_frame_progress(Edge264MvcContext *ctx, int pic, int32_t addr) {
 	if (__builtin_expect(__atomic_load_n(&ctx->d->next_deblock_addr[pic], __ATOMIC_ACQUIRE) < addr, 0))
 		wait_frame_progress(ctx, pic, addr);
+}
+// Tells whether the reference rows that decode_inter reads for partition i of
+// height h of the current macroblock are final, computed as it does.
+static always_inline int inter_ready(Edge264MvcContext *ctx, int i, int h) {
+	int y = mb->mvs[i * 2 + 1];
+	int refPic = mb->refPic[i >> 2];
+	int yInt_Y = ctx->mby * 16 + y444[i & 15] + (y >> 2);
+	int mby_ref = min(max(yInt_Y + h + 6, 0) >> 4, ctx->t.pic_height_in_mbs - 1);
+	return __atomic_load_n(&ctx->d->next_deblock_addr[refPic], __ATOMIC_ACQUIRE) >= (mby_ref + 1) * ctx->t.pic_width_in_mbs;
 }
 
 static always_inline i16x8 sixtapHV(i16x8 a, i16x8 b, i16x8 c, i16x8 d, i16x8 e, i16x8 f) {
@@ -1218,7 +1229,11 @@ static noinline void decode_inter_wide(Edge264MvcContext *ctx, int i4x4, int x, 
 static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	static int8_t shift_Y_8bit[46] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15};
 	static int8_t shift_C_8bit[22] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 7, 7, 7, 7, 7, 7};
-	
+	if (ctx->rec_tail) { // the motion vectors and references stay in mb for the replay
+		record(ctx, REC_INTER, i, w, h, 0, NULL);
+		return;
+	}
+
 	// load motion vector and source pointers
 	int x = mb->mvs[i * 2];
 	int y = mb->mvs[i * 2 + 1];

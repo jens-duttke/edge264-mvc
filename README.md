@@ -9,7 +9,7 @@ edge264-mvc is derived from [edge264](https://github.com/tvlabs/edge264) by Thib
 ## Why edge264-mvc
 
 - **3D Blu-ray decoding that works end to end** - both eye views of every picture, paired and in display order, tested on complete commercial 3D Blu-ray films.
-- **Fast** - consecutive pictures and the slices of a picture are decoded in parallel on all cores, which makes 1080p decoding about 4 times as fast as on one core on an 8-core CPU. edge264's experimental multithreading hangs; on one core edge264-mvc is 3% to 24% faster than edge264, depending on CPU and compiler, and in our tests edge264 failed on 3D Blu-ray and 4K video.
+- **Fast** - consecutive pictures are decoded in parallel on all cores, which makes 1080p decoding about 4 times as fast as on one core on an 8-core CPU. edge264's experimental multithreading hangs; on one core edge264-mvc is 3% to 24% faster than edge264, depending on CPU and compiler, and in our tests edge264 failed on 3D Blu-ray and 4K video.
 - **Robust on damaged streams** - missing or damaged parts are concealed and decoding continues. The decoder is fuzzed under AddressSanitizer and UndefinedBehaviorSanitizer, and its threading is checked with ThreadSanitizer.
 - **A small API that is hard to misuse** - send NAL units, receive frames; timestamps travel with their pictures, every frame reports whether part of it was concealed, and the results have the same values on every platform.
 - **Tested on every change** - the output is compared with the ITU reference decoder on the conformance streams, on Linux and Windows, single- and multithreaded, and the decoder runs under the sanitizers and a fuzzer.
@@ -176,7 +176,7 @@ The whole API is declared in [edge264mvc.h](edge264mvc.h), and the library is ca
 <code>void <b>edge264mvc_default_settings</b>(settings)</code>
 
 > Fill an `Edge264MvcSettings` with the defaults. Always call it before changing a field, so that a field added later keeps its default.
-> * `int32_t n_threads` - 0 (default): one worker thread per logical CPU available to the process; 1: decode synchronously inside `send_nal`, on the calling thread; N > 1: N worker threads (at most 16 are used)
+> * `int32_t n_threads` - 0 (default): one worker thread per logical CPU available to the process; 1: decode synchronously inside `send_nal`, on the calling thread; N > 1: N worker threads (at most 128 are used)
 > * `int32_t max_frame_pixels` - frames larger than this (in luma pixels, after cropping, so 1920x1080 for 1080p video) are reported as unsupported, as is a stream whose coded frame exceeds it by more than rounding each dimension up to a multiple of 16; 0 (default): 8192x4352, the largest frame any level of H.264 allows
 > * `void (* log_cb)(const char * line, void * log_arg)` - if not NULL, receives a YAML trace of every header (and macroblock with `log_mbs`), possibly from worker threads; requires the `logs` build variant, without which `edge264mvc_open` returns `EDGE264MVC_INVALID`
 > * `void * log_arg` - passed to `log_cb`

@@ -107,6 +107,15 @@ static const i8x16 normAdjust8x8[12] = {
  */
 static noinline void add_idct4x4(Edge264MvcContext *ctx, int iYCbCr, int DCidx, uint8_t *p)
 {
+	if (ctx->rec_tail) {
+		Edge264MvcRecord *r = (Edge264MvcRecord *)ctx->rec_tail;
+		record(ctx, REC_IDCT4x4, iYCbCr, DCidx, ctx->t.QP[iYCbCr], DCidx >= 0 ? ctx->c[16 + DCidx] : 0, p);
+		if (record_coeffs(ctx, ctx->c_v, 16))
+			r->op = REC_IDCT4x4_16;
+		ctx->c_v[0] = ctx->c_v[1] = ctx->c_v[2] = ctx->c_v[3] = (i8x16){};
+		return;
+	}
+
 	// loading and scaling
 	unsigned qP = ctx->t.QP[iYCbCr];
 	int sh = qP / 6;
@@ -172,6 +181,10 @@ static noinline void add_idct4x4(Edge264MvcContext *ctx, int iYCbCr, int DCidx, 
 }
 
 static void add_dc4x4(Edge264MvcContext *ctx, int iYCbCr, int DCidx, uint8_t *p) {
+	if (ctx->rec_tail) {
+		record(ctx, REC_DC4x4, iYCbCr, DCidx, 0, ctx->c[16 + DCidx], p);
+		return;
+	}
 	i32x4 r = set16((ctx->c[16 + DCidx] + 32) >> 6);
 	size_t stride = ctx->t.stride[iYCbCr];
 	DECL_SSTRIDE(stride);
@@ -195,7 +208,14 @@ static void add_idct8x8(Edge264MvcContext *ctx, int iYCbCr, uint8_t *dst0)
 {
 	// loading and scaling
 	unsigned qP = ctx->t.QP[iYCbCr];
-	if (ctx->t.samples_clip[iYCbCr][0] == 255) {
+	if (ctx->t.samples_clip[iYCbCr][0] == 255 && ctx->rec_tail) {
+		Edge264MvcRecord *r = (Edge264MvcRecord *)ctx->rec_tail;
+		record(ctx, REC_IDCT8x8, iYCbCr, 0, qP, 0, dst0);
+		if (record_coeffs(ctx, ctx->c_v, 64))
+			r->op = REC_IDCT8x8_16;
+		for (int i = 0; i < 16; i++)
+			ctx->c_v[i] = (i32x4){};
+	} else if (ctx->t.samples_clip[iYCbCr][0] == 255) {
 		int div = qP / 6;
 		int m = qP % 6;
 		i8x16 nA0 = normAdjust8x8[m * 2];
@@ -356,6 +376,14 @@ static void add_idct8x8(Edge264MvcContext *ctx, int iYCbCr, uint8_t *dst0)
  */
 static void transform_dc4x4(Edge264MvcContext *ctx, int iYCbCr)
 {
+	if (ctx->rec_tail && !(mb->bits[0] & 1 << 5)) { // adding to the samples is reconstruction
+		record(ctx, REC_DC16x16, iYCbCr, 0, ctx->t.QP[0], 0, NULL);
+		memcpy(ctx->rec_tail, ctx->c_v, 64);
+		ctx->rec_tail += 64;
+		ctx->c_v[0] = ctx->c_v[1] = ctx->c_v[2] = ctx->c_v[3] = (i8x16){};
+		return;
+	}
+
 	// load matrix in column order and multiply right
 	i32x4 x0 = ctx->c_v[0] + ctx->c_v[1];
 	i32x4 x1 = ctx->c_v[2] + ctx->c_v[3];
@@ -460,6 +488,14 @@ static void transform_dc4x4(Edge264MvcContext *ctx, int iYCbCr)
 
 static void transform_dc2x2(Edge264MvcContext *ctx)
 {
+	if (ctx->rec_tail && !mb->f.CodedBlockPatternChromaAC) { // adding to the samples is reconstruction
+		record(ctx, REC_DC_CHROMA, 0, ctx->t.QP[2], ctx->t.QP[1], 0, NULL);
+		memcpy(ctx->rec_tail, ctx->c_v, 32);
+		ctx->rec_tail += 32;
+		ctx->c_v[0] = ctx->c_v[1] = (i8x16){};
+		return;
+	}
+
 	// load both matrices interlaced+transposed and multiply right
 	i32x4 d0 = ctx->c_v[0] + ctx->c_v[1];
 	i32x4 d1 = ctx->c_v[0] - ctx->c_v[1];
@@ -540,6 +576,165 @@ static void transform_dc2x2(Edge264MvcContext *ctx)
 			*(int64_t *)(p + stride * 3) = rB[1];
 		}
 	}
+}
+
+
+
+/**
+ * Deferred reconstruction (see Edge264MvcRecord). The replay context takes
+ * the position of each recorded macroblock, runs its records with the values
+ * they captured, then deblocks the macroblock above it and publishes finished
+ * rows exactly where the macroblock loop of parse_slice_data would.
+ */
+#define intra_pred(op, fn, p, stride, mode, iYCbCr) do {\
+	if (ctx->rec_tail)\
+		record(ctx, op, mode, iYCbCr, 0, stride, p);\
+	else\
+		fn(p, stride, mode, ctx->t.samples_clip_v[iYCbCr]);\
+} while (0)
+
+static always_inline void replay_position(Edge264MvcContext *rc, int addr) {
+	int width = rc->t.pic_width_in_mbs;
+	rc->mby = addr / width;
+	rc->mbx = addr % width;
+	rc->_mb = rc->t.mb_buffer + rc->mbx + rc->mby * (width + 1);
+	rc->samples_mb[0] = rc->t.samples_buffers[rc->currPic] + (rc->mbx + rc->mby * rc->t.stride[0]) * 16;
+	rc->samples_mb[1] = rc->t.samples_buffers[rc->currPic] + (rc->mbx + rc->mby * rc->t.stride[1]) * 8 + rc->t.plane_size_Y;
+	rc->samples_mb[2] = rc->samples_mb[1] + (rc->t.stride[1] >> 1);
+}
+
+static noinline void replay_after_mb(Edge264MvcContext *rc) {
+	int width = rc->t.pic_width_in_mbs;
+	int addr = rc->CurrMbAddr;
+	rc->rec_pending = 0;
+	if (addr - width == rc->t.next_deblock_addr) {
+		rc->t.next_deblock_addr += 1;
+		replay_position(rc, addr - width);
+		deblock_mb(rc);
+	}
+	if ((addr + 1) % width == 0 && rc->t.next_deblock_idc >= 0) {
+		publish_frame_progress(rc->d, rc->t.next_deblock_idc,
+			(rc->t.disable_deblocking_filter_idc != 1) ? rc->t.next_deblock_addr : addr + 1);
+	}
+}
+
+/**
+ * Runs the records of the parsing context ctx, those of each macroblock once
+ * the parser is past it. Unless blocking, stops before a motion compensation
+ * whose reference rows are not final yet, rather than waiting for them.
+ */
+static noinline void replay_records(Edge264MvcContext *ctx, int blocking) {
+	Edge264MvcContext *rc = ctx->rc;
+	uint8_t *p = ctx->rec_head;
+	while (p < ctx->rec_tail) {
+		const Edge264MvcRecord *r = (const Edge264MvcRecord *)p;
+		switch (r->op) {
+		case REC_MB:
+			if (rc->rec_pending)
+				replay_after_mb(rc);
+			rc->CurrMbAddr = r->x;
+			replay_position(rc, r->x);
+			rc->rec_pending = 1;
+			p += sizeof(*r);
+			break;
+		case REC_INTER:
+			if (!blocking && !inter_ready(rc, r->a, r->qp)) {
+				ctx->rec_head = p;
+				return;
+			}
+			decode_inter(rc, r->a, r->b, r->qp);
+			p += sizeof(*r);
+			break;
+		case REC_INTRA4x4:
+			decode_intra4x4(r->p, r->x, r->a, rc->t.samples_clip_v[r->b]);
+			p += sizeof(*r);
+			break;
+		case REC_INTRA8x8:
+			decode_intra8x8(r->p, r->x, r->a, rc->t.samples_clip_v[r->b]);
+			p += sizeof(*r);
+			break;
+		case REC_INTRA16x16:
+			decode_intra16x16(r->p, r->x, r->a, rc->t.samples_clip_v[r->b]);
+			p += sizeof(*r);
+			break;
+		case REC_INTRA_CHROMA:
+			decode_intraChroma(r->p, r->x, r->a, rc->t.samples_clip_v[r->b]);
+			p += sizeof(*r);
+			break;
+		case REC_IDCT4x4:
+			rc->t.QP[r->a] = r->qp;
+			memcpy(rc->c_v, p + sizeof(*r), 64);
+			if (r->b >= 0)
+				rc->c[16 + r->b] = r->x;
+			add_idct4x4(rc, r->a, r->b, r->p);
+			p += sizeof(*r) + 64;
+			break;
+		case REC_IDCT4x4_16:
+			rc->t.QP[r->a] = r->qp;
+			for (int i = 0; i < 2; i++) {
+				i16x8 v = *(const i16x8 *)(p + sizeof(*r) + i * 16);
+				rc->c_v[i * 2] = cvtlo16s32(v);
+				rc->c_v[i * 2 + 1] = cvthi16s32(v);
+			}
+			if (r->b >= 0)
+				rc->c[16 + r->b] = r->x;
+			add_idct4x4(rc, r->a, r->b, r->p);
+			p += sizeof(*r) + 32;
+			break;
+		case REC_DC4x4:
+			rc->c[16 + r->b] = r->x;
+			add_dc4x4(rc, r->a, r->b, r->p);
+			p += sizeof(*r);
+			break;
+		case REC_IDCT8x8:
+			rc->t.QP[r->a] = r->qp;
+			memcpy(rc->c_v, p + sizeof(*r), 256);
+			add_idct8x8(rc, r->a, r->p);
+			p += sizeof(*r) + 256;
+			break;
+		case REC_IDCT8x8_16:
+			rc->t.QP[r->a] = r->qp;
+			for (int i = 0; i < 8; i++) {
+				i16x8 v = *(const i16x8 *)(p + sizeof(*r) + i * 16);
+				rc->c_v[i * 2] = cvtlo16s32(v);
+				rc->c_v[i * 2 + 1] = cvthi16s32(v);
+			}
+			add_idct8x8(rc, r->a, r->p);
+			p += sizeof(*r) + 128;
+			break;
+		case REC_DC16x16:
+			rc->t.QP[0] = r->qp;
+			memcpy(rc->c_v, p + sizeof(*r), 64);
+			transform_dc4x4(rc, r->a);
+			p += sizeof(*r) + 64;
+			break;
+		case REC_DC_CHROMA:
+			rc->t.QP[1] = r->qp;
+			rc->t.QP[2] = r->b;
+			memcpy(rc->c_v, p + sizeof(*r), 32);
+			transform_dc2x2(rc);
+			p += sizeof(*r) + 32;
+			break;
+		}
+	}
+	// the parser records a macroblock whole before replaying, so the last one is complete
+	if (rc->rec_pending)
+		replay_after_mb(rc);
+	ctx->rec_head = p;
+}
+
+/**
+ * Called before recording a macroblock when the buffer may lack room for it:
+ * moves the records left to replay to the start of the buffer, after replaying
+ * them all (waiting for the references) if that would gain less than half of it.
+ */
+static noinline void rec_make_room(Edge264MvcContext *ctx) {
+	if (ctx->rec_head - ctx->rec_buf < REC_BUF_SIZE / 2)
+		replay_records(ctx, 1);
+	size_t n = ctx->rec_tail - ctx->rec_head;
+	memmove(ctx->rec_buf, ctx->rec_head, n);
+	ctx->rec_head = ctx->rec_buf;
+	ctx->rec_tail = ctx->rec_buf + n;
 }
 
 

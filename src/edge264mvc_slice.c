@@ -622,7 +622,7 @@ static noinline void CAFUNC(parse_NxN_residual)
 				size_t stride = ctx->t.stride[iYCbCr];
 				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i4x4] * stride + x444[i4x4];
 				if (!mb->mbIsInterFlag)
-					decode_intra4x4(samples, stride, Intra4x4Modes[mbc->Intra4x4PredMode[i4x4]][ctx->unavail4x4[i4x4]], ctx->t.samples_clip_v[iYCbCr]);
+					intra_pred(REC_INTRA4x4, decode_intra4x4, samples, stride, Intra4x4Modes[mbc->Intra4x4PredMode[i4x4]][ctx->unavail4x4[i4x4]], iYCbCr);
 				if (mb->bits[0] & 1 << bit8x8[i4x4 >> 2]) {
 					int nA = *((int8_t *)mbc->nC + iYCbCr * 16 + ctx->A4x4_int8[i4x4]);
 					int nB = *((int8_t *)mbc->nC + iYCbCr * 16 + ctx->B4x4_int8[i4x4]);
@@ -652,7 +652,7 @@ static noinline void CAFUNC(parse_NxN_residual)
 				size_t stride = ctx->t.stride[iYCbCr];
 				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i8x8 * 4] * stride + x444[i8x8 * 4];
 				if (!mb->mbIsInterFlag)
-					decode_intra8x8(samples, stride, Intra8x8Modes[mbc->Intra4x4PredMode[i8x8 * 4]][ctx->unavail4x4[i8x8 * 5]], ctx->t.samples_clip_v[iYCbCr]);
+					intra_pred(REC_INTRA8x8, decode_intra8x8, samples, stride, Intra8x8Modes[mbc->Intra4x4PredMode[i8x8 * 4]][ctx->unavail4x4[i8x8 * 5]], iYCbCr);
 				if (mb->bits[0] & 1 << bit8x8[i8x8]) {
 					#if !CABAC
 						for (int i4x4 = 0; i4x4 < 4; i4x4++) {
@@ -746,7 +746,7 @@ static inline void CAFUNC(parse_intra_chroma_pred_mode)
 			mb->f.intra_chroma_pred_mode_non_zero = (mode > 0);
 		#endif
 		log_mb(ctx, "%sintra_chroma_pred_mode: %u\n", ctx->log_indent, mode);
-		decode_intraChroma(ctx->samples_mb[1], ctx->t.stride[1] >> 1, IntraChromaModes[mode][(ctx->unavail4x4[0] & 3) | (ctx->unavail4x4[0] >> 1 & 4)], ctx->t.samples_clip_v[1]);
+		intra_pred(REC_INTRA_CHROMA, decode_intraChroma, ctx->samples_mb[1], ctx->t.stride[1] >> 1, IntraChromaModes[mode][(ctx->unavail4x4[0] & 3) | (ctx->unavail4x4[0] >> 1 & 4)], 1);
 	}
 }
 
@@ -889,7 +889,7 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 			{I16x16_P_8 , I16x16_DC_A_8, I16x16_DC_B_8, I16x16_DC_AB_8, I16x16_DC_8, I16x16_DC_A_8, I16x16_DC_B_8, I16x16_DC_AB_8},
 		};
 		mbc->Intra4x4PredMode_v = (i8x16){2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-		decode_intra16x16(ctx->samples_mb[0], ctx->t.stride[0], Intra16x16Modes[mode][(ctx->unavail4x4[0] & 3) | (ctx->unavail4x4[0] >> 1 & 4)], ctx->t.samples_clip_v[0]); // FIXME 4:4:4
+		intra_pred(REC_INTRA16x16, decode_intra16x16, ctx->samples_mb[0], ctx->t.stride[0], Intra16x16Modes[mode][(ctx->unavail4x4[0] & 3) | (ctx->unavail4x4[0] >> 1 & 4)], 0); // FIXME 4:4:4
 		CACALL(parse_intra_chroma_pred_mode);
 		CAJUMP(parse_Intra16x16_residual);
 		
@@ -1707,7 +1707,12 @@ static noinline void CAFUNC(parse_slice_data)
 		int prev_recovery_bits = __atomic_exchange_n(&mb->recovery_bits, ctx->t.frame_flip_bit, __ATOMIC_ACQ_REL);
 		if (prev_recovery_bits == ctx->t.frame_flip_bit && !claim_after_older_slices(ctx))
 			return;
-		
+		if (ctx->rec_tail) {
+			if (ctx->rec_tail > ctx->rec_end)
+				rec_make_room(ctx);
+			record(ctx, REC_MB, 0, 0, 0, ctx->CurrMbAddr, NULL);
+		}
+
 		// set and reset neighbouring pointers depending on their availability
 		int unavail16x16 = (ctx->mbx == 0 ? 9 : 0) | (ctx->mbx == ctx->t.pic_width_in_mbs - 1) << 2 | (ctx->mby == 0 ? 14 : 0);
 		int filter_edges = 4 | 3 & ~unavail16x16;
@@ -1832,8 +1837,9 @@ static noinline void CAFUNC(parse_slice_data)
 		#endif
 		advance_mbc(ctx);
 		
-		// deblock mbB while in cache, then point to the next macroblock
-		if (ctx->CurrMbAddr - ctx->t.pic_width_in_mbs == ctx->t.next_deblock_addr) {
+		// deblock mbB while in cache, then point to the next macroblock (when
+		// recording, the replay deblocks and publishes the rows)
+		if (!ctx->rec_tail && ctx->CurrMbAddr - ctx->t.pic_width_in_mbs == ctx->t.next_deblock_addr) {
 			ctx->t.next_deblock_addr += 1;
 			mb -= ctx->t.pic_width_in_mbs + 1;
 			ctx->samples_mb[0] -= ctx->t.stride[0] * 16;
@@ -1863,13 +1869,17 @@ static noinline void CAFUNC(parse_slice_data)
 			ctx->samples_mb[0] += ctx->t.stride[0] * 16 - ctx->t.pic_width_in_mbs * 16;
 			ctx->samples_mb[1] += ctx->t.stride[1] * 8 - ctx->t.pic_width_in_mbs * 8; // FIXME 4:2:2
 			ctx->samples_mb[2] += ctx->t.stride[1] * 8 - ctx->t.pic_width_in_mbs * 8;
-			if (ctx->t.next_deblock_idc >= 0) {
+			if (ctx->t.next_deblock_idc >= 0 && !ctx->rec_tail) {
 				publish_frame_progress(ctx->d, ctx->t.next_deblock_idc,
 					(ctx->t.disable_deblocking_filter_idc != 1) ? ctx->t.next_deblock_addr : ctx->CurrMbAddr);
 			}
 			if (ctx->mby >= ctx->t.pic_height_in_mbs)
 				return;
 		}
+
+		// reconstruct whatever the references allow so far
+		if (ctx->rec_tail)
+			replay_records(ctx, 0);
 	} while (CACOND(ctx->mb_skip_run > 0 || !rbsp_end(&ctx->t.gb, 1), !end_of_slice_flag));
 }
 

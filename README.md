@@ -16,11 +16,11 @@ edge264-mvc is derived from [edge264](https://github.com/tvlabs/edge264) by Thib
 
 See [IMPROVEMENTS.md](IMPROVEMENTS.md) for everything that edge264-mvc changes over edge264.
 
-![Single-threaded decoding time](README-benchmark-1T.svg)
-
 ![Multithreaded decoding time](README-benchmark-MT.svg)
 
-*Decoding time of the [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4) (1080p), the fastest of 10 runs on GitHub-hosted runners, once on one core and once with all cores. A red cross marks a decoder without a multithreaded result: OpenH264's decoder has no multithreading, and the experimental multithreading of the original edge264 (at a fixed commit) hangs on this video. The runners have only a few cores, so a many-core machine gains more from multithreading.*
+![Single-threaded decoding time](README-benchmark-1T.svg)
+
+*Decoding time of the [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4) (1080p), the fastest of 10 runs on GitHub-hosted runners, once with all cores (the default) and once on one core. A red cross marks a decoder without a multithreaded result: OpenH264's decoder has no multithreading, and the experimental multithreading of the original edge264 (at a fixed commit) hangs on this video. The runners have only a few cores, so a many-core machine gains more from multithreading.*
 
 
 ## Supported streams and platforms

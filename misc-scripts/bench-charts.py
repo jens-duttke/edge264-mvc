@@ -35,14 +35,19 @@ def label(base):
 		return f"edge264 ({base[8:]})"
 	return base
 
+def product(base):
+	return label(base).split(" (")[0]
+
 archs = list(data.keys())
 decoders = []
 for name in tuple(data.values())[0]:
 	if split(name)[0] not in decoders:
 		decoders.append(split(name)[0])
-# no red among the decoders: red marks the missing multithreaded results
+products = list(dict.fromkeys(product(d) for d in decoders))
+# one color per product (the GCC and Clang builds of a decoder share it), and
+# no red among them: red marks the missing multithreaded results
 palette = [c for i, c in enumerate(matplotlib.colormaps["tab10"].colors) if i != 3]
-color = {d: palette[i % len(palette)] for i, d in enumerate(decoders)}
+color = {d: palette[products.index(product(d)) % len(palette)] for d in decoders}
 values = {kind: {a: {} for a in archs} for kind in ("1T", "MT")}
 for a, row in data.items():
 	for name, v in row.items():
@@ -75,6 +80,8 @@ def chart(kind, title, path):
 	plt.savefig(path)
 	plt.close(fig)
 
-date = datetime.datetime.today().strftime("%d/%m/%Y")
-chart("1T", f"Single-threaded decoding time, measured on {date}", sys.argv[2])
-chart("MT", f"Multithreaded decoding time (all cores), measured on {date}", sys.argv[3])
+# the kind of chart in bold (mathtext, whose "-" would be a minus sign, hence the
+# non-breaking hyphen U+2011)
+date = datetime.datetime.today().strftime("%Y-%m-%d")
+chart("1T", f"$\\mathbf{{Single‑threaded}}$ decoding time, measured on {date}", sys.argv[2])
+chart("MT", f"$\\mathbf{{Multithreaded}}$ decoding time (all cores), measured on {date}", sys.argv[3])

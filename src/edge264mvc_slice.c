@@ -301,6 +301,36 @@
 			log_mb(ctx, "%s- {nC: -1}\n", ctx->log_indent);
 		}
 	}
+	
+	// 4:2:2 chroma DC has codes of its own (nC == -2 in Table 9-5), matched one
+	// by one as {code aligned on 13 bits, length, TotalCoeff << 2 | TrailingOnes}
+	static void parse_residual_block_2x4_cavlc(Edge264MvcContext *ctx) {
+		static const uint32_t codes[30] = {
+			0x10000100, 0x3c00704, 0x8000205, 0x3800708, 0x3400709, 0x400030a, 0x70090c, 0x300070d,
+			0x2c0070e, 0x100050f, 0x600910, 0x500911, 0x2800712, 0x800613, 0x380a14, 0x300a15,
+			0x400916, 0x2400717, 0x1c0b18, 0x180b19, 0x280a1a, 0x200071b, 0xe0c1c, 0xc0c1d,
+			0x140b1e, 0x200a1f, 0x70d20, 0xa0c21, 0x80c22, 0x100b23,
+		};
+		unsigned bits = ctx->t.gb.msb_cache >> (SIZE_BIT - 13);
+		int coeff_token = 0, v = 13; // no code matches 13 zeros, which a valid stream never holds
+		for (int i = 0; i < 30; i++) {
+			int len = codes[i] >> 8 & 15;
+			if (!((bits ^ codes[i] >> 16) >> (13 - len))) {
+				coeff_token = codes[i] & 255;
+				v = len;
+				break;
+			}
+		}
+		ctx->t.gb.msb_cache = shld(ctx->t.gb.lsb_cache, ctx->t.gb.msb_cache, v);
+		if (!(ctx->t.gb.lsb_cache <<= v))
+			refill(&ctx->t.gb, 0);
+		if (coeff_token) {
+			log_mb(ctx, "%s- {nC: -2, c: [", ctx->log_indent);
+			parse_residual_coeffs_cavlc(ctx, 0, 7, coeff_token & 3, coeff_token >> 2);
+		} else {
+			log_mb(ctx, "%s- {nC: -2}\n", ctx->log_indent);
+		}
+	}
 #endif
 
 
@@ -441,11 +471,73 @@ static inline void CAFUNC(parse_mb_qp_delta)
 
 
 /**
+ * Parsing for chroma 4:2:2 (7.3.5.3.3), where each component has a 2x4 block
+ * of DC coefficients (8.5.11) and eight 4x4 AC blocks, two per row. The DC
+ * coefficients of Cb are parsed to ctx->c[0..7] and those of Cr to
+ * ctx->c[8..15], then transformed to ctx->c[16..31], one per AC block, as
+ * the DC values of add_idct4x4 and add_dc4x4.
+ */
+static noinline void CAFUNC(parse_chroma422_residual)
+{
+	if (!mb->f.CodedBlockPatternChromaDC)
+		return;
+	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
+		ctx->scan_v[0] = iCbCr ? (i8x16){8, 9, 10, 11, 12, 13, 14, 15} : (i8x16){0, 1, 2, 3, 4, 5, 6, 7};
+		#if !CABAC
+			parse_residual_block_2x4_cavlc(ctx);
+		#else
+			ctx->ctxIdxOffsets_l = ctxIdxOffsets_chromaDC[0];
+			ctx->coeff_abs_inc_l = (i8x8){6, 7, 8, 8};
+			ctx->sig_inc_l = ctx->last_inc_l = sig_inc_chromaDC_422; // Min(numDecodAbsLevel / NumC8x8, 2) in 9.3.3.1.3
+			if (get_ae(ctx, ctx->ctxIdxOffsets[0] + ctx->inc.coded_block_flags_16x16[1 + iCbCr])) {
+				mb->f.coded_block_flags_16x16[1 + iCbCr] = 1;
+				parse_residual_block_8x8_cabac(ctx, 0, 7);
+			}
+		#endif
+	}
+	transform_dc2x4(ctx);
+	
+	// Sixteen 4x4 AC blocks for the Cb/Cr components, or their DC values alone
+	#if CABAC
+		ctx->ctxIdxOffsets_l = ctxIdxOffsets_chromaAC[0];
+		ctx->coeff_abs_inc_l = (i8x8){6, 7, 8, 9, 9};
+	#endif
+	ctx->scan_v[0] = scan_4x4[0];
+	for (int i4x4 = 0; i4x4 < 16; i4x4++) {
+		int iYCbCr = 1 + (i4x4 >> 3);
+		uint8_t *samples = ctx->samples_mb[iYCbCr] + (i4x4 >> 1 & 3) * 4 * ctx->t.stride[1] + (i4x4 & 1) * 4;
+		if (mb->f.CodedBlockPatternChromaAC) {
+			int nA = *((int8_t *)mbc->nC + 16 + ctx->ACbCr_int8[i4x4]);
+			int nB = *((int8_t *)mbc->nC + 16 + ctx->BCbCr_int8[i4x4]);
+			#if !CABAC
+				if (parse_residual_block_4x4_cavlc(ctx, 1, 16 + i4x4, nA, nB)) {
+					add_idct4x4(ctx, iYCbCr, i4x4, samples);
+					continue;
+				}
+			#else
+				if (get_ae(ctx, ctx->ctxIdxOffsets[0] + ctx->nC_inc[1][i4x4] + nA + nB * 2)) {
+					mbc->nC[16 + i4x4] = 1;
+					parse_residual_block_cabac(ctx, 1, 15);
+					add_idct4x4(ctx, iYCbCr, i4x4, samples);
+					continue;
+				}
+			#endif
+		}
+		add_dc4x4(ctx, iYCbCr, i4x4, samples);
+	}
+	ctx->c_v[4] = ctx->c_v[5] = ctx->c_v[6] = ctx->c_v[7] = (i8x16){};
+}
+
+
+
+/**
  * Parsing for chroma 4:2:0 and 4:2:2 is put in a separate function to be
  * tail-called from parse_NxN_residual and parse_Intra16x16_residual.
  */
 static noinline void CAFUNC(parse_chroma_residual)
 {
+	if (ctx->t.ChromaArrayType == 2)
+		CAJUMP(parse_chroma422_residual);
 	// As in Intra16x16, DC blocks are parsed to ctx->c[0..15], then transformed to ctx->c[16..31]
 	if (mb->f.CodedBlockPatternChromaDC) { // valid also for 4:0:0
 		#if !CABAC
@@ -748,7 +840,11 @@ static inline void CAFUNC(parse_intra_chroma_pred_mode)
 			mb->f.intra_chroma_pred_mode_non_zero = (mode > 0);
 		#endif
 		log_mb(ctx, "%sintra_chroma_pred_mode: %u\n", ctx->log_indent, mode);
-		intra_pred(REC_INTRA_CHROMA, decode_intraChroma, ctx->samples_mb[1], ctx->t.stride[1] >> 1, IntraChromaModes[mode][(ctx->unavail_intra[0] & 3) | (ctx->unavail_intra[0] >> 1 & 4)], 1);
+		int ic_mode = IntraChromaModes[mode][(ctx->unavail_intra[0] & 3) | (ctx->unavail_intra[0] >> 1 & 4)];
+		if (type == 1)
+			intra_pred(REC_INTRA_CHROMA, decode_intraChroma, ctx->samples_mb[1], ctx->t.stride[1] >> 1, ic_mode, 1);
+		else
+			intra_pred(REC_INTRA_CHROMA422, decode_intraChroma422, ctx->samples_mb[1], ctx->t.stride[1] >> 1, ic_mode, 1);
 	}
 }
 
@@ -799,16 +895,18 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 	// Intra-specific initialisations
 	#if CABAC
 		ctx->nC_inc_v[0] = ctx->nC_inc_v[1] = ctx->nC_inc_v[2] = (i8x16){};
+		// the chroma blocks on the left and top edges, in 2x2 (4:2:0) or 2x4 (4:2:2) per component
+		int c422 = ctx->t.ChromaArrayType == 2;
 		if (ctx->unavail4x4[0] & 1) {
-			mb->bits[1] |= 0x111111; // FIXME 4:2:2
+			mb->bits[1] |= 0x111111;
 			ctx->nC_inc_v[0] += (i8x16){1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0};
-			ctx->nC_inc_v[1] += (i8x16){1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+			ctx->nC_inc_v[1] += c422 ? (i8x16){1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0} : (i8x16){1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 			ctx->inc.coded_block_flags_16x16_s |= 0x010101;
 		}
 		if (ctx->unavail4x4[0] & 2) {
 			mb->bits[1] |= 0x424242;
 			ctx->nC_inc_v[0] += (i8x16){2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-			ctx->nC_inc_v[1] += (i8x16){2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+			ctx->nC_inc_v[1] += c422 ? (i8x16){2, 2, 0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0} : (i8x16){2, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 			ctx->inc.coded_block_flags_16x16_s |= 0x020202;
 		}
 	#endif
@@ -1739,6 +1837,9 @@ static noinline void CAFUNC(parse_slice_data)
 					ctx->ACbCr_int8[2] = 3 - (int)sizeof(*mbc);
 					ctx->ACbCr_int8[4] = 5 - (int)sizeof(*mbc);
 					ctx->ACbCr_int8[6] = 7 - (int)sizeof(*mbc);
+				} else if (ctx->t.ChromaArrayType == 2) {
+					for (int i = 0; i < 16; i += 2)
+						ctx->ACbCr_int8[i] = i + 1 - (int)sizeof(*mbc);
 				}
 			} else if (decoded == 0) { // A is unavailable
 				mbA = &unavail_mb;
@@ -1777,6 +1878,11 @@ static noinline void CAFUNC(parse_slice_data)
 						ctx->BCbCr_int8[1] = 3 - offB_int8;
 						ctx->BCbCr_int8[4] = 6 - offB_int8;
 						ctx->BCbCr_int8[5] = 7 - offB_int8;
+					} else if (ctx->t.ChromaArrayType == 2) {
+						ctx->BCbCr_int8[0] = 6 - offB_int8;
+						ctx->BCbCr_int8[1] = 7 - offB_int8;
+						ctx->BCbCr_int8[8] = 14 - offB_int8;
+						ctx->BCbCr_int8[9] = 15 - offB_int8;
 					}
 				} else { // B is unavailable
 					mbB = &unavail_mb;
@@ -1800,11 +1906,14 @@ static noinline void CAFUNC(parse_slice_data)
 		mb->f.v = (i8x16){};
 		mb->filter_edges = (ctx->t.disable_deblocking_filter_idc != 1) ? filter_edges : 0;
 		mb->QP_s = ctx->t.QP_s;
-		if (ctx->t.ChromaArrayType == 1) // FIXME 4:2:2
+		// the chroma 4x4 blocks take the availability of the luma blocks at their position
+		if (ctx->t.ChromaArrayType == 1)
 			ctx->unavail4x4_v[1] = shuffle(ctx->unavail4x4_v[0], (i8x16){0, 4, 8, 12, 0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1});
+		else if (ctx->t.ChromaArrayType == 2)
+			ctx->unavail4x4_v[1] = shuffle(ctx->unavail4x4_v[0], (i8x16){0, 4, 2, 6, 8, 12, 10, 14, 0, 4, 2, 6, 8, 12, 10, 14});
 		// the coded flags of the neighbours, whose luma part a monochrome picture
 		// reads as well (coded_block_pattern and coded_block_flag in CABAC)
-		if (ctx->t.ChromaArrayType <= 1) // FIXME 4:2:2
+		if (ctx->t.ChromaArrayType < 3)
 			mb->bits_l = (mbA->bits_l >> 3 & 0x11111100111111) | (mbB->bits_l >> 1 & 0x42424200424242);
 		mbc->nC_v[0] = mbc->nC_v[1] = mbc->nC_v[2] = (i8x16){};
 		
@@ -1842,17 +1951,17 @@ static noinline void CAFUNC(parse_slice_data)
 			ctx->t.next_deblock_addr += 1;
 			mb -= ctx->t.pic_width_in_mbs + 1;
 			ctx->samples_mb[0] -= ctx->t.stride[0] * 16;
-			ctx->samples_mb[1] -= ctx->t.stride[1] * 8;
-			ctx->samples_mb[2] -= ctx->t.stride[1] * 8;
+			ctx->samples_mb[1] -= ctx->t.stride[1] * ctx->t.mb_height_C;
+			ctx->samples_mb[2] -= ctx->t.stride[1] * ctx->t.mb_height_C;
 			deblock_mb(ctx);
 			mb += ctx->t.pic_width_in_mbs + 2;
 			ctx->samples_mb[0] += ctx->t.stride[0] * 16 + 16;
-			ctx->samples_mb[1] += ctx->t.stride[1] * 8 + 8;
-			ctx->samples_mb[2] += ctx->t.stride[1] * 8 + 8;
+			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C + 8;
+			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C + 8;
 		} else {
 			mb++;
 			ctx->samples_mb[0] += 16; // FIXME 16bit
-			ctx->samples_mb[1] += 8; // FIXME 4:2:2, 16bit
+			ctx->samples_mb[1] += 8; // FIXME 16bit
 			ctx->samples_mb[2] += 8;
 		}
 		ctx->mbx++;
@@ -1866,8 +1975,8 @@ static noinline void CAFUNC(parse_slice_data)
 			ctx->mby++;
 			ctx->mbx = 0;
 			ctx->samples_mb[0] += ctx->t.stride[0] * 16 - ctx->t.pic_width_in_mbs * 16;
-			ctx->samples_mb[1] += ctx->t.stride[1] * 8 - ctx->t.pic_width_in_mbs * 8; // FIXME 4:2:2
-			ctx->samples_mb[2] += ctx->t.stride[1] * 8 - ctx->t.pic_width_in_mbs * 8;
+			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
+			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
 			if (ctx->t.next_deblock_idc >= 0 && !ctx->rec_tail) {
 				publish_frame_progress(ctx->d, ctx->t.next_deblock_idc,
 					(ctx->t.disable_deblocking_filter_idc != 1) ? ctx->t.next_deblock_addr : ctx->CurrMbAddr);

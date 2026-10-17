@@ -766,3 +766,60 @@ static cold noinline void decode_intraChroma(uint8_t * restrict p, size_t stride
 		*(int64_t *)(p + stride * 9) = rpred[1];
 	}
 }
+
+
+
+/**
+ * Intra chroma prediction of 4:2:2, the 8x16 blocks of Cb and Cr with their
+ * rows alternating at stride (8.3.4). It reuses the modes of the 4:2:0
+ * predictor, whose DC variants tell which of A and B are unavailable. Each
+ * 4x4 block takes its DC from the neighbours in its own row or column, with a
+ * preference that depends on its position (8.3.4.1 to 8.3.4.3).
+ */
+static cold noinline void decode_intraChroma422(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
+	int availA = mode != IC8x8_DC_A_8 && mode != IC8x8_DC_AB_8;
+	int availB = mode != IC8x8_DC_B_8 && mode != IC8x8_DC_AB_8;
+	int max = clip[0];
+	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
+		uint8_t *q = p + iCbCr * stride; // row y of the component is at q + y * stride * 2
+		const uint8_t *top = q - stride * 2;
+		#define LEFT(y) q[(ssize_t)(y) * (ssize_t)stride * 2 - 1]
+		if (mode == IC8x8_H_8) {
+			for (int y = 0; y < 16; y++)
+				memset(q + y * stride * 2, LEFT(y), 8);
+		} else if (mode == IC8x8_V_8) {
+			for (int y = 0; y < 16; y++)
+				memcpy(q + y * stride * 2, top, 8);
+		} else if (mode == IC8x8_P_8) {
+			int H = 0, V = 0;
+			for (int x = 0; x < 4; x++)
+				H += (x + 1) * (top[4 + x] - top[2 - x]);
+			for (int y = 0; y < 8; y++)
+				V += (y + 1) * (LEFT(8 + y) - LEFT(6 - y)); // LEFT(-1) is p[-1, -1]
+			int a = 16 * (LEFT(15) + top[7]);
+			int b = (34 * H + 32) >> 6;
+			int c = (5 * V + 32) >> 6; // 34 - 29 for ChromaArrayType 2 (8-147)
+			for (int y = 0; y < 16; y++) {
+				for (int x = 0; x < 8; x++)
+					q[y * stride * 2 + x] = clip3(0, max, (a + b * (x - 3) + c * (y - 7) + 16) >> 5);
+			}
+		} else {
+			for (int blk = 0; blk < 8; blk++) {
+				int xO = (blk & 1) * 4, yO = (blk >> 1) * 4;
+				int sumT = top[xO] + top[xO + 1] + top[xO + 2] + top[xO + 3];
+				int sumL = LEFT(yO) + LEFT(yO + 1) + LEFT(yO + 2) + LEFT(yO + 3);
+				int dc = (max + 1) >> 1;
+				if ((xO == 0) == (yO == 0)) { // both, then left, then top (8.3.4.1)
+					dc = availA && availB ? (sumT + sumL + 4) >> 3 : availA ? (sumL + 2) >> 2 : availB ? (sumT + 2) >> 2 : dc;
+				} else if (xO > 0) { // top, then left (8.3.4.2)
+					dc = availB ? (sumT + 2) >> 2 : availA ? (sumL + 2) >> 2 : dc;
+				} else { // left, then top (8.3.4.3)
+					dc = availA ? (sumL + 2) >> 2 : availB ? (sumT + 2) >> 2 : dc;
+				}
+				for (int y = yO; y < yO + 4; y++)
+					memset(q + y * stride * 2 + xO, dc, 4);
+			}
+		}
+		#undef LEFT
+	}
+}

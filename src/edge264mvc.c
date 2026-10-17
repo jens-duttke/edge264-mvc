@@ -794,8 +794,8 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		int top = dec->out.frame_crop_offsets[0];
 		int left = dec->out.frame_crop_offsets[3];
 		int offY = top * dec->out.stride_Y + (dec->out.bit_depth_Y == 8 ? left : left << 1);
-		int topC = dec->sps.chroma_format_idc == 3 ? top : top >> 1;
-		int leftC = dec->sps.chroma_format_idc == 1 ? left >> 1 : left;
+		int topC = dec->sps.chroma_format_idc >= 2 ? top : top >> 1; // 4:0:0 comes out as 4:2:0
+		int leftC = dec->sps.chroma_format_idc == 3 ? left : left >> 1;
 		int offC = dec->plane_size_Y + topC * dec->out.stride_C + (dec->out.bit_depth_C == 8 ? leftC : leftC << 1);
 		assert(dec->to_get_frames & dec->output_frames & (FrameMask)1 << pic0);
 		dec->to_get_frames &= ~((FrameMask)1 << pic0);

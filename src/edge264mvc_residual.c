@@ -581,6 +581,46 @@ static void transform_dc2x2(Edge264MvcContext *ctx)
 
 
 /**
+ * Inverse transform and scaling of the 2x4 chroma DC coefficients of 4:2:2
+ * (8.5.11), from ctx->c[0..7] for Cb and ctx->c[8..15] for Cr to the DC values
+ * of their AC blocks in ctx->c[16..31]. It touches no samples, so a recording
+ * slice needs no record of it.
+ */
+static void transform_dc2x4(Edge264MvcContext *ctx)
+{
+	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
+		const int32_t *l = ctx->c + iCbCr * 8;
+		// rows of the 2x4 array c (8-305), then of the transform (8-325) by rows
+		int32_t c[4][2] = {{l[0], l[2]}, {l[1], l[5]}, {l[3], l[6]}, {l[4], l[7]}};
+		unsigned qPDC = ctx->t.QP[1 + iCbCr] + 3; // (8-327)
+		int32_t LS = ctx->t.pps.weightScale4x4[1 + iCbCr + mb->mbIsInterFlag * 3][0] * normAdjust4x4[qPDC % 6][0];
+		for (int j = 0; j < 2; j++) {
+			int32_t g0 = c[0][j] + c[1][j], g1 = c[0][j] - c[1][j];
+			int32_t g2 = c[2][j] + c[3][j], g3 = c[2][j] - c[3][j];
+			c[0][j] = g0 + g2;
+			c[1][j] = g0 - g2;
+			c[2][j] = g1 - g3;
+			c[3][j] = g1 + g3;
+		}
+		for (int i = 0; i < 4; i++) {
+			// 64 bits for the levels of damaged streams, then wrapping as the vector code of 4:2:0
+			int64_t f0 = (int64_t)c[i][0] + c[i][1], f1 = (int64_t)c[i][0] - c[i][1];
+			int32_t *dcC = ctx->c + 16 + iCbCr * 8 + i * 2; // the blocks are in raster order (Figure 8-7)
+			if (qPDC >= 36) { // (8-328)
+				dcC[0] = (int32_t)(uint32_t)(f0 * (LS << (qPDC / 6 - 6)));
+				dcC[1] = (int32_t)(uint32_t)(f1 * (LS << (qPDC / 6 - 6)));
+			} else { // (8-329)
+				dcC[0] = (int32_t)(uint32_t)((f0 * LS + (1 << (5 - qPDC / 6))) >> (6 - qPDC / 6));
+				dcC[1] = (int32_t)(uint32_t)((f1 * LS + (1 << (5 - qPDC / 6))) >> (6 - qPDC / 6));
+			}
+		}
+	}
+	ctx->c_v[0] = ctx->c_v[1] = ctx->c_v[2] = ctx->c_v[3] = (i8x16){};
+}
+
+
+
+/**
  * Deferred reconstruction (see Edge264MvcRecord). The replay context takes
  * the position of each recorded macroblock, runs its records with the values
  * they captured, then deblocks the macroblock above it and publishes finished
@@ -599,7 +639,7 @@ static always_inline void replay_position(Edge264MvcContext *rc, int addr) {
 	rc->mbx = addr % width;
 	rc->_mb = rc->t.mb_buffer + rc->mbx + rc->mby * (width + 1);
 	rc->samples_mb[0] = rc->t.samples_buffers[rc->currPic] + (rc->mbx + rc->mby * rc->t.stride[0]) * 16;
-	rc->samples_mb[1] = rc->t.samples_buffers[rc->currPic] + (rc->mbx + rc->mby * rc->t.stride[1]) * 8 + rc->t.plane_size_Y;
+	rc->samples_mb[1] = rc->t.samples_buffers[rc->currPic] + rc->mbx * 8 + rc->mby * rc->t.stride[1] * rc->t.mb_height_C + rc->t.plane_size_Y;
 	rc->samples_mb[2] = rc->samples_mb[1] + (rc->t.stride[1] >> 1);
 }
 
@@ -659,6 +699,10 @@ static noinline void replay_records(Edge264MvcContext *ctx, int blocking) {
 			break;
 		case REC_INTRA_CHROMA:
 			decode_intraChroma(r->p, r->x, r->a, rc->t.samples_clip_v[r->b]);
+			p += sizeof(*r);
+			break;
+		case REC_INTRA_CHROMA422:
+			decode_intraChroma422(r->p, r->x, r->a, rc->t.samples_clip_v[r->b]);
 			p += sizeof(*r);
 			break;
 		case REC_IDCT4x4:

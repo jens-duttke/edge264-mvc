@@ -1193,18 +1193,20 @@ static noinline void decode_inter_wide(Edge264MvcContext *ctx, int i4x4, int x, 
 	// predict the second reference apart without weights (Cb and Cr rows
 	// alternating, then luma), then blend it into the first one
 	static const i16x8 no_weight = {pack_w(0, 1), 0, 0, 0, pack_w(0, 1), pack_w(0, 1), 0, 0};
-	uint8_t pred[512] __attribute__((aligned(16))) = {};
+	uint8_t pred[768] __attribute__((aligned(16))) = {}; // up to 16 rows of Cb and Cr, then 16 of luma
+	int c422 = ctx->t.ChromaArrayType == 2;
+	int yC = c422 ? y * 2 : y; // 4:2:2 has the vertical chroma precision of luma (8-232, 8-234)
 	int xFrac_C = x & 7;
-	int yFrac_C = y & 7;
+	int yFrac_C = yC & 7;
 	i32x4 ABCD = {little_endian32(((8 - xFrac_C) | xFrac_C << 8) * ((8 - yFrac_C) | yFrac_C << 16))};
-	decode_inter_chroma(BLEND_COPY, (x & 7) == 0 && (y & 7) == 0, w, h, sstride_C, src_C, 16, pred, ABCD, no_weight);
-	decode_inter_luma((w << 1 & 48) + (y & 3) * 4 + (x & 3), BLEND_COPY, h, sstride_Y, src_Y, 16, pred + 256, no_weight);
+	decode_inter_chroma(BLEND_COPY, (x & 7) == 0 && yFrac_C == 0, w, h << c422, sstride_C, src_C, 16, pred, ABCD, no_weight);
+	decode_inter_luma((w << 1 & 48) + (y & 3) * 4 + (x & 3), BLEND_COPY, h, sstride_Y, src_Y, 16, pred + 512, no_weight);
 	size_t stride_C = ctx->t.stride[1] >> 1;
-	uint8_t *dst_C = ctx->samples_mb[1] + (y444[i4x4] >> 1) * ctx->t.stride[1] + (x444[i4x4] >> 1);
+	uint8_t *dst_C = ctx->samples_mb[1] + (y444[i4x4] >> !c422) * ctx->t.stride[1] + (x444[i4x4] >> 1);
 	uint8_t *dst_Y = ctx->samples_mb[0] + y444[i4x4] * ctx->t.stride[0] + x444[i4x4];
 	for (int c = 0; c < 3; c++) {
 		blend_wide(c ? dst_C + (c - 1) * stride_C : dst_Y, c ? stride_C * 2 : ctx->t.stride[0],
-			c ? pred + (c - 1) * 16 : pred + 256, c ? 32 : 16, c ? w >> 1 : w, c ? h >> 1 : h,
+			c ? pred + (c - 1) * 16 : pred + 512, c ? 32 : 16, c ? w >> 1 : w, c ? h >> !c422 : h,
 			ctx->t.explicit_weights[c][refIdxX], ctx->t.explicit_weights[c][refIdx],
 			ctx->t.explicit_offsets[c][refIdxX] + ctx->t.explicit_offsets[c][refIdx],
 			c ? ctx->t.chroma_log2_weight_denom : ctx->t.luma_log2_weight_denom);
@@ -1244,7 +1246,11 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	int xInt_Y = ctx->mbx * 16 + x444[i4x4] + (x >> 2);
 	int xInt_C = ctx->mbx * 8 + (x444[i4x4] >> 1) + (x >> 3);
 	int yInt_Y = ctx->mby * 16 + y444[i4x4] + (y >> 2);
-	int yInt_C = ctx->mby * 8 + (y444[i4x4] >> 1) + (y >> 3);
+	// 4:2:2 has the vertical chroma precision of luma (8-232, 8-234), given here
+	// as a vector of twice the height to the 4:2:0 interpolation
+	int c422 = ctx->t.ChromaArrayType == 2;
+	int yC = c422 ? y * 2 : y;
+	int yInt_C = ctx->mby * ctx->t.mb_height_C + (y444[i4x4] >> !c422) + (yC >> 3);
 	
 	// wait until the reference rows we read are final, the bottom-most being
 	// read by the 6-tap filter (chroma stays above it), plus the row after it,
@@ -1261,7 +1267,7 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	
 	// prefetch source data into L3 cache
 	const uint8_t *pref_C = src_C;
-	for (int y = h + 1; y-- > 0; pref_C += sstride_C) {
+	for (int y = (h << c422) + 1; y-- > 0; pref_C += sstride_C) {
 		__builtin_prefetch(pref_C, 0, 1);
 		__builtin_prefetch(pref_C + 16, 0, 1);
 	}
@@ -1369,7 +1375,7 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 		i8x16 shuf = loadu64(shift_C_8bit + 7 + clip3(-7, 0, xInt_C) + clip3(0, 7, xInt_C + 8 - width_C));
 		src0 = ref + clip3(0, width_C - 8, xInt_C);
 		src1 = ref + clip3(0, width_C - 1, xInt_C + 8);
-		for (int j = 0; j <= h >> 1; j++, yInt_C++) {
+		for (int j = 0; j <= h >> !c422; j++, yInt_C++) {
 			int cb = ctx->t.plane_size_Y + clip3(0, ctx->t.plane_size_C - sstride_C * 2, yInt_C * sstride_C * 2);
 			int cr = sstride_C + cb;
 			// reads are split in 2 to support 8px-wide frames
@@ -1388,12 +1394,12 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	}
 	
 	// chroma prediction comes first since it can be inlined
-	uint8_t *dst_C = ctx->samples_mb[1] + (y444[i4x4] >> 1) * ctx->t.stride[1] + (x444[i4x4] >> 1);
+	uint8_t *dst_C = ctx->samples_mb[1] + (y444[i4x4] >> !c422) * ctx->t.stride[1] + (x444[i4x4] >> 1);
 	size_t dstride_C = ctx->t.stride[1] >> 1;
 	int xFrac_C = x & 7;
-	int yFrac_C = y & 7;
+	int yFrac_C = yC & 7;
 	i32x4 ABCD = {little_endian32(((8 - xFrac_C) | xFrac_C << 8) * ((8 - yFrac_C) | yFrac_C << 16))};
-	decode_inter_chroma(kind, (x & 7) == 0 && (y & 7) == 0, w, h, sstride_C, src_C, dstride_C, dst_C, ABCD, wod);
+	decode_inter_chroma(kind, (x & 7) == 0 && yFrac_C == 0, w, h << c422, sstride_C, src_C, dstride_C, dst_C, ABCD, wod);
 	
 	// tail jump to luma prediction
 	int xFrac_Y = x & 3;

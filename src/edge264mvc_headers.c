@@ -392,7 +392,7 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 	ctx->mby = (unsigned)ctx->t.first_mb_in_slice / (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->mbx = (unsigned)ctx->t.first_mb_in_slice % (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + (ctx->mbx + ctx->mby * ctx->t.stride[0]) * 16;
-	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + (ctx->mbx + ctx->mby * ctx->t.stride[1]) * 8 + ctx->t.plane_size_Y;
+	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + ctx->mbx * 8 + ctx->mby * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
 	ctx->samples_mb[2] = ctx->samples_mb[1] + (ctx->t.stride[1] >> 1);
 	int mb_offset = ctx->mbx + ctx->mby * (ctx->t.pic_width_in_mbs + 1);
 	ctx->mbCol = ctx->_mb = ctx->t.mb_buffer + mb_offset;
@@ -403,6 +403,11 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 	if (ctx->t.ChromaArrayType == 1) {
 		ctx->ACbCr_int8_v[0] = (i16x8){0, 0, 2, 2, 4, 4, 6, 6};
 		ctx->BCbCr_int8_v[0] = (i32x8){0, 1, 0, 1, 4, 5, 4, 5};
+	} else if (ctx->t.ChromaArrayType == 2) { // 4x4 blocks in 2 columns and 4 rows per component
+		ctx->ACbCr_int8_v[0] = (i16x8){0, 0, 2, 2, 4, 4, 6, 6};
+		ctx->ACbCr_int8_v[1] = (i16x8){8, 8, 10, 10, 12, 12, 14, 14};
+		ctx->BCbCr_int8_v[0] = (i32x8){0, 1, 0, 1, 2, 3, 4, 5};
+		ctx->BCbCr_int8_v[1] = (i32x8){8, 9, 8, 9, 10, 11, 12, 13};
 	}
 	
 	ctx->QP_C_v[0] = loadu128(QP_Y2C + 12 + ctx->t.pps.chroma_qp_index_offset);
@@ -524,7 +529,7 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 	ctx->mby = (unsigned)ctx->t.first_mb_in_slice / (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->mbx = (unsigned)ctx->t.first_mb_in_slice % (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + (ctx->mbx + ctx->mby * ctx->t.stride[0]) * 16;
-	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + (ctx->mbx + ctx->mby * ctx->t.stride[1]) * 8 + ctx->t.plane_size_Y;
+	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + ctx->mbx * 8 + ctx->mby * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
 	ctx->samples_mb[2] = ctx->samples_mb[1] + (ctx->t.stride[1] >> 1);
 	int mb_offset = ctx->mbx + ctx->mby * (ctx->t.pic_width_in_mbs + 1);
 	ctx->_mb = ctx->t.mb_buffer + mb_offset;
@@ -615,6 +620,8 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 			i8x16 dcb = broadcast8(shrru16(sum8(b), 4), 0);
 			i8x16 dcr = broadcast8(shrru16(sum8(r), 4), 0);
 			i8x16 dcC = ziplo64(dcb, dcr);
+			// the 16 chroma rows of 4:2:2 take the same DC in two halves of 8 rows
+			for (int half = 0; half < ctx->t.mb_height_C >> 3; half++, c0 += stride_C * 16, c7 += stride_C * 16, cE += stride_C * 16) {
 			i64x2 v0 = maddshrL(loada64x2(DADDR(c0,  0), DADDR(c0,  1)), dcC, w0, w1, o, wd);
 			i64x2 v1 = maddshrL(loada64x2(DADDR(c0,  2), DADDR(c7, -4)), dcC, w0, w1, o, wd);
 			i64x2 v2 = maddshrL(loada64x2(DADDR(c0,  4), DADDR(c7, -2)), dcC, w0, w1, o, wd);
@@ -639,6 +646,7 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 			*(int64_t *)DADDR(cE, -1) = v6[1];
 			*(int64_t *)DADDR(cE,  0) = v7[0];
 			*(int64_t *)DADDR(cE,  1) = v7[1];
+			}
 		} else if (i > 0 && p128 >= 32) { // recover above 25% error (arbitrary)
 			if (ctx->t.slice_type == 0) { // P slice -> P_Skip
 				mb->nC_Y_v = (i8x16){};
@@ -669,8 +677,8 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 			ctx->mby++;
 			ctx->mbCol++;
 			ctx->samples_mb[0] += ctx->t.stride[0] * 16 - ctx->t.pic_width_in_mbs * 16;
-			ctx->samples_mb[1] += ctx->t.stride[1] * 8 - ctx->t.pic_width_in_mbs * 8;
-			ctx->samples_mb[2] += ctx->t.stride[1] * 8 - ctx->t.pic_width_in_mbs * 8;
+			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
+			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
 		}
 	}
 }
@@ -698,7 +706,7 @@ static void deblock_range(Edge264MvcContext *c, int currPic, int from, int to) {
 	c->mby = (unsigned)from / (unsigned)c->t.pic_width_in_mbs;
 	c->mbx = (unsigned)from % (unsigned)c->t.pic_width_in_mbs;
 	c->samples_mb[0] = c->t.samples_buffers[currPic] + (c->mbx + c->mby * c->t.stride[0]) * 16;
-	c->samples_mb[1] = c->t.samples_buffers[currPic] + (c->mbx + c->mby * c->t.stride[1]) * 8 + c->t.plane_size_Y;
+	c->samples_mb[1] = c->t.samples_buffers[currPic] + c->mbx * 8 + c->mby * c->t.stride[1] * c->t.mb_height_C + c->t.plane_size_Y;
 	c->samples_mb[2] = c->samples_mb[1] + (c->t.stride[1] >> 1);
 	c->_mb = (Edge264MvcMacroblock *)c->t.mb_buffer + c->mbx + c->mby * (c->t.pic_width_in_mbs + 1);
 	for (int addr = from; addr < to; addr++) {
@@ -712,8 +720,8 @@ static void deblock_range(Edge264MvcContext *c, int currPic, int from, int to) {
 			c->_mb++;
 			c->mbx = 0;
 			c->samples_mb[0] += c->t.stride[0] * 16 - c->t.pic_width_in_mbs * 16;
-			c->samples_mb[1] += c->t.stride[1] * 8 - c->t.pic_width_in_mbs * 8;
-			c->samples_mb[2] += c->t.stride[1] * 8 - c->t.pic_width_in_mbs * 8;
+			c->samples_mb[1] += c->t.stride[1] * c->t.mb_height_C - c->t.pic_width_in_mbs * 8;
+			c->samples_mb[2] += c->t.stride[1] * c->t.mb_height_C - c->t.pic_width_in_mbs * 8;
 		}
 	}
 }
@@ -1592,6 +1600,7 @@ static void initialize_task(Edge264MvcDecoder *dec, Edge264MvcSeqParameterSet *s
 	// copy most essential fields from dec
 	memcpy(&t->gb, &dec->gb, sizeof(dec->gb)); // GCC-14 crashes on dec->out = format
 	t->ChromaArrayType = sps->ChromaArrayType;
+	t->mb_height_C = sps->ChromaArrayType == 2 ? 16 : 8;
 	t->direct_8x8_inference_flag = sps->direct_8x8_inference_flag;
 	t->pic_width_in_mbs = sps->pic_width_in_mbs;
 	t->pic_height_in_mbs = sps->pic_height_in_mbs;
@@ -1729,14 +1738,15 @@ static int conceal_frame(Edge264MvcDecoder *dec, int id) {
 		if ((m[y * (width + 1) + x].recovery_bits & 1) == (recovery_bits & 1))
 			continue;
 		size_t offY = (size_t)y * 16 * stride_Y + x * 16;
-		size_t offC = dec->plane_size_Y + (size_t)y * 8 * stride_C + x * 8;
+		int rows_C = dec->sps.ChromaArrayType == 2 ? 16 : 8;
+		size_t offC = dec->plane_size_Y + (size_t)y * rows_C * stride_C + x * 8;
 		for (int r = 0; r < 16; r++, offY += stride_Y) {
 			if (src)
 				memcpy(dst + offY, src + offY, 16);
 			else
 				memset(dst + offY, 0, 16);
 		}
-		for (int r = 0; r < 16 && dec->sps.ChromaArrayType; r++, offC += stride_C >> 1) { // Cb and Cr rows alternate, none to conceal in 4:0:0
+		for (int r = 0; r < rows_C * 2 && dec->sps.ChromaArrayType; r++, offC += stride_C >> 1) { // Cb and Cr rows alternate, none to conceal in 4:0:0
 			if (src)
 				memcpy(dst + offC, src + offC, 8);
 			else
@@ -2528,7 +2538,6 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	}
 	t->QP[0] = t->pps.QPprime_Y + get_se16(&dec->gb, -t->pps.QPprime_Y, 51 - t->pps.QPprime_Y); // FIXME QpBdOffset
 	log_dec(dec, "  slice_qp_delta: %d\n", t->QP[0] - t->pps.QPprime_Y);
-	
 	if (t->pps.deblocking_filter_control_present_flag) {
 		t->disable_deblocking_filter_idc = get_ue16(&dec->gb, 2);
 		log_dec(dec, "  disable_deblocking_filter_idc: %u # %s\n",
@@ -3248,15 +3257,13 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 	if (profile_idc != 66 && profile_idc != 77 && profile_idc != 88) {
 		sps.ChromaArrayType = sps.chroma_format_idc = get_ue16(&dec->gb, 3);
 		log_dec(dec, "  chroma_format_idc: %u # %s%s\n",
-			sps.chroma_format_idc, chroma_format_idc_names[sps.chroma_format_idc], unsup_if(sps.chroma_format_idc > 1));
-		if (sps.chroma_format_idc > 1) {
+			sps.chroma_format_idc, chroma_format_idc_names[sps.chroma_format_idc], unsup_if(sps.chroma_format_idc > 2));
+		if (sps.chroma_format_idc > 2) {
 			ret = ENOTSUP;
-			if (sps.chroma_format_idc == 3) {
-				int separate_colour_plane_flag = get_u1(&dec->gb);
-				sps.ChromaArrayType = (separate_colour_plane_flag * 3) ^ 3;
-				log_dec(dec, "  separate_colour_plane_flag: %u\n",
-					separate_colour_plane_flag);
-			}
+			int separate_colour_plane_flag = get_u1(&dec->gb);
+			sps.ChromaArrayType = (separate_colour_plane_flag * 3) ^ 3;
+			log_dec(dec, "  separate_colour_plane_flag: %u\n",
+				separate_colour_plane_flag);
 		}
 		sps.BitDepth_Y = 8 + get_ue16(&dec->gb, 6);
 		if (sps.BitDepth_Y > 8)
@@ -3269,7 +3276,7 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 			ret = ENOTSUP;
 		log_dec(dec, "  bit_depth: {luma: %u, chroma: %u}%s\n"
 			"  qpprime_y_zero_transform_bypass_flag: %u%s\n",
-			sps.BitDepth_Y, sps.BitDepth_C, unsup_if(sps.BitDepth_Y + sps.BitDepth_Y != 16),
+			sps.BitDepth_Y, sps.BitDepth_C, unsup_if(sps.BitDepth_Y + sps.BitDepth_C != 16),
 			sps.qpprime_y_zero_transform_bypass_flag, unsup_if(sps.qpprime_y_zero_transform_bypass_flag));
 		sps.seq_scaling_matrix_present_flag = get_u1(&dec->gb);
 		if (sps.seq_scaling_matrix_present_flag) {

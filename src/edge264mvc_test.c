@@ -288,8 +288,8 @@ static void dump_frame(void)
 		// a Y4M stream keeps the frame size of its header, so side by side is
 		// decided once, by the first frame
 		y4m_sbs = dump == 2 && out.views[1].planes[0] != NULL;
-		fprintf(stdout, "YUV4MPEG2 W%d H%d F%d:%d Ip A1:1 C420mpeg2\n",
-			out.width_Y << y4m_sbs, out.height_Y, fnum, fden);
+		fprintf(stdout, "YUV4MPEG2 W%d H%d F%d:%d Ip A1:1 %s\n",
+			out.width_Y << y4m_sbs, out.height_Y, fnum, fden, out.height_C < out.height_Y ? "C420mpeg2" : "C422");
 		y4m_started = 1;
 	}
 	fputs("FRAME\n", stdout);

@@ -434,6 +434,7 @@ typedef struct {
 	int8_t FilterOffsetA; // -12..12
 	int8_t FilterOffsetB;
 	int8_t ChromaArrayType; // 0..3
+	int8_t mb_height_C; // rows of a macroblock in each chroma plane, 16 in 4:2:2 and 8 otherwise
 	int8_t direct_8x8_inference_flag; // 0..1
 	int8_t cabac_init_idc; // 0..3
 	int8_t next_deblock_idc; // -1..31, -1 if next_deblock_addr is not written back to dec, currPic otherwise
@@ -492,6 +493,7 @@ enum {
 	REC_IDCT8x8_16, // the same with 16-bit coefficients
 	REC_DC16x16, // transform_dc4x4 adding to the samples: a = iYCbCr, qp, then 16 coefficients
 	REC_DC_CHROMA, // transform_dc2x2 adding to the samples: qp = Cb QP, b = Cr QP, then 8 coefficients
+	REC_INTRA_CHROMA422, // like REC_INTRA_CHROMA
 };
 typedef struct {
 	uint8_t op;
@@ -589,6 +591,7 @@ typedef struct Edge264MvcContext {
 	union { uint8_t alpha[16]; int32_t alpha_s[4]; i8x16 alpha_v; }; // {internal_Y,internal_Cb,internal_Cr,0,0,0,0,0,left_Y,left_Cb,left_Cr,0,top_Y,top_Cb,top_Cr,0}
 	union { uint8_t beta[16]; int32_t beta_s[4]; i8x16 beta_v; };
 	union { int32_t tC0_s[16]; int64_t tC0_l[8]; i8x16 tC0_v[4]; i8x32 tC0_V[2]; }; // 4 bytes per edge in deblocking order -> 8 luma edges then 8 alternating Cb/Cr edges
+	union { int64_t tC0_fh_l[2]; i8x16 tC0_fh_v; }; // Cb/Cr edges at the luma edges f and h, which only 4:2:2 filters
 	
 	// Logging context
 	uint64_t log_base_us; // timestamp of decoder initialization
@@ -1864,6 +1867,7 @@ static cold noinline void decode_intra4x4(uint8_t * restrict p, size_t stride, i
 static cold noinline void decode_intra8x8(uint8_t * restrict p, size_t stride, int mode, i16x8 clip);
 static cold noinline void decode_intra16x16(uint8_t * restrict p, size_t stride, int mode, i16x8 clip);
 static cold noinline void decode_intraChroma(uint8_t * restrict p, size_t stride, int mode, i16x8 clip);
+static cold noinline void decode_intraChroma422(uint8_t * restrict p, size_t stride, int mode, i16x8 clip);
 
 // edge264mvc_mvpred.c
 static inline void decode_inter_16x16(Edge264MvcContext *ctx, i16x8 mvd, int lx);

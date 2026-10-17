@@ -524,6 +524,60 @@ static void deblock_CbCr_8bit(Edge264MvcContext *ctx) {
 
 
 /**
+ * Deblock both chroma planes of a 4:2:2 macroblock in place, 8x16 samples each
+ * with the rows of Cb and Cr alternating. Its vertical edges take the bS of
+ * the luma edges a and c at the same rows, and its horizontal edges at chroma
+ * rows 0, 4, 8 and 12 those of the luma edges e, f, g and h (8.7.2), all four
+ * filtered whatever the transform size (8.7). Rare enough for plain C.
+ */
+static void deblock_CbCr_422(Edge264MvcContext *ctx) {
+	size_t stride = ctx->t.stride[1] >> 1; // from a Cb row to the Cr row of the same y
+	const int8_t *tC0v[2] = {(int8_t *)&ctx->tC0_l[4], (int8_t *)&ctx->tC0_l[5]};
+	const int8_t *tC0h[4] = {(int8_t *)&ctx->tC0_l[6], (int8_t *)&ctx->tC0_fh_l[0], (int8_t *)&ctx->tC0_l[7], (int8_t *)&ctx->tC0_fh_l[1]};
+	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
+		uint8_t *c = ctx->samples_mb[1] + iCbCr * stride;
+		ssize_t row = stride * 2;
+		for (int dir = 0; dir < 2; dir++) {
+			// p1, p0, q0 and q1 are at k = -2..1 steps of across from an edge sample
+			ssize_t across = dir ? row : 1;
+			ssize_t along = dir ? 1 : row;
+			for (int e = 0; e < (dir ? 4 : 2); e++) {
+				int bS4 = 0, idx = 1 + iCbCr; // alpha and beta of the internal edges
+				if (e == 0) {
+					if (!(mb->filter_edges & (1 << dir)))
+						continue;
+					idx = (dir ? 13 : 9) + iCbCr; // those of the edges with B or A
+					bS4 = !((dir ? mbB : mbA)->mbIsInterFlag & mb->mbIsInterFlag);
+				}
+				int alpha = ctx->alpha[idx];
+				int beta = ctx->beta[idx];
+				const int8_t *tC0 = dir ? tC0h[e] : tC0v[e];
+				uint8_t *s = c + (dir ? e * 4 * row : e * 4);
+				for (int k = 0; k < (dir ? 8 : 16); k++, s += along) {
+					int t = tC0[iCbCr * 4 + (dir ? k >> 1 : k >> 2)]; // one per 4 luma samples along the edge
+					if (!bS4 && t < 0)
+						continue;
+					int p1 = s[-2 * across], p0 = s[-across], q0 = s[0], q1 = s[across];
+					if (abs(p0 - q0) >= alpha || abs(p1 - p0) >= beta || abs(q1 - q0) >= beta)
+						continue;
+					if (bS4) { // (8-480, 8-487) for chromaStyleFilteringFlag
+						s[-across] = (2 * p1 + p0 + q1 + 2) >> 2;
+						s[0] = (2 * q1 + q0 + p1 + 2) >> 2;
+					} else { // (8-467 to 8-470) with tC = tC0 + 1
+						int delta = clip3(-t - 1, t + 1, ((q0 - p0) * 4 + p1 - q1 + 4) >> 3);
+						s[-across] = clip3(0, 255, p0 + delta);
+						s[0] = clip3(0, 255, q0 - delta);
+					}
+				}
+			}
+		}
+	}
+	mb->filter_edges = 0; // prevent redundant deblocking with deblock_idc==2 and ASO
+}
+
+
+
+/**
  * Deblock the luma plane of the current macroblock in place, then tail call to
  * chroma deblocking.
  */
@@ -891,7 +945,10 @@ static void deblock_Y_8bit(Edge264MvcContext *ctx) {
 	*(i8x16 *)SADDR(pE,  1) = hF;
 	
 	// jump to chroma deblocking filter
-	deblock_CbCr_8bit(ctx);
+	if (ctx->t.ChromaArrayType == 2)
+		deblock_CbCr_422(ctx);
+	else
+		deblock_CbCr_8bit(ctx);
 }
 
 
@@ -962,6 +1019,8 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 		i8x16 tC03 = shuffle3(idx2tC0[2], Am4);
 		ctx->tC0_v[0] = ctx->tC0_v[1] = broadcast8(tC03, 0);
 		ctx->tC0_v[2] = ctx->tC0_v[3] = shuffle(tC03, ((i8x16){-1, -1, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 2, 2, 2, 2}));
+		if (ctx->t.ChromaArrayType == 2) // the chroma edges at f and h, internal like g
+			ctx->tC0_fh_v = shuffle(tC03, ((i8x16){1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2}));
 	} else {
 		i8x16 tC01 = shuffle3(idx2tC0[0], Am4);
 		i8x16 tC02 = shuffle3(idx2tC0[1], Am4);
@@ -1124,10 +1183,17 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 		ctx->tC0_v[1] = ifelse_mask(bS2efgh, shuffle(tC02, shuf1), bS0efgh | shuffle(tC01, shuf1));
 		ctx->tC0_v[2] = ifelse_mask(bS2aacc, shuffle(tC02, shuf2), bS0aacc | shuffle(tC01, shuf2));
 		ctx->tC0_v[3] = ifelse_mask(bS2eegg, shuffle(tC02, shuf3), bS0eegg | shuffle(tC01, shuf3));
+		i8x16 tC0 = ctx->tC0_v[0] & ctx->tC0_v[1] & ctx->tC0_v[2] & ctx->tC0_v[3];
+		if (ctx->t.ChromaArrayType == 2) { // the chroma edges at f and h, internal like g
+			static const i8x16 shufI = {1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2};
+			i8x16 bS2ffhh = trnhi32(bS2efgh, bS2efgh);
+			i8x16 bS0ffhh = ziphi32(bS0bdfh, bS0bdfh);
+			ctx->tC0_fh_v = ifelse_mask(bS2ffhh, shuffle(tC02, shufI), bS0ffhh | shuffle(tC01, shufI));
+			tC0 &= ctx->tC0_fh_v;
+		}
 		
 		// skip the loads, transposes and stores when no edge is filtered at all,
 		// as between motion-compensated macroblocks without residuals
-		i8x16 tC0 = ctx->tC0_v[0] & ctx->tC0_v[1] & ctx->tC0_v[2] & ctx->tC0_v[3];
 		if ((mbA->mbIsInterFlag & mbB->mbIsInterFlag) && movemask(tC0 == set8(-1)) == 0xffff) {
 			mb->filter_edges = 0; // prevent redundant deblocking with deblock_idc==2 and ASO
 			return;

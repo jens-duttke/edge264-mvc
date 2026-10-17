@@ -23,9 +23,9 @@ compares from the committed `.264` alone.
   `frames` = output frame count, `stereo` = 1 for MVC, hashes are
   128-bit FNV-1a (32 hex chars) over the cropped planes in display order.
 
-Only streams edge264 fully decodes are included; interlaced (field /
-MBAFF / PAFF) and 4:2:2 conformance streams, which the decoder does not
-support, are deliberately absent.
+Only streams edge264-mvc fully decodes are included; interlaced (field /
+MBAFF / PAFF) streams and those of higher bit depths or 4:4:4 chroma,
+which the decoder does not support, are deliberately absent.
 
 ## Provenance
 
@@ -39,32 +39,21 @@ The `.264` files are the bitstreams extracted from those sources (the
 AVCv1/FRExt zips also ship a reference `.yuv`; the MVC area ships
 bitstreams only).
 
-## How the expected hashes are anchored (and the one honest caveat)
+## How the expected hashes are anchored
 
 - **2D: anchored to the ITU reference.** The manifest was generated with
   `conformance_check emit`, which decodes a stream and verifies its hash
   equals the hash of the official ITU reference `.yuv` *before* accepting
   the line (it printed `check=OK`). So every committed 2D hash equals the
   ITU reference output.
-- **MVC base view: anchored to FFmpeg.** The ITU MVC streams come without
-  reference YUVs here, so the base view of each committed MVC stream was
-  checked against FFmpeg's decode of it (FFmpeg decodes the base view of an
-  MVC stream and skips the dependent one): `emit` with that output as the
-  `.yuv` prints `check=OK` for all of them.
-- **MVC dependent view: pinned to the fork's validated output.** The ITU
-  MVC area publishes no reference YUVs, and FFmpeg cannot decode the
-  dependent view at all, so no external oracle exists. The dependent-view
-  hash is therefore pinned to this fork's output, which was validated
-  bit-exact against upstream edge264 on the full JVT MVC set (see
-  `OKU3D-FORK-FINDINGS.md`). It still catches any refactoring regression -
-  any change to the dependent view flips the hash - and is backed by the
-  structural assertions below, which need no reference at all.
-  The exception are the streams of more than two views (MVCNV-2, MVCNV-3,
-  MVCSPS-2): their base view and the view of view order index 1, the two the
-  decoder outputs, are anchored to the JMVC reference decoder, whose output
-  for both was the `.yuv` / `.1.yuv` of `emit`.
+- **MVC: anchored to the JMVC reference decoder.** The ITU MVC area
+  publishes no reference YUVs, so both views of each committed MVC stream
+  were checked against the output of JMVC, the MVC reference software
+  (ITU-T H.264.2): the base view and the view the decoder outputs as the
+  second one (view order index 1, whose `view_id` is 2 in some streams)
+  match it frame for frame.
 
-For MVC streams the harness additionally asserts the fork's structural
+For MVC streams the harness additionally asserts the decoder's structural
 guarantees on every run: both views present, each pair POC-paired
 (`Poc == Poc_mvc`), and frames emitted in non-decreasing `DisplayPoc`
 order.
@@ -80,9 +69,9 @@ above). For each stream:
     ./conformance_check emit conformance/2d  <name>   # prints a manifest line, self-checks vs <name>.yuv
     ./conformance_check emit conformance/mvc <name>
 
-Keep only lines whose comment reads `check=OK` - the base view, against the
-ITU reference or, for MVC streams without one, against FFmpeg's decode of the
-base view - and, for MVC, `pair_err=0 order_err=0`; `dep_check` is `NOREF`
-without a dependent-view reference (`<name>.1.yuv`).
+For an MVC stream, put the JMVC output of its two views next to it as
+`<name>.yuv` (base view) and `<name>.1.yuv` (second view). Keep only lines
+whose comment reads `check=OK` - against the ITU reference, or for MVC
+against JMVC - and, for MVC, `dep_check=OK pair_err=0 order_err=0`.
 Copy the corresponding `.264` here and append the line (without the trailing
 `# ...` comment) to `manifest.txt`.

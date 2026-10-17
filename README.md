@@ -1,6 +1,6 @@
 # edge264-mvc
 
-edge264-mvc is an open-source software decoder for **H.264 MVC**, the stereoscopic 3D format of **3D Blu-ray** discs. It decodes both eye views of every picture and returns them as pairs, in display order. General-purpose decoders such as FFmpeg decode only the base view of these streams and drop the second eye, so edge264-mvc fills that gap. It also decodes ordinary 2D H.264 (High Profile).
+edge264-mvc is an open-source software decoder for **H.264 MVC**, the stereoscopic 3D format of **3D Blu-ray** discs. It decodes both eye views of every picture and returns them as pairs, in display order. General-purpose decoders such as FFmpeg decode only the base view of these streams and drop the second eye, so edge264-mvc fills that gap. For ordinary 2D H.264 (High Profile) it is a fast decoder in its own right: in the benchmark below it decodes 1080p video faster than FFmpeg, LibAVC and OpenH264, both on all cores and on one.
 
 edge264-mvc is derived from [edge264](https://github.com/tvlabs/edge264) by Thibault Raffaillac and is developed as an independent project. It is used by:
 - **[Oku3D Media Player](https://oku3d.com/)** - a native 3D media player that plays 3D Blu-rays and converts any 2D video to stereoscopic 3D in real time.
@@ -9,7 +9,7 @@ edge264-mvc is derived from [edge264](https://github.com/tvlabs/edge264) by Thib
 ## Why edge264-mvc
 
 - **3D Blu-ray decoding that works end to end** - both eye views of every picture, paired and in display order, tested on complete commercial 3D Blu-ray films.
-- **Fast** - consecutive pictures are decoded in parallel on all cores, which makes 1080p decoding about 4 times as fast as on one core on an 8-core CPU. edge264's experimental multithreading hangs; on one core edge264-mvc is 3% to 24% faster than edge264, depending on CPU and compiler, and in our tests edge264 failed on 3D Blu-ray and 4K video.
+- **Fast** - consecutive pictures are decoded in parallel on all cores: on an 8-core CPU, 1080p video decodes about 4 times as fast with all cores as with one. On a single core, edge264-mvc is 3% to 24% faster than edge264, depending on CPU and compiler. edge264's multithreading is an experimental feature that does not work, and edge264 itself fails on 3D Blu-ray and 4K video, even on one core.
 - **Robust on damaged streams** - missing or damaged parts are concealed and decoding continues. The decoder is fuzzed under AddressSanitizer and UndefinedBehaviorSanitizer, and its threading is checked with ThreadSanitizer.
 - **A small API that is hard to misuse** - send NAL units, receive frames; timestamps travel with their pictures, every frame reports whether part of it was concealed, and the results have the same values on every platform.
 - **Tested on every change** - the output is compared with the ITU reference decoder on the conformance streams, on Linux and Windows, single- and multithreaded, and the decoder runs under the sanitizers and a fuzzer.
@@ -20,12 +20,12 @@ See [IMPROVEMENTS.md](IMPROVEMENTS.md) for everything that edge264-mvc changes o
 
 ![Single-threaded decoding time](README-benchmark-1T.svg)
 
-*Decoding time of the [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4) (1080p), the fastest of 10 runs on GitHub-hosted runners, once with all cores (the default) and once on one core. A red cross marks a decoder without a multithreaded result: OpenH264's decoder has no multithreading, and the experimental multithreading of the original edge264 (at a fixed commit) hangs on this video. The runners have only a few cores, so a many-core machine gains more from multithreading.*
+*Decoding time of the [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4) (2D, 1080p), the fastest of 10 runs on GitHub-hosted runners, once with all cores (the default) and once on one core. A red cross marks a decoder without a multithreaded result: OpenH264's decoder has no multithreading, and the experimental multithreading of the original edge264 (at a fixed commit) hangs on this video. The runners have only a few cores, so a many-core machine gains more from multithreading.*
 
 
 ## Supported streams and platforms
 
-edge264-mvc decodes the **Progressive High**, **High 4:2:2** (8-bit, progressive) and **Stereo High** (MVC, 2 views) profiles of H.264 up to level 6.2, with 8-bit 4:2:0, 4:2:2 or monochrome video, which covers 3D Blu-ray and nearly all 2D H.264 in use, as well as the SP slices of the Extended profile. Of an MVC stream with more than two views, it decodes the base view and the next view in coding order as the stereo pair. Interlaced coding, higher bit depths and 4:4:4 chroma are not supported - FFmpeg decodes those well.
+edge264-mvc decodes the **Progressive High**, **High 4:2:2** (8-bit, progressive) and **Stereo High** (MVC, 2 views) profiles of H.264 up to level 6.2, with 8-bit 4:2:0, 4:2:2 or monochrome video, which covers 3D Blu-ray and nearly all 2D H.264 in use, as well as the SP slices of the Extended profile. Of an MVC stream with more than two views, it decodes the base view and the next view in coding order as the stereo pair. Interlaced coding, higher bit depths and 4:4:4 chroma are not supported.
 
 It runs on **Linux** (x86-64 and ARM64) and **Windows** (x86-64), with runtime dispatch to the fastest x86-64 instruction set (see `VARIANTS` below). It is written in C with GCC / Clang vector extensions, and also builds for macOS and WebAssembly.
 
@@ -101,6 +101,24 @@ ffmpeg -i vid.mp4 -vcodec copy -bsf h264_mp4toannexb -an vid.264 # optional, con
 Like a player, the tool skips the NAL units it cannot use, such as the unspecified type-24 units in every access unit of a 3D Blu-ray, and damaged ones, whose pictures are concealed; `-e` stops at the first such NAL unit instead. The frame rate is taken from the stream's VUI and can be overridden downstream (`ffmpeg -r ...`).
 
 The input path can also be `-` to read an Annex B stream from standard input, so a demuxer can pipe straight into the decoder without a temporary file (`demux ... | edge264mvc_test - -O | ffmpeg -i - ...`); on POSIX a named pipe (FIFO) path works the same way. Stream input is buffered one NAL unit at a time (capped at 64 MiB), while regular files stay on the memory-mapped fast path.
+
+
+## Switching from edge264
+
+edge264-mvc grew out of edge264's code, so moving over is mostly a matter of renaming. In return you get multithreaded decoding on all cores, 3D Blu-ray and 4K video, concealment of damaged streams, and timestamps that travel with their pictures.
+
+| edge264 | edge264-mvc |
+|---|---|
+| `edge264_alloc` | `edge264mvc_open`, with a settings struct (NULL for the defaults); the decoder allocates its pictures itself, there are no allocation callbacks |
+| `edge264_decode_NAL(dec, buf, end, unref_cb, unref_arg)` | `edge264mvc_send_nal(dec, nal, size, pts, user_data)`; the bytes are copied, so no unref callback is needed |
+| `edge264_decode_NAL` with `buf >= end` | `edge264mvc_send_end` |
+| `edge264_get_frame(dec, out, borrow)` | `edge264mvc_receive_frame(dec, frame)`; every frame is borrowed |
+| `Edge264Frame`: `samples[3]`, `samples_mvc[3]` | `Edge264MvcFrame`: `views[0].planes[3]`, `views[1].planes[3]` |
+| `edge264_return_frame` | `edge264mvc_release_frame` |
+| `edge264_flush` | `edge264mvc_flush` |
+| `edge264_free` | `edge264mvc_close` |
+| `edge264_find_start_code(buf, end, four_byte)`, returning a pointer | `edge264mvc_find_start_code(buf, size)`, returning an offset |
+| `ENOBUFS`, `ENODATA`, `ENOTSUP`, `EBADMSG` | `EDGE264MVC_AGAIN`, `EDGE264MVC_END`, `EDGE264MVC_UNSUPPORTED`, `EDGE264MVC_CORRUPT` |
 
 
 ## Using the library
@@ -255,7 +273,7 @@ The whole API is declared in [edge264mvc.h](edge264mvc.h), and the library is ca
 - **Thread creation failing** ([`tests/open_failure_check.c`](tests/open_failure_check.c)) - opening a decoder when creating one of its worker threads fails, which must fail cleanly and leave no thread behind (Linux).
 - **Overlapping slices** ([`tests/slice_overrun_check.c`](tests/slice_overrun_check.c)) - slices that a worker thread decodes past the start of the next slice before it arrives, which must give the single-threaded output, checked under ThreadSanitizer in CI.
 
-On the full set of 231 AVC, FRExt and MVC [conformance streams](https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/), edge264-mvc decodes 133 exactly like the ITU reference decoders (JM for AVC and FRExt, JMVC for MVC), 91 use features outside the supported profiles (and are reported as unsupported), and 1 differs. The other 6 are superseded draft versions of MVC streams that cannot be checked: the MVC reference decoder rejects 5 of them, and the sixth predicts from base-view pictures whose `inter_view_flag` excludes them from inter-view prediction. CI additionally runs the tests on Windows, under the sanitizers, and fuzzes the decoder with libFuzzer ([`tests/fuzz_decode.c`](tests/fuzz_decode.c), `make fuzz`).
+On the full set of 231 AVC, FRExt and MVC [conformance streams](https://www.itu.int/wftp3/av-arch/jvt-site/draft_conformance/), edge264-mvc decodes 133 exactly like the ITU reference decoders (JM for AVC and FRExt, JMVC for MVC), and one more, CVFC1_Sony_C, within its cropping window: its reference YUV holds the full coded frame, grey outside the window, where edge264-mvc outputs the cropped picture. 91 use features outside the supported profiles (and are reported as unsupported). The other 6 are superseded draft versions of MVC streams that cannot be checked: the MVC reference decoder rejects 5 of them, and the sixth predicts from base-view pictures whose `inter_view_flag` excludes them from inter-view prediction. CI additionally runs the tests on Windows, under the sanitizers, and fuzzes the decoder with libFuzzer ([`tests/fuzz_decode.c`](tests/fuzz_decode.c), `make fuzz`).
 
 `edge264mvc_test` can also decode every `<video>.264` file of a directory and compare every sample of its output with a sibling `<video>.yuv` ([`tests/edge264mvc_test_yuv_check.py`](tests/edge264mvc_test_yuv_check.py) checks that it does). The planned synthetic tests are listed in [tests/ROADMAP.md](tests/ROADMAP.md).
 

@@ -2428,7 +2428,13 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		log_dec(dec, "  FrameId: %u\n", dec->FrameIds[currPic]);
 	}
 	
-	// each slice has the initial references state of the previous frame
+	// each slice has the initial references state of the previous frame, taken
+	// with the view of every slot as it is now: the frames inferred for a gap
+	// and the new picture may have taken slots of the other view, so a mask of
+	// the views taken before them left out a gap frame in a slot that held a
+	// picture of the other view, which then lost its reference marking, and
+	// which slot a frame takes depends on the thread timing
+	same_views = non_base_view ? dec->non_base_frames : ~dec->non_base_frames;
 	dec->currPic_marked = 0;
 	dec->short_term_frames = dec->prev_short_term_frames & same_views;
 	dec->long_term_frames = dec->prev_long_term_frames & same_views;

@@ -392,8 +392,7 @@ static void unblock_output(Edge264MvcDecoder *dec) {
 			continue;
 		int has_base = 0;
 		for (FrameMask b = live_bases; b; b &= b - 1) {
-			int i = mask_ctz(b);
-			if (dec->FrameNums[i] == dec->FrameNums[d] && dec->FieldOrderCnt[0][i] == dec->FieldOrderCnt[0][d]) {
+			if (same_access_unit(dec, mask_ctz(b), d)) {
 				has_base = 1;
 				break;
 			}
@@ -691,7 +690,6 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 	}
 	if (idx0 >= 0) {
 		if (dec->ssps.BitDepth_Y != 0) {
-			int32_t base_poc = dec->FieldOrderCnt[0][pic0]; // pair the dependent view by POC
 			for (int i = 0; i < QUEUE_SIZE; ++i) {
 				int queued = dec->get_frame_queue[1][i];
 				if (queued < 0)
@@ -707,8 +705,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 				// non-deterministically swapping the two views' dependent halves.
 				// The two views of one access unit share a FrameNum and a POC (as
 				// the hold/bump scans below already require), so match on both.
-				if (dec->FieldOrderCnt[0][queued] != base_poc ||
-					dec->FrameNums[queued] != dec->FrameNums[pic0])
+				if (!same_access_unit(dec, pic0, queued))
 					continue;
 				idx1 = i;
 				pic1 = queued;
@@ -739,18 +736,17 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		// below); require it fully decoded so a dependent still in flight under
 		// multithreading is left to the hold path below instead.
 		if (dec->ssps.BitDepth_Y != 0 && idx1 < 0) {
-			int32_t base_fn = dec->FrameNums[pic0], base_poc = dec->FieldOrderCnt[0][pic0];
+			int d = -1; // the first dependent view of the access unit in decoding order
 			for (FrameMask o = dec->to_get_frames & ~dec->output_frames & dec->non_base_frames; o; o &= o - 1) {
-				int d = mask_ctz(o);
-				if (dec->FrameNums[d] != base_fn || dec->FieldOrderCnt[0][d] != base_poc)
-					continue;
-				if (__atomic_load_n(&dec->next_deblock_addr[d], __ATOMIC_ACQUIRE) == INT_MAX) {
-					dec->output_frames |= (FrameMask)1 << d;
-					queue_push(dec, 1, d);
-					idx1 = 0;
-					pic1 = d;
-				}
-				break;
+				int j = mask_ctz(o);
+				if (same_access_unit(dec, pic0, j) && (d < 0 || dec->FrameIds[j] < dec->FrameIds[d]))
+					d = j;
+			}
+			if (d >= 0 && __atomic_load_n(&dec->next_deblock_addr[d], __ATOMIC_ACQUIRE) == INT_MAX) {
+				dec->output_frames |= (FrameMask)1 << d;
+				queue_push(dec, 1, d);
+				idx1 = 0;
+				pic1 = d;
 			}
 		}
 		int force_unpaired = 0;
@@ -774,10 +770,8 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 			// fill frames decode between the base and its dependent, pushing the
 			// dependent several FrameIds past the base and stranding it forever).
 			int dependent_in_flight = 0;
-			int32_t base_fn = dec->FrameNums[pic0], base_poc = dec->FieldOrderCnt[0][pic0];
 			for (FrameMask o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
-				int d = mask_ctz(o);
-				if (dec->FrameNums[d] == base_fn && dec->FieldOrderCnt[0][d] == base_poc) {
+				if (same_access_unit(dec, pic0, mask_ctz(o))) {
 					dependent_in_flight = 1;
 					break;
 				}
@@ -864,11 +858,9 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 			// the liveness purpose of this valve is preserved.
 			if (dep == dec->currPic || (inflight & (FrameMask)1 << dep))
 				continue;
-			int32_t base_fn = dec->FrameNums[dep], base_poc = dec->FieldOrderCnt[0][dep];
 			int has_base = 0;
 			for (FrameMask o = live_bases; o; o &= o - 1) {
-				int b = mask_ctz(o);
-				if (dec->FrameNums[b] == base_fn && dec->FieldOrderCnt[0][b] == base_poc) {
+				if (same_access_unit(dec, mask_ctz(o), dep)) {
 					has_base = 1;
 					break;
 				}

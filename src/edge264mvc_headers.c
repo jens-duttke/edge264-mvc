@@ -97,6 +97,21 @@ static void dequeue_frame(Edge264MvcDecoder *dec, int view, int i) {
 	dec->get_frame_queue[view][QUEUE_SIZE - 1] = -1;
 }
 
+/**
+ * Tells whether a dependent view belongs to the same access unit as a base
+ * view: the two views of one access unit share a FrameNum and a POC, and the
+ * base view is the one parsed right before the dependent (H.7.4.1.2.5), or
+ * right after it on a stream that sends the dependent first. A damaged stream
+ * may give a later base view the same pair, which is not this dependent's -
+ * taking it made the pairing depend on whether that base was parsed by the
+ * time the dependent was looked at, hence on the thread timing.
+ */
+static inline int same_access_unit(const Edge264MvcDecoder *dec, int base, int dep) {
+	return dec->FrameNums[base] == dec->FrameNums[dep] &&
+		dec->FieldOrderCnt[0][base] == dec->FieldOrderCnt[0][dep] &&
+		(dec->FrameIds[base] + 1 == dec->AuBaseIds[0][dep] || dec->FrameIds[base] + 1 == dec->AuBaseIds[1][dep]);
+}
+
 static int bump_frame(Edge264MvcDecoder *dec, int non_base_view, FrameMask ignored) {
 	int pic = -1;
 	int lowest_poc = INT_MAX;
@@ -115,9 +130,7 @@ static int bump_frame(Edge264MvcDecoder *dec, int non_base_view, FrameMask ignor
 		if (non_base_view) {
 			int paired = 0;
 			for (FrameMask b = dec->output_frames & ~dec->non_base_frames; b; b &= b - 1) {
-				int bb = mask_ctz(b);
-				if (dec->FrameNums[bb] == dec->FrameNums[i] &&
-					dec->FieldOrderCnt[0][bb] == dec->FieldOrderCnt[0][i]) {
+				if (same_access_unit(dec, mask_ctz(b), i)) {
 					paired = 1;
 					break;
 				}
@@ -236,15 +249,12 @@ static void catch_up_dependent_bumps(Edge264MvcDecoder *dec) {
 		if (front < 0)
 			return;
 		done |= (FrameMask)1 << front;
-		// the two views of one access unit share a FrameNum and a POC
+		// the first dependent view of the access unit in decoding order
 		int dep = -1;
 		for (FrameMask o = dec->to_get_frames & dec->non_base_frames; o; o &= o - 1) {
 			int d = mask_ctz(o);
-			if (dec->FrameNums[d] == dec->FrameNums[front] &&
-				dec->FieldOrderCnt[0][d] == dec->FieldOrderCnt[0][front]) {
+			if (same_access_unit(dec, front, d) && (dep < 0 || dec->FrameIds[d] < dec->FrameIds[dep]))
 				dep = d;
-				break;
-			}
 		}
 		if (dep < 0)
 			return; // not parsed yet - a single-threaded draining caller would hold here
@@ -2431,6 +2441,17 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 			settle_recovery_bits(dec, currPic);
 		dec->frame_flip_bits ^= (FrameMask)1 << currPic;
 		dec->FrameIds[currPic] = ++dec->prevFrameId;
+		// remember the base views around each dependent view (see same_access_unit)
+		if (non_base_view) {
+			dec->AuBaseIds[0][currPic] = dec->lastBaseId;
+			dec->AuBaseIds[1][currPic] = 0;
+		} else {
+			dec->lastBaseId = dec->FrameIds[currPic] + 1;
+			for (FrameMask d = dec->non_base_frames; d; d &= d - 1) {
+				if (dec->AuBaseIds[1][mask_ctz(d)] == 0)
+					dec->AuBaseIds[1][mask_ctz(d)] = dec->lastBaseId;
+			}
+		}
 		dec->FrameNums[currPic] = dec->FrameNum;
 		dec->FieldOrderCnt[0][currPic] = dec->TopFieldOrderCnt;
 		dec->FieldOrderCnt[1][currPic] = dec->BottomFieldOrderCnt;

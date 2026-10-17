@@ -700,6 +700,8 @@ struct Edge264MvcDecoder {
 	int32_t FrameNums[MAX_FRAMES]; // signed to be used along FieldOrderCnt in initial reference ordering
 	int32_t FrameIds[MAX_FRAMES]; // unique identifiers for each frame, incremented in decoding order
 	int32_t DispOrder[MAX_FRAMES]; // monotonic display-order rank, assigned when a frame is bumped for output (see next_dispnum)
+	int32_t AuBaseIds[2][MAX_FRAMES]; // 1 + FrameIds of the base views parsed right before and after each dependent view, 0 for none (see same_access_unit)
+	int32_t lastBaseId; // 1 + FrameId of the last base view parsed, 0 for none
 	int8_t get_frame_queue[2][QUEUE_SIZE]; // FIFO with insertion at 0 for both views, and empty slots having value -1
 	int8_t LongTermFrameIdx[MAX_FRAMES];
 	int8_t prev_LongTermFrameIdx[MAX_FRAMES]; // state of LongTermFrameIdx before current frame

@@ -857,6 +857,7 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 				TaskMask pool = tm_andnot(c.d->pending_tasks, c.d->chained_tasks);
 				if (c.thread_id < 0 || c.d->shutdown || (tm_any(pool) && tm_has(c.d->ready_tasks, task_id = oldest_task(c.d, pool))))
 					break;
+				task_id = -1; // a shutdown waking this wait finds no task taken
 				pthread_cond_wait(&c.d->task_ready, &c.d->lock);
 			}
 		}

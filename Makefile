@@ -404,7 +404,7 @@ uninstall:
 # ==============================================================================
 .PHONY: clean clear
 clean clear:
-	$(Q)rm -f edge264mvc_test edge264mvc_test.exe edge264mvc_test.js edge264mvc_test.wasm edge264mvc_check edge264mvc_check.exe edge264mvc_check.js edge264mvc_check.wasm conformance_check conformance_check.exe liveness_check liveness_check.exe asan_check asan_check.exe api_check api_check.exe multi_decoder_check multi_decoder_check.exe slice_overrun_check slice_overrun_check.exe open_failure_check open_failure_check.exe alloc_failure_check alloc_failure_check.exe partial_receive_check partial_receive_check.exe conformance_check_stall liveness_check_stall edge264mvc_test_stall static_plugin.so static_plugin.dll fuzz_decode edge264*.o libedge264mvc.a edge264mvc.$(MAJOR).dll libedge264mvc.dll.a edge264mvc.js edge264mvc.wasm libedge264mvc.$(MAJOR).dylib libedge264mvc-universal.$(MAJOR).dylib libedge264mvc.so libedge264mvc.so.$(MAJOR)
+	$(Q)rm -f edge264mvc_test edge264mvc_test.exe edge264mvc_test.js edge264mvc_test.wasm edge264mvc_check edge264mvc_check.exe edge264mvc_check.js edge264mvc_check.wasm conformance_check conformance_check.exe liveness_check liveness_check.exe asan_check asan_check.exe frame_info frame_info.exe api_check api_check.exe multi_decoder_check multi_decoder_check.exe slice_overrun_check slice_overrun_check.exe open_failure_check open_failure_check.exe alloc_failure_check alloc_failure_check.exe partial_receive_check partial_receive_check.exe conformance_check_stall liveness_check_stall edge264mvc_test_stall static_plugin.so static_plugin.dll fuzz_decode edge264*.o libedge264mvc.a edge264mvc.$(MAJOR).dll libedge264mvc.dll.a edge264mvc.js edge264mvc.wasm libedge264mvc.$(MAJOR).dylib libedge264mvc-universal.$(MAJOR).dylib libedge264mvc.so libedge264mvc.so.$(MAJOR)
 
 
 # ==============================================================================
@@ -427,6 +427,7 @@ else
 	$(Q)$(MAKE) --no-print-directory check-conformance
 	$(Q)$(MAKE) --no-print-directory check-stream-input
 	$(Q)$(MAKE) --no-print-directory check-edge264mvc-test-liveness
+	$(Q)$(MAKE) --no-print-directory check-stress STRESS_RUNS=20
 	$(Q)$(MAKE) --no-print-directory check-edge264mvc-test-yuv
 	$(Q)$(MAKE) --no-print-directory check-robustness
 	$(Q)$(MAKE) --no-print-directory check-api
@@ -701,18 +702,22 @@ asan_check$(EXE): tests/asan_check.c edge264mvc.h $(LIBNAME)
 
 # Decode the fixtures STRESS_RUNS times each with worker threads, each run in a
 # process of its own, against the single-threaded output: a race shows only in
-# some runs, which a single decode per fixture rarely hits. The crafted fixtures
-# are held to their exit status only. Standalone (not part of `check`): it takes
-# minutes. A release build under a sanitizer finds the most, as an assertion
-# no longer stops a worker there before the damage: `make clean` and then
-# `make SANITIZE=address CPPFLAGS=-DNDEBUG check-stress`.
+# some runs, which a single decode per fixture rarely hits. `check` runs it 20
+# times per fixture; the 500 runs of the default take minutes. A release build
+# under a sanitizer finds the most, as an assertion no longer stops a worker
+# there before the damage: `make clean` and then
+# `make SANITIZE=address CPPFLAGS=-DNDEBUG check-stress`. The runs alternate
+# with frame_info, which prints the order and flags of the views as well, as
+# two dependent views paired with the wrong base views give the same samples.
 STRESS_RUNS ?= 500
 .PHONY: check-stress
-check-stress: edge264mvc_test$(EXE)
+check-stress: edge264mvc_test$(EXE) frame_info$(EXE)
 ifneq ($(OS),wasm)
-	$(Q)$(PY) tests/stress_check.py --exe ./edge264mvc_test$(EXE) --runs $(STRESS_RUNS) tests/liveness/*.264 tests/conformance/mvc/*.264 tests/conformance/mvc-synthetic/*.264 tests/conformance/mvc-jmvc/*.264
-	$(Q)$(PY) tests/stress_check.py --exe ./edge264mvc_test$(EXE) --runs $(STRESS_RUNS) --any-output tests/asan/*.264
+	$(Q)$(PY) tests/stress_check.py --exe ./edge264mvc_test$(EXE) --frame-info ./frame_info$(EXE) --runs $(STRESS_RUNS) tests/liveness/*.264 tests/asan/*.264 tests/conformance/mvc/*.264 tests/conformance/mvc-synthetic/*.264 tests/conformance/mvc-jmvc/*.264
 endif
+
+frame_info$(EXE): tests/frame_info.c edge264mvc.h $(LIBNAME)
+	$(Q)$(CCLD) -I. tests/frame_info.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
 
 # libFuzzer harness under AddressSanitizer and UndefinedBehaviorSanitizer (needs
 # clang), built from the sources so every function is instrumented. Assertions

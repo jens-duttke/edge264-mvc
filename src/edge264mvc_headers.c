@@ -2726,8 +2726,12 @@ int ADD_VARIANT(parse_nal_unit_header_extension)(Edge264MvcDecoder *dec, Edge264
 		if (dec->nal_unit_type == 20) {
 			// the views beyond VOIdx 1 are not decoded (see parse_seq_parameter_set_mvc_extension);
 			// a stream of two views has no other one, whatever view_id its slices carry
-			if (dec->ssps.num_views > 2 && (u >> 6 & 0x3ff) != dec->ssps.dependent_view_id)
+			if (dec->ssps.num_views > 2 && (u >> 6 & 0x3ff) != dec->ssps.dependent_view_id) {
+				// no task takes the NAL, whose copy decode_nal leaves to it for a slice returning 0
+				if (unref_cb)
+					unref_cb(0, unref_arg);
 				return print_dec(dec, "  decode_NAL_result: %s # view not decoded\n", 0);
+			}
 			return ADD_VARIANT(parse_slice_layer_without_partitioning)(dec, unref_cb, unref_arg);
 		}
 		ret = 0;

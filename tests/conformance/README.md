@@ -59,6 +59,10 @@ bitstreams only).
   `OKU3D-FORK-FINDINGS.md`). It still catches any refactoring regression -
   any change to the dependent view flips the hash - and is backed by the
   structural assertions below, which need no reference at all.
+  The exception are the streams of more than two views (MVCNV-2, MVCNV-3,
+  MVCSPS-2): their base view and the view of view order index 1, the two the
+  decoder outputs, are anchored to the JMVC reference decoder, whose output
+  for both was the `.yuv` / `.1.yuv` of `emit`.
 
 For MVC streams the harness additionally asserts the fork's structural
 guarantees on every run: both views present, each pair POC-paired

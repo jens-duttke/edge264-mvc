@@ -2685,8 +2685,13 @@ int ADD_VARIANT(parse_nal_unit_header_extension)(Edge264MvcDecoder *dec, Edge264
 			u >> 3 & 7,
 			u >> 2 & 1,
 			u >> 1 & 1);
-		if (dec->nal_unit_type == 20)
+		if (dec->nal_unit_type == 20) {
+			// the views beyond VOIdx 1 are not decoded (see parse_seq_parameter_set_mvc_extension);
+			// a stream of two views has no other one, whatever view_id its slices carry
+			if (dec->ssps.num_views > 2 && (u >> 6 & 0x3ff) != dec->ssps.dependent_view_id)
+				return print_dec(dec, "  decode_NAL_result: %s # view not decoded\n", 0);
 			return ADD_VARIANT(parse_slice_layer_without_partitioning)(dec, unref_cb, unref_arg);
+		}
 		ret = 0;
 	}
 	return print_dec(dec, "  decode_NAL_result: %s\n", rbsp_end(&dec->gb, 0) ? ret : EBADMSG);
@@ -3111,36 +3116,41 @@ static void parse_mvc_vui_parameters_extension(Edge264MvcDecoder *dec, Edge264Mv
 /**
  * Parses (and mostly ignores) the SPS extension for MVC.
  */
-static int parse_seq_parameter_set_mvc_extension(Edge264MvcDecoder *dec, int profile_idc)
+static int parse_seq_parameter_set_mvc_extension(Edge264MvcDecoder *dec, Edge264MvcSeqParameterSet *sps, int profile_idc)
 {
-	// returning unsupported asap is more efficient than keeping tedious code afterwards
-	int num_views = get_ue16(&dec->gb, 1023) + 1;
+	// Of a stream with more views, the base view and the one with VOIdx 1 are
+	// decoded, a sub-bitstream of their own (H.8.5.3): VOIdx 1 predicts from
+	// no view but the base one, and the NAL units of the other views are dropped
+	// (see parse_nal_unit_header_extension).
+	int num_views = sps->num_views = get_ue16(&dec->gb, 1023) + 1;
 	for (int i = 0; i < num_views; i++) {
 		int view_id = get_ue16(&dec->gb, 1023);
+		if (i == 1)
+			sps->dependent_view_id = view_id;
 		log_dec(dec, i ? ",%u" : "  view_ids: [%u", view_id);
 	}
-	log_dec(dec, "]%s\n", unsup_if(num_views != 2));
-	if (num_views != 2)
+	log_dec(dec, "]%s\n", unsup_if(num_views < 2));
+	if (num_views < 2)
 		return ENOTSUP;
 	
-	// inter-view refs are ignored since we always add them anyway
-	int num_anchor_refs_l0 = get_ue16(&dec->gb, 1);
-	if (num_anchor_refs_l0)
-		get_ue16(&dec->gb, 1023);
-	int num_anchor_refs_l1 = get_ue16(&dec->gb, 1);
-	if (num_anchor_refs_l1)
-		get_ue16(&dec->gb, 1023);
-	int num_non_anchor_refs_l0 = get_ue16(&dec->gb, 1);
-	if (num_non_anchor_refs_l0)
-		get_ue16(&dec->gb, 1023);
-	int num_non_anchor_refs_l1 = get_ue16(&dec->gb, 1);
-	if (num_non_anchor_refs_l1)
-		get_ue16(&dec->gb, 1023);
-	log_dec(dec, "  num_anchor_refs: {l0: %u, l1: %u}\n"
-		"  num_non_anchor_refs: {l0: %u, l1: %u}\n"
-		"  level_values_signalled:\n",
-		num_anchor_refs_l0, num_anchor_refs_l1,
-		num_non_anchor_refs_l0, num_non_anchor_refs_l1);
+	// The inter-view references are not read, as the base view is always
+	// appended to both lists of the dependent view (see the reference list
+	// initialisation; H.8.2.1 appends it only to the lists named here, which
+	// none of the conformance streams tells apart). Past the end of a damaged NAL
+	// each count reads as its largest value, so stop there.
+	for (int non_anchor = 0; non_anchor < 2; non_anchor++) {
+		log_dec(dec, non_anchor ? "]\n  num_non_anchor_refs: [" : "  num_anchor_refs: [");
+		for (int i = 1; i < num_views && bits_left(&dec->gb) >= 0; i++) {
+			int num_refs[2];
+			for (int l = 0; l < 2; l++) {
+				num_refs[l] = get_ue16(&dec->gb, min(15, num_views - 1));
+				for (int j = 0; j < num_refs[l]; j++)
+					get_ue16(&dec->gb, 1023);
+			}
+			log_dec(dec, i > 1 ? ", {l0: %u, l1: %u}" : "{l0: %u, l1: %u}", num_refs[0], num_refs[1]);
+		}
+	}
+	log_dec(dec, "]\n  level_values_signalled:\n");
 	
 	// level values and operation points are similarly ignored; past the end of a
 	// damaged NAL each count reads as its largest value, so stop there rather than
@@ -3436,7 +3446,7 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 		// and trips the C.4.5 fullness checks during decode.
 		sps.max_dec_frame_buffering = max(sps.max_dec_frame_buffering, MaxDpbFrames);
 		if (profile_idc != 118 && profile_idc != 128 && profile_idc != 134 ||
-			(get_u1(&dec->gb), parse_seq_parameter_set_mvc_extension(dec, profile_idc)))
+			(get_u1(&dec->gb), parse_seq_parameter_set_mvc_extension(dec, &sps, profile_idc)))
 			return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP); // we shouldn't parse any further thus exit now
 		if (get_u1(&dec->gb))
 			parse_mvc_vui_parameters_extension(dec, &sps);

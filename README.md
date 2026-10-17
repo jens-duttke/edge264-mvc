@@ -103,24 +103,6 @@ Like a player, the tool skips the NAL units it cannot use, such as the unspecifi
 The input path can also be `-` to read an Annex B stream from standard input, so a demuxer can pipe straight into the decoder without a temporary file (`demux ... | edge264mvc_test - -O | ffmpeg -i - ...`); on POSIX a named pipe (FIFO) path works the same way. Stream input is buffered one NAL unit at a time (capped at 64 MiB), while regular files stay on the memory-mapped fast path.
 
 
-## Switching from edge264
-
-edge264-mvc grew out of edge264's code, so moving over is mostly a matter of renaming. In return you get multithreaded decoding on all cores, 3D Blu-ray and 4K video, concealment of damaged streams, and timestamps that travel with their pictures.
-
-| edge264 | edge264-mvc |
-|---|---|
-| `edge264_alloc` | `edge264mvc_open`, with a settings struct (NULL for the defaults); the decoder allocates its pictures itself, there are no allocation callbacks |
-| `edge264_decode_NAL(dec, buf, end, unref_cb, unref_arg)` | `edge264mvc_send_nal(dec, nal, size, pts, user_data)`; the bytes are copied, so no unref callback is needed |
-| `edge264_decode_NAL` with `buf >= end` | `edge264mvc_send_end` |
-| `edge264_get_frame(dec, out, borrow)` | `edge264mvc_receive_frame(dec, frame)`; every frame is borrowed |
-| `Edge264Frame`: `samples[3]`, `samples_mvc[3]` | `Edge264MvcFrame`: `views[0].planes[3]`, `views[1].planes[3]` |
-| `edge264_return_frame` | `edge264mvc_release_frame` |
-| `edge264_flush` | `edge264mvc_flush` |
-| `edge264_free` | `edge264mvc_close` |
-| `edge264_find_start_code(buf, end, four_byte)`, returning a pointer | `edge264mvc_find_start_code(buf, size)`, returning an offset |
-| `ENOBUFS`, `ENODATA`, `ENOTSUP`, `EBADMSG` | `EDGE264MVC_AGAIN`, `EDGE264MVC_END`, `EDGE264MVC_UNSUPPORTED`, `EDGE264MVC_CORRUPT` |
-
-
 ## Using the library
 
 Here is a complete example that opens an input file in Annex B byte stream format from the command line, and writes its decoded frames (base view) in planar YUV order to standard output. See [edge264mvc_test.c](src/edge264mvc_test.c) for a more complete example which can also display frames.
@@ -283,6 +265,23 @@ On the full set of 231 AVC, FRExt and MVC [conformance streams](https://www.itu.
 edge264 is a research decoder that explores new techniques for fast and compact decoders, most notably C vector extensions in place of hand-written assembly ([DESIGN.md](DESIGN.md) describes them, and they still shape this code). edge264-mvc started as a fork to make its MVC path work for 3D Blu-ray playback, and has since added multithreaded decoding, many fixes for real-world and damaged streams, speed-ups and its own API ([IMPROVEMENTS.md](IMPROVEMENTS.md)). The two projects are developed independently.
 
 Thanks to Thibault Raffaillac (tvlabs) for edge264, to [@intrepidsilence](https://github.com/intrepidsilence) and [@vkapartzianis](https://github.com/vkapartzianis) for the edge264 patches this project builds on, and to [@cbusillo](https://github.com/cbusillo) for contributions to edge264-mvc.
+
+### Switching from edge264
+
+Code written for edge264 moves over mostly by renaming. In return it gets multithreaded decoding on all cores, 3D Blu-ray and 4K video, concealment of damaged streams, and timestamps that travel with their pictures.
+
+| edge264 | edge264-mvc |
+|---|---|
+| `edge264_alloc` | `edge264mvc_open`, with a settings struct (NULL for the defaults); the decoder allocates its pictures itself, there are no allocation callbacks |
+| `edge264_decode_NAL(dec, buf, end, unref_cb, unref_arg)` | `edge264mvc_send_nal(dec, nal, size, pts, user_data)`; the bytes are copied, so no unref callback is needed |
+| `edge264_decode_NAL` with `buf >= end` | `edge264mvc_send_end` |
+| `edge264_get_frame(dec, out, borrow)` | `edge264mvc_receive_frame(dec, frame)`; every frame is borrowed |
+| `Edge264Frame`: `samples[3]`, `samples_mvc[3]` | `Edge264MvcFrame`: `views[0].planes[3]`, `views[1].planes[3]` |
+| `edge264_return_frame` | `edge264mvc_release_frame` |
+| `edge264_flush` | `edge264mvc_flush` |
+| `edge264_free` | `edge264mvc_close` |
+| `edge264_find_start_code(buf, end, four_byte)`, returning a pointer | `edge264mvc_find_start_code(buf, size)`, returning an offset |
+| `ENOBUFS`, `ENODATA`, `ENOTSUP`, `EBADMSG` | `EDGE264MVC_AGAIN`, `EDGE264MVC_END`, `EDGE264MVC_UNSUPPORTED`, `EDGE264MVC_CORRUPT` |
 
 
 ## Contributing

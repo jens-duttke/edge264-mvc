@@ -301,6 +301,8 @@ static int alloc_frame(Edge264MvcDecoder *dec, int id) {
 	dec->alloc_cb((void **)&dec->samples_buffers[id], samples_size, (void **)&dec->mb_buffers[id], mbs_size, dec->alloc_arg);
 	Edge264MvcMacroblock *m = dec->mb_buffers[id];
 	if (dec->samples_buffers[id] && m) {
+		if (dec->sps.ChromaArrayType == 0) // never written, see the frame format in parse_seq_parameter_set
+			memset(dec->samples_buffers[id] + dec->plane_size_Y, 1 << (dec->sps.BitDepth_C - 1), dec->plane_size_C);
 		for (int i = 0; i < guard; i++)
 			m[i] = unavail_mb;
 		m = dec->mb_buffers[id] = m + guard;
@@ -1734,7 +1736,7 @@ static int conceal_frame(Edge264MvcDecoder *dec, int id) {
 			else
 				memset(dst + offY, 0, 16);
 		}
-		for (int r = 0; r < 16; r++, offC += stride_C >> 1) { // Cb and Cr rows alternate
+		for (int r = 0; r < 16 && dec->sps.ChromaArrayType; r++, offC += stride_C >> 1) { // Cb and Cr rows alternate, none to conceal in 4:0:0
 			if (src)
 				memcpy(dst + offC, src + offC, 8);
 			else
@@ -2372,7 +2374,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 				if (prev != i)
 					memcpy(dec->samples_buffers[i], dec->samples_buffers[prev], dec->plane_size_Y + dec->plane_size_C);
 			} else {
-				memset(dec->samples_buffers[i], 0, dec->plane_size_Y + dec->plane_size_C);
+				memset(dec->samples_buffers[i], 0, dec->plane_size_Y + (dec->sps.ChromaArrayType ? dec->plane_size_C : 0));
 			}
 			// the frame is complete, so its macroblocks get its flip bit, though
 			// the picture before it in the slot may have left them another one
@@ -3246,8 +3248,8 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 	if (profile_idc != 66 && profile_idc != 77 && profile_idc != 88) {
 		sps.ChromaArrayType = sps.chroma_format_idc = get_ue16(&dec->gb, 3);
 		log_dec(dec, "  chroma_format_idc: %u # %s%s\n",
-			sps.chroma_format_idc, chroma_format_idc_names[sps.chroma_format_idc], unsup_if(sps.chroma_format_idc != 1));
-		if (sps.chroma_format_idc != 1) {
+			sps.chroma_format_idc, chroma_format_idc_names[sps.chroma_format_idc], unsup_if(sps.chroma_format_idc > 1));
+		if (sps.chroma_format_idc > 1) {
 			ret = ENOTSUP;
 			if (sps.chroma_format_idc == 3) {
 				int separate_colour_plane_flag = get_u1(&dec->gb);
@@ -3493,17 +3495,23 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 		if (!(format.stride_Y & 2047)) // add an offset to stride if it is a multiple of 2048
 			format.stride_Y += (sps.BitDepth_Y == 8) ? 16 : 32;
 		memcpy(format.frame_crop_offsets, &sps.frame_crop_offsets_l, 8);
-		if (sps.chroma_format_idc > 0) {
+		// a monochrome picture (4:0:0) comes out as 4:2:0 with chroma planes of
+		// the neutral value 1 << (BitDepth_C - 1), as the JM reference decoder
+		// writes it, rather than without chroma planes a caller may not expect
+		{
 			format.bit_depth_C = sps.BitDepth_C;
 			format.width_C = sps.chroma_format_idc == 3 ? format.width_Y : format.width_Y >> 1;
-			format.height_C = sps.chroma_format_idc == 1 ? format.height_Y >> 1 : format.height_Y;
+			format.height_C = sps.chroma_format_idc <= 1 ? format.height_Y >> 1 : format.height_Y;
 			format.stride_C = (sps.chroma_format_idc == 3 ? width << 1 : width) << (sps.BitDepth_C > 8);
 			if (!(format.stride_C & 4095)) // add an offset to stride if it is a multiple of 4096
 				format.stride_C += (sps.chroma_format_idc == 3 ? 16 : 8) << (sps.BitDepth_C > 8);
 		}
 		
-		// bump all frames and clear the decoder if the frame format changes
-		if (memcmp(&format, &dec->out, sizeof(Edge264MvcOutput))) {
+		// bump all frames and clear the decoder if the frame format changes, or
+		// if monochrome starts or ends: 4:0:0 shares the output format of 4:2:0,
+		// but only buffers allocated for it carry the neutral chroma planes
+		if (memcmp(&format, &dec->out, sizeof(Edge264MvcOutput)) ||
+			(sps.chroma_format_idc == 0) != dec->out_monochrome) {
 			// The previous sequence ends here like at an end_of_seq: every picture
 			// must be output, so let get_frame emit an MVC base whose dependent view
 			// never comes (otherwise it holds the base, and this NAL returned ENOBUFS
@@ -3516,8 +3524,9 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 				return ENOBUFS; // SPS should be reparsed after clearing frames, so we don't print it yet
 			clear_decoder(dec);
 			memcpy(&dec->out, &format, sizeof(format)); // GCC-14 crashes on dec->out = format
+			dec->out_monochrome = sps.chroma_format_idc == 0;
 			dec->plane_size_Y = format.stride_Y * height;
-			dec->plane_size_C = format.stride_C * (sps.chroma_format_idc == 1 ? height >> 1 : height);
+			dec->plane_size_C = format.stride_C * (sps.chroma_format_idc <= 1 ? height >> 1 : height);
 			dec->frame_flip_bits = 0;
 			dec->stale_frames |= dec->output_frames; // freed by return_frame
 			for (int i = 0; i < MAX_FRAMES; i++) {

@@ -692,7 +692,9 @@ static always_inline void CAFUNC(parse_coded_block_pattern, const uint8_t *map_m
 {
 	// Luma prefix
 	#if !CABAC
-		int cbp = map_me[get_ue16(&ctx->t.gb, 47)];
+		// Table 9-4 has 48 codes with chroma (1 or 2), and 16 more without
+		int cbp = (ctx->t.ChromaArrayType == 1 || ctx->t.ChromaArrayType == 2) ?
+			map_me[get_ue16(&ctx->t.gb, 47)] : map_me[48 + get_ue16(&ctx->t.gb, 15)];
 		mb->bits[0] |= cbp & 0xac;
 	#else
 		int bits = mb->bits[0];
@@ -791,7 +793,8 @@ static inline int CAFUNC(parse_intraNxN_pred_mode, int luma4x4BlkIdx)
  */
 static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 {
-	static const uint8_t me_intra[48] = {174, 173, 172, 0, 45, 169, 165, 141, 44, 168, 164, 140, 46, 170, 166, 142, 1, 40, 36, 136, 132, 41, 37, 137, 133, 42, 38, 138, 134, 32, 8, 4, 128, 33, 9, 5, 129, 12, 160, 13, 161, 2, 34, 10, 6, 130, 14, 162};
+	static const uint8_t me_intra[64] = {174, 173, 172, 0, 45, 169, 165, 141, 44, 168, 164, 140, 46, 170, 166, 142, 1, 40, 36, 136, 132, 41, 37, 137, 133, 42, 38, 138, 134, 32, 8, 4, 128, 33, 9, 5, 129, 12, 160, 13, 161, 2, 34, 10, 6, 130, 14, 162,
+		172, 0, 44, 168, 164, 140, 40, 36, 136, 132, 32, 8, 4, 128, 12, 160};
 	
 	// Intra-specific initialisations
 	#if CABAC
@@ -967,7 +970,8 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
  */
 static noinline void CAFUNC(parse_inter_residual)
 {
-	static const uint8_t me_inter[48] = {0, 1, 32, 8, 4, 128, 2, 40, 36, 136, 132, 172, 174, 44, 168, 164, 140, 12, 160, 173, 42, 38, 138, 134, 34, 10, 6, 130, 46, 170, 166, 142, 33, 9, 5, 129, 41, 37, 137, 133, 45, 169, 165, 141, 13, 161, 14, 162};
+	static const uint8_t me_inter[64] = {0, 1, 32, 8, 4, 128, 2, 40, 36, 136, 132, 172, 174, 44, 168, 164, 140, 12, 160, 173, 42, 38, 138, 134, 34, 10, 6, 130, 46, 170, 166, 142, 33, 9, 5, 129, 41, 37, 137, 133, 45, 169, 165, 141, 13, 161, 14, 162,
+		0, 32, 8, 4, 128, 40, 36, 136, 132, 172, 44, 168, 164, 140, 12, 160};
 	CACALL(parse_coded_block_pattern, me_inter);
 	
 	if ((mb->bits[0] & 0xac) && ctx->transform_8x8_mode_flag) {
@@ -1796,10 +1800,12 @@ static noinline void CAFUNC(parse_slice_data)
 		mb->f.v = (i8x16){};
 		mb->filter_edges = (ctx->t.disable_deblocking_filter_idc != 1) ? filter_edges : 0;
 		mb->QP_s = ctx->t.QP_s;
-		if (ctx->t.ChromaArrayType == 1) { // FIXME 4:2:2
+		if (ctx->t.ChromaArrayType == 1) // FIXME 4:2:2
 			ctx->unavail4x4_v[1] = shuffle(ctx->unavail4x4_v[0], (i8x16){0, 4, 8, 12, 0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1});
+		// the coded flags of the neighbours, whose luma part a monochrome picture
+		// reads as well (coded_block_pattern and coded_block_flag in CABAC)
+		if (ctx->t.ChromaArrayType <= 1) // FIXME 4:2:2
 			mb->bits_l = (mbA->bits_l >> 3 & 0x11111100111111) | (mbB->bits_l >> 1 & 0x42424200424242);
-		}
 		mbc->nC_v[0] = mbc->nC_v[1] = mbc->nC_v[2] = (i8x16){};
 		
 		// Would it actually help to push this test outside the loop?

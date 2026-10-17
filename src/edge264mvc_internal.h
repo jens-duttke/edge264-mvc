@@ -677,6 +677,7 @@ struct Edge264MvcDecoder {
 	pthread_cond_t frame_progress[MAX_FRAMES]; // signals next_deblock_addr[i] has reached progress_wake_addr[i]
 	pthread_cond_t task_complete;
 	Edge264MvcOutput out;
+	int8_t out_monochrome; // the frame buffers were allocated for 4:0:0, so their chroma planes are neutral
 	int32_t max_frame_pixels; // largest frame accepted after cropping, 0 for the largest any level allows
 	int8_t want_frame; // send_nal returned EDGE264MVC_AGAIN, so receive_frame waits for a frame
 	int8_t ended; // send_end was called, so receive_frame drains to EDGE264MVC_END

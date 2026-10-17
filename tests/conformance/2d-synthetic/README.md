@@ -190,3 +190,15 @@ Without the fix this line FAILs.
 Guards the auxiliary coded pictures that carry an alpha plane. The ITU conformance stream BA3_SVA_C with a sequence parameter set extension (NAL type 13, `aux_format_idc` 1) after its SPS and, after every picture, a slice of type 19 holding a copy of its slice data (`tests/gen_aux_picture.py`). 7.4.1 lets a decoder ignore both, as an auxiliary picture has no effect on the decoding of the primary ones, and the JM reference decoder and FFmpeg do. edge264-mvc reported them as unsupported: a caller that skips such NAL units, as the API asks, decoded the stream correctly, but the stream counted as unsupported, and `edge264mvc_test` without `-k` stopped at the first of them. Both are now ignored. The output must equal that of BA3_SVA_C, whose hash the line shares; the hash is anchored to the JM reference decoder.
 
 This line passes without the fix too, as the harness skips unsupported NAL units; `make check-test-results` fails without it, where `edge264mvc_test` must count the stream as passed.
+
+## `mono_cabac.264`, `mono_cavlc.264`
+
+Guard monochrome (4:0:0) decoding. The first 10 pictures of the ITU conformance streams HPCAMOLQ_BRCM_B (CABAC) and HPCVMOLQ_BRCM_B (CAVLC), both High profile with 8x8 transforms and scaling matrices, cut by `tests/gen_stream_prefix.py` from the vectors of the FRExt set. edge264-mvc reported `chroma_format_idc` 0 as unsupported. A monochrome stream codes no chroma: no `intra_chroma_pred_mode`, codes 0 to 15 of Table 9-4 (b) for `coded_block_pattern` in CAVLC, no chroma bins in CABAC, no chroma residual, PCM samples or weights. Its pictures come out as 4:2:0 with chroma planes of the neutral value 128, as the JM reference decoder writes them. The CABAC contexts of `coded_block_pattern` and the deblocking strength read the coded blocks of the neighbouring macroblocks, which were only set up for 4:2:0. The hashes are anchored to the JM reference decoder, whose output for both is the first 10 frames of the ITU reference.
+
+Without the fix these lines FAIL.
+
+## `mono_after_420.264`
+
+Guards the switch from 4:2:0 to monochrome within one decoder. The first 2 pictures of the ITU conformance stream HPCALQ_BRCM_B (4:2:0), an end_of_seq NAL and the first 3 pictures of `mono_cabac.264`, both parts cut by `tests/gen_stream_prefix.py`. Both parts share the output format, so the new SPS did not reallocate the frame buffers, and the monochrome pictures reused buffers whose chroma planes still held 4:2:0 samples instead of the neutral value. The same happened to a caller decoding a monochrome stream after a 4:2:0 one with `edge264mvc_flush` in between. A change between 4:0:0 and any other chroma format now counts as a format change; the decoder remembers which of the two its buffers were allocated for, as the end_of_seq NAL (like `edge264mvc_flush`) clears the active SPS. The hash is anchored to the JM reference decoder's output for each part on its own; JM decoding the whole stream writes a 4:2:0 picture output after the change with damaged chroma.
+
+Without the fix this line FAILs.

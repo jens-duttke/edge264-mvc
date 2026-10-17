@@ -699,6 +699,21 @@ check-asan: asan_check$(EXE)
 asan_check$(EXE): tests/asan_check.c edge264mvc.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/asan_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@
 
+# Decode the fixtures STRESS_RUNS times each with worker threads, each run in a
+# process of its own, against the single-threaded output: a race shows only in
+# some runs, which a single decode per fixture rarely hits. The crafted fixtures
+# are held to their exit status only. Standalone (not part of `check`): it takes
+# minutes. A release build under a sanitizer finds the most, as an assertion
+# no longer stops a worker there before the damage: `make clean` and then
+# `make SANITIZE=address CPPFLAGS=-DNDEBUG check-stress`.
+STRESS_RUNS ?= 500
+.PHONY: check-stress
+check-stress: edge264mvc_test$(EXE)
+ifneq ($(OS),wasm)
+	$(Q)$(PY) tests/stress_check.py --exe ./edge264mvc_test$(EXE) --runs $(STRESS_RUNS) tests/liveness/*.264 tests/conformance/mvc/*.264 tests/conformance/mvc-synthetic/*.264 tests/conformance/mvc-jmvc/*.264
+	$(Q)$(PY) tests/stress_check.py --exe ./edge264mvc_test$(EXE) --runs $(STRESS_RUNS) --any-output tests/asan/*.264
+endif
+
 # libFuzzer harness under AddressSanitizer and UndefinedBehaviorSanitizer (needs
 # clang), built from the sources so every function is instrumented. Assertions
 # are compiled out like in a release build, so the fuzzer looks for what a

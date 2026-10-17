@@ -271,7 +271,6 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	// tasks left waiting for a thread decode no sooner, but hold their pictures
 	dec->max_pics = n_threads ? min(n_threads, MAX_FRAMES) : MAX_FRAMES;
 	dec->min_pics = min_pics > 0 ? min(min_pics, dec->max_pics) : dec->max_pics;
-	dec->rec_max = min(max(dec->min_pics / 4, 2), REC_MAX_ACTIVE);
 	
 	// if multithreading is disabled we are done, otherwise initialize all
 	if (n_threads == 0)
@@ -365,8 +364,6 @@ static void free_decoder(Edge264MvcDecoder **pdec) {
 			free(dec->mbc_ring_allocs[i]);
 			free(dec->spec_rows_allocs[i]);
 		}
-		for (int i = 0; i < dec->rec_pool_size; i++)
-			free(dec->rec_pool[i]);
 		aligned_free(dec);
 	}
 }

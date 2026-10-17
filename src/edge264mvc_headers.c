@@ -872,7 +872,7 @@ static int spec_rows(Edge264MvcContext *c, int slot, int restore) {
  * tasks continuously until stopped by the parent process.
  */
 void *ADD_VARIANT(worker_loop)(void *arg) {
-	Edge264MvcContext c, r; // r replays the reconstruction that c records
+	Edge264MvcContext c;
 	c.d = (void *)((uintptr_t)arg & -MAX_THREADS);
 	c.thread_id = c.d->n_threads ? (uintptr_t)arg & (MAX_THREADS - 1) : -1;
 	c.log_base_us = c.d->log_base_us;
@@ -927,16 +927,6 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		int after_spec = 0, i;
 		TM_FOREACH(i, tm_andnot(c.d->busy_tasks, acked_load(c.d))) {
 			after_spec |= c.d->taskPics[i] == currPic && (int32_t)(c.d->task_seq[i] - c.d->task_seq[task_id]) < 0;
-		}
-		// A multithreaded P slice heavy enough in entropy decoding records its
-		// reconstruction, replayed as its references allow, so that parsing never
-		// waits for them (see Edge264MvcRecord). Take a buffer for it.
-		uint8_t *rec_buf = NULL;
-		const Edge264MvcTask *next = &c.d->tasks[task_id];
-		if (c.thread_id >= 0 && next->slice_type < REC_SLICE_TYPES && !next->sp_slice && !c.log_cb && c.d->rec_active < c.d->rec_max &&
-			next->gb.end - next->gb.CPB >= (ptrdiff_t)REC_MIN_BYTES_PER_MB * next->pic_width_in_mbs * next->pic_height_in_mbs) {
-			rec_buf = c.d->rec_pool_size > 0 ? c.d->rec_pool[--c.d->rec_pool_size] : malloc(REC_BUF_SIZE);
-			c.d->rec_active += rec_buf != NULL;
 		}
 		if (c.thread_id >= 0)
 			pthread_mutex_unlock(&c.d->lock);
@@ -995,18 +985,6 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		}
 		initialize_context(&c, currPic);
 		
-		// record with the replay context starting at the same state
-		c.rec_tail = NULL;
-		c.rc = c.pc = NULL;
-		if (rec_buf) {
-			r = c;
-			r.pc = &c;
-			r.rec_pending = 0;
-			c.rc = &r;
-			c.rec_buf = c.rec_head = c.rec_tail = rec_buf;
-			c.rec_end = c.rec_buf + REC_BUF_SIZE - REC_MB_MAX;
-		}
-
 		// call the function containing the macroblock decoding loop
 		ret = 0;
 		if (!c.d->mbc_ring_allocs[slot]) {
@@ -1037,13 +1015,6 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 				    c.CurrMbAddr < c.t.pic_width_in_mbs * c.t.pic_height_in_mbs)
 					ret = EBADMSG; // FIXME error_flag
 			}
-		}
-
-		// finish the recorded reconstruction, waiting for the references now
-		if (c.rec_tail) {
-			replay_records(&c, 1);
-			c.t.next_deblock_addr = r.t.next_deblock_addr;
-			c.rec_tail = NULL;
 		}
 
 		// A slice that decoded all its data before the next NAL bounded it waits for
@@ -1132,10 +1103,6 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		// if multi-threaded, check if we are the last task to touch this frame and ensure it is complete
 		if (c.thread_id >= 0) {
 			pthread_mutex_lock(&c.d->lock);
-			if (rec_buf) {
-				c.d->rec_pool[c.d->rec_pool_size++] = rec_buf;
-				c.d->rec_active--;
-			}
 			pthread_cond_signal(&c.d->task_complete);
 			// Wake the slices waiting for this one in wait_slice_turn, which also
 			// wait on its leaving when it stops before them. A frame this task

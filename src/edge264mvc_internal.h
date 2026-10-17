@@ -469,57 +469,6 @@ typedef struct {
 
 
 /**
- * Deferred reconstruction: a multithreaded P slice heavy in entropy decoding
- * parses its macroblocks without waiting for its references, recording each
- * reconstruction step (motion compensation, intra prediction, residual
- * transform) with the values it reads that parsing changes afterwards (the
- * coefficients and QP), and a replay context runs the records in order as soon
- * as the reference rows they read are final, deblocking and publishing the
- * rows as the macroblock loop would. Entropy decoding, which depends on no
- * other picture, thus leaves the chains of P pictures, which then wait for
- * reconstruction only. B slices gain nothing (no picture waits on most of
- * them, and their parsing waits on colocated macroblocks anyway), and light
- * slices spend too little in entropy decoding. A record is a 16-byte header,
- * followed by the coefficients of a transform.
- */
-enum {
-	REC_MB, // x = CurrMbAddr, starting the records of a macroblock
-	REC_INTER, // a = partition index, b = width, qp = height
-	REC_INTRA4x4, // a = mode, b = iYCbCr, p = samples
-	REC_INTRA8x8,
-	REC_INTRA16x16,
-	REC_INTRA_CHROMA,
-	REC_IDCT4x4, // a = iYCbCr, b = DCidx, qp, x = DC coefficient, p = samples, then 16 coefficients
-	REC_IDCT4x4_16, // the same with 16-bit coefficients
-	REC_DC4x4, // a = iYCbCr, b = DCidx, x = DC coefficient, p = samples
-	REC_IDCT8x8, // a = iYCbCr, qp, p = samples, then 64 coefficients
-	REC_IDCT8x8_16, // the same with 16-bit coefficients
-	REC_DC16x16, // transform_dc4x4 adding to the samples: a = iYCbCr, qp, then 16 coefficients
-	REC_DC_CHROMA, // transform_dc2x2 adding to the samples: qp = Cb QP, b = Cr QP, then 8 coefficients
-	REC_INTRA_CHROMA422, // like REC_INTRA_CHROMA
-};
-typedef struct {
-	uint8_t op;
-	int8_t a, b;
-	uint8_t qp;
-	int32_t x;
-	uint8_t *p;
-} Edge264MvcRecord;
-#ifndef REC_BUF_SIZE
-	#define REC_BUF_SIZE (8 << 20) // most of a heavy 1080p P picture, whose parsing runs ahead
-#endif
-#define REC_MB_MAX 8192 // room left before a macroblock, more than its records can take
-#ifndef REC_SLICE_TYPES
-	#define REC_SLICE_TYPES 1 // slice_type below which a slice records: P slices form the chains, B slices gain nothing
-#endif
-#ifndef REC_MIN_BYTES_PER_MB
-	#define REC_MIN_BYTES_PER_MB 16 // a lighter slice spends too little in entropy decoding to gain from recording
-#endif
-#define REC_MAX_ACTIVE 64 // most slices recording at once, a quarter of the threads (rec_max) bounding the memory of their buffers
-
-
-
-/**
  * This structure stores the context data needed by each thread to decode
  * a slice, such that we can dedicate a single register pointer to it.
  */
@@ -527,7 +476,6 @@ typedef struct Edge264MvcContext {
 	Edge264MvcTask t; // must be first in struct to use the same pointer for bitstream functions
 	int8_t thread_id;
 	int8_t mb_qp_delta_nz; // 0..1
-	int8_t rec_pending; // in the replay context, the current macroblock still has its deblocking and publishing to do
 	int16_t mbx;
 	int16_t mby;
 	int32_t CurrMbAddr;
@@ -535,12 +483,6 @@ typedef struct Edge264MvcContext {
 	int8_t overrun; // the slice decoded past mb_bound before learning it, and is decoded again
 	int16_t task_id;
 	int8_t currPic;
-	uint8_t *rec_buf; // start of the record buffer
-	uint8_t *rec_head; // next record to replay
-	uint8_t *rec_tail; // end of the records, NULL when reconstructing at once (and in the replay context)
-	uint8_t *rec_end; // last start of a macroblock's records that leaves it REC_MB_MAX bytes
-	struct Edge264MvcContext *rc; // replay context of a parsing context that records
-	struct Edge264MvcContext *pc; // parsing context of a replay context, which learns the slice bound
 	uint8_t *samples_mb[3]; // address of top-left byte of each plane in current macroblock
 	Edge264MvcMacroblock * _mb; // backup storage for macro mb
 	Edge264MvcMbCache * _mbc; // backup storage for macro mbc, the ring entry of mb
@@ -674,10 +616,6 @@ struct Edge264MvcDecoder {
 	int32_t mbc_ring_sizes[MAX_THREADS + 1];
 	uint8_t *spec_rows_allocs[MAX_THREADS + 1]; // per worker, see spec_rows
 	size_t spec_rows_sizes[MAX_THREADS + 1];
-	uint8_t *rec_pool[REC_MAX_ACTIVE]; // free buffers of REC_BUF_SIZE bytes for deferred reconstruction
-	int8_t rec_pool_size; // buffers in rec_pool
-	int8_t rec_active; // buffers held by recording slices
-	int8_t rec_max; // most buffers held at once
 	Parser parse_nal_unit[32];
 	pthread_t threads[MAX_THREADS];
 	pthread_mutex_t lock;
@@ -1620,34 +1558,6 @@ static always_inline FrameMask handle_frames(const void *handle) {
 			frames |= (FrameMask)1 << pic;
 	}
 	return frames;
-}
-// Appends n 32-bit coefficients after a record, as 16-bit ones if they all fit
-// (the coefficient levels of 8-bit video do), and tells which it stored.
-static always_inline int record_coeffs(Edge264MvcContext *ctx, const i32x4 *c, int n) {
-	i32x4 fits = set32(-1);
-	for (int i = 0; i < n / 4; i += 2) {
-		i16x8 p = packs32(c[i], c[i + 1]);
-		fits &= (cvtlo16s32(p) == c[i]) & (cvthi16s32(p) == c[i + 1]);
-		*(i16x8 *)(ctx->rec_tail + i * 8) = p;
-	}
-	if (movemask(fits) == 0xffff) {
-		ctx->rec_tail += n * 2;
-		return 1;
-	}
-	memcpy(ctx->rec_tail, c, n * 4);
-	ctx->rec_tail += n * 4;
-	return 0;
-}
-// Appends a reconstruction record (see Edge264MvcRecord).
-static always_inline void record(Edge264MvcContext *ctx, int op, int a, int b, int qp, int32_t x, uint8_t *p) {
-	Edge264MvcRecord *r = (Edge264MvcRecord *)ctx->rec_tail;
-	r->op = op;
-	r->a = a;
-	r->b = b;
-	r->qp = qp;
-	r->x = x;
-	r->p = p;
-	ctx->rec_tail += sizeof(*r);
 }
 // Number of pictures in the output queue of a view, which stay packed at its front.
 static always_inline int queue_len(const Edge264MvcDecoder *dec, int view) {

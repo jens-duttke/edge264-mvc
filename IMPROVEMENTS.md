@@ -28,7 +28,6 @@ Measured on an 8-core / 16-thread laptop CPU, by running the old and new build s
 | Stop prefetching the colocated macroblock of every B macroblock | 4% faster on 4K with 16 threads, 2% on MVC, 1% on 1080p |
 | Keep up to 128 pictures and 128 slices in flight instead of 32 and 16, with up to 128 worker threads | 2.2x faster on 1080p video, 11% to 14% faster on Blu-ray video with several slices per picture |
 | Let the worker that finishes a slice go on with the next slice of its picture, deblocking each row as it decodes it, instead of decoding the slices of a picture in parallel, where all but the first could only be deblocked once it was done | 1.5x faster on Blu-ray video with several slices per picture |
-| Record the reconstruction of P slices heavy in entropy decoding and replay it as the rows of their references arrive, so that parsing them never waits for those rows | 8% faster on high-bitrate 1080p video once three worker threads run per logical CPU (see below) |
 | Start three worker threads per logical CPU by default, since a worker waiting for the rows of a reference picture sleeps, with room for 256 slices in flight instead of 128, and decode fewer pictures at once above 1080p (`pics_in_flight`) | 1.4x faster on 1080p video, 1.2x on Blu-ray video with several slices per picture, 4K unchanged |
 | Use Windows' slim reader/writer locks and condition variables for the decoder's locks instead of winpthreads, which waits on kernel events | 2% to 8% faster on Windows, with about a fifth less time spent in the kernel |
 

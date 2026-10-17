@@ -621,6 +621,128 @@ static void transform_dc2x4(Edge264MvcContext *ctx)
 
 
 /**
+ * SP decoding of a P macroblock in an SP slice with sp_for_switch_flag 0
+ * (8.6.1), after its inter prediction filled its samples. Every 4x4 block,
+ * with or without levels, transforms its prediction (8-415), adds the scaled
+ * levels (8-416), requantizes the sum with QS (8-420) and replaces the
+ * prediction with the result of the inverse transform (8-421). The chroma DC
+ * levels and the DC of the prediction are both in raster order of the blocks
+ * (8-427, 8-428). Flat scaling lists only (the Extended profile has none).
+ */
+static const int8_t sp_A[16] = {16, 20, 16, 20, 20, 25, 20, 25, 16, 20, 16, 20, 20, 25, 20, 25}; // (8-417) by row
+static const int16_t sp_LevelScale2[6][3] = { // (8-419) for both even, both odd, and mixed (i, j)
+	{13107, 5243, 8066}, {11916, 4660, 7490}, {10082, 4194, 6554}, {9362, 3647, 5825}, {8192, 3355, 5243}, {7282, 2893, 4559},
+};
+static int sp_requant(int64_t s, int LS2, int shift) { // (8-420, 8-429)
+	int64_t a = ((s < 0 ? -s : s) * LS2 + ((int64_t)1 << (shift - 1))) >> shift;
+	a = a < 32767 ? a : 32767; // the range of levels (8.5.12), left only by damaged streams
+	return s < 0 ? -(int)a : (int)a;
+}
+static void sp_forward4x4(int32_t m[16]) { // (8-415) on rows then columns, m by row
+	for (int i = 0; i < 4; i++) {
+		int32_t *v = m + i * 4;
+		int t0 = v[0] + v[3], t1 = v[1] + v[2], t2 = v[1] - v[2], t3 = v[0] - v[3];
+		v[0] = t0 + t1, v[1] = t3 * 2 + t2, v[2] = t0 - t1, v[3] = t3 - t2 * 2;
+	}
+	for (int j = 0; j < 4; j++) {
+		int32_t *v = m + j;
+		int t0 = v[0] + v[12], t1 = v[4] + v[8], t2 = v[4] - v[8], t3 = v[0] - v[12];
+		v[0] = t0 + t1, v[4] = t3 * 2 + t2, v[8] = t0 - t1, v[12] = t3 - t2 * 2;
+	}
+}
+static void sp_inverse4x4(const int32_t d[16], uint8_t *p, size_t stride) { // (8-338 to 8-341) on scaled coefficients by row
+	int64_t f[16]; // 64 bits for the clamped levels of damaged streams
+	for (int i = 0; i < 4; i++) {
+		const int32_t *v = d + i * 4;
+		int64_t e0 = (int64_t)v[0] + v[2], e1 = (int64_t)v[0] - v[2], e2 = (int64_t)(v[1] >> 1) - v[3], e3 = (int64_t)v[1] + (v[3] >> 1);
+		f[i * 4] = e0 + e3, f[i * 4 + 1] = e1 + e2, f[i * 4 + 2] = e1 - e2, f[i * 4 + 3] = e0 - e3;
+	}
+	for (int j = 0; j < 4; j++) {
+		int64_t *v = f + j;
+		int64_t g0 = v[0] + v[8], g1 = v[0] - v[8], g2 = (v[4] >> 1) - v[12], g3 = v[4] + (v[12] >> 1);
+		v[0] = g0 + g3, v[4] = g1 + g2, v[8] = g1 - g2, v[12] = g0 - g3;
+	}
+	for (int i = 0; i < 4; i++) {
+		for (int j = 0; j < 4; j++) {
+			int64_t r = (f[i * 4 + j] + 32) >> 6;
+			p[i * stride + j] = r < 0 ? 0 : r > 255 ? 255 : r;
+		}
+	}
+}
+static noinline void decode_sp_mb(Edge264MvcContext *ctx) {
+	for (int blk = 0; blk < 24; blk++) {
+		int iYCbCr = blk < 16 ? 0 : 1 + (blk - 16) / 4;
+		int qp = ctx->t.QP[iYCbCr];
+		int qs = iYCbCr ? ctx->QP_C[iYCbCr - 1][ctx->t.QS_Y] : ctx->t.QS_Y;
+		size_t stride = iYCbCr ? ctx->t.stride[1] : ctx->t.stride[0];
+		uint8_t *p = blk < 16 ? ctx->samples_mb[0] + y444[blk] * stride + x444[blk] :
+			ctx->samples_mb[iYCbCr] + y420[blk - 16] * stride + x420[blk - 16];
+		// reason: ctx->c (zero here) rather than a local array, which GCC may
+		// align to 64 bytes for AVX-512 loads that AddressSanitizer's fake stack
+		// frames (aligned to 32) then fault on
+		int32_t *m = ctx->c;
+		for (int i = 0; i < 16; i++)
+			m[i] = p[(i >> 2) * stride + (i & 3)];
+		sp_forward4x4(m);
+		for (int i = 0; i < 4; i++) {
+			for (int j = 0; j < 4; j++) {
+				int k = (i & 1) + (j & 1) == 1 ? 2 : i & 1; // parity class of (8-418)
+				int level = ctx->sp_levels[blk][j * 4 + i]; // stored transposed like c
+				int LS = normAdjust4x4[qp % 6][i * 4 + j];
+				int64_t s = m[i * 4 + j] + (((int64_t)level * LS * sp_A[i * 4 + j] * (1 << (qp / 6))) >> 6); // (8-416, 8-424)
+				m[i * 4 + j] = sp_requant(s, sp_LevelScale2[qs % 6][k], 15 + qs / 6) * normAdjust4x4[qs % 6][i * 4 + j] * (1 << (qs / 6)); // (8-420)
+			}
+		}
+		memcpy(ctx->sp_levels[blk], m, sizeof(ctx->sp_levels[blk])); // the chroma DC below replaces m[0] of chroma blocks
+	}
+	ctx->c_v[0] = ctx->c_v[1] = ctx->c_v[2] = ctx->c_v[3] = (i8x16){};
+	
+	// chroma DC of both components (8-427 to 8-431)
+	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
+		int qp = ctx->t.QP[1 + iCbCr];
+		int qs = ctx->QP_C[iCbCr][ctx->t.QS_Y];
+		int32_t *b = ctx->sp_levels[16 + iCbCr * 4]; // blocks in raster order
+		// the DC of the prediction, recomputed as the loop above replaced it
+		int32_t P[4];
+		for (int n = 0; n < 4; n++) {
+			uint8_t *p = ctx->samples_mb[1 + iCbCr] + y420[n] * ctx->t.stride[1] + x420[n];
+			int sum = 0;
+			for (int i = 0; i < 4; i++)
+				sum += p[i * ctx->t.stride[1]] + p[i * ctx->t.stride[1] + 1] + p[i * ctx->t.stride[1] + 2] + p[i * ctx->t.stride[1] + 3];
+			P[n] = sum;
+		}
+		int32_t mp[4] = { // the 2x2 transform of the DC of the 4 blocks, frequencies in raster order
+			P[0] + P[2] + P[1] + P[3],
+			P[0] + P[2] - P[1] - P[3],
+			P[0] - P[2] + P[1] - P[3],
+			P[0] - P[2] - P[1] + P[3],
+		};
+		static const int8_t dc_pos[2][4] = {{0, 4, 2, 6}, {1, 5, 3, 7}}; // the positions of the 4 levels of each component in c
+		for (int n = 0; n < 4; n++) {
+			int level = ctx->sp_levels_dc[dc_pos[iCbCr][n]];
+			int64_t s = mp[n] + (((int64_t)level * normAdjust4x4[qp % 6][0] * 16 * (1 << (qp / 6))) >> 5); // (8-428)
+			mp[n] = sp_requant(s, sp_LevelScale2[qs % 6][0], 16 + qs / 6) * normAdjust4x4[qs % 6][0] * (1 << (qs / 6)); // (8-429)
+		}
+		b[0] = (mp[0] + mp[1] + mp[2] + mp[3]) >> 1; // (8-430, 8-431)
+		b[16] = (mp[0] - mp[1] + mp[2] - mp[3]) >> 1;
+		b[32] = (mp[0] + mp[1] - mp[2] - mp[3]) >> 1;
+		b[48] = (mp[0] - mp[1] - mp[2] + mp[3]) >> 1;
+	}
+	
+	for (int blk = 0; blk < 24; blk++) {
+		int iYCbCr = blk < 16 ? 0 : 1 + (blk - 16) / 4;
+		size_t stride = iYCbCr ? ctx->t.stride[1] : ctx->t.stride[0];
+		uint8_t *p = blk < 16 ? ctx->samples_mb[0] + y444[blk] * stride + x444[blk] :
+			ctx->samples_mb[iYCbCr] + y420[blk - 16] * stride + x420[blk - 16];
+		sp_inverse4x4(ctx->sp_levels[blk], p, stride);
+	}
+	memset(ctx->sp_levels, 0, sizeof(ctx->sp_levels));
+	memset(ctx->sp_levels_dc, 0, sizeof(ctx->sp_levels_dc));
+}
+
+
+
+/**
  * Deferred reconstruction (see Edge264MvcRecord). The replay context takes
  * the position of each recorded macroblock, runs its records with the values
  * they captured, then deblocks the macroblock above it and publishes finished

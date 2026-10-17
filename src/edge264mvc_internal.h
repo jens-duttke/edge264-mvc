@@ -326,6 +326,7 @@ typedef struct {
 	int8_t weighted_pred_flag; // 0..1
 	int8_t weighted_bipred_idc; // 0..2
 	int8_t QPprime_Y; // 0..87
+	int8_t QSprime_Y; // 0..51, pic_init_qs_minus26 + 26 for SP slices
 	int8_t chroma_qp_index_offset; // -12..12
 	int8_t deblocking_filter_control_present_flag; // 0..1
 	int8_t constrained_intra_pred_flag; // 0..1
@@ -434,6 +435,8 @@ typedef struct {
 	int8_t FilterOffsetA; // -12..12
 	int8_t FilterOffsetB;
 	int8_t ChromaArrayType; // 0..3
+	int8_t sp_slice; // 0..1, an SP slice parsed as a P slice whose P macroblocks decode with 8.6.1
+	int8_t QS_Y; // 0..51, QSY of an SP slice (7-31)
 	int8_t mb_height_C; // rows of a macroblock in each chroma plane, 16 in 4:2:2 and 8 otherwise
 	int8_t direct_8x8_inference_flag; // 0..1
 	int8_t cabac_init_idc; // 0..3
@@ -586,6 +589,8 @@ typedef struct Edge264MvcContext {
 	union { int8_t scan[64]; i8x4 scan_s; i8x8 scan_l; i8x16 scan_v[4]; };
 	union { int8_t QP_C[2][64]; i8x16 QP_C_v[8]; };
 	union { int32_t c[64]; i32x4 c_v[16]; i32x8 c_V[8]; }; // non-scaled residual coefficients
+	int32_t sp_levels[24][16]; // the levels of the 4x4 blocks of a P macroblock in an SP slice, luma then Cb and Cr AC, like c
+	int32_t sp_levels_dc[8]; // and its chroma DC levels, at the positions of c for transform_dc2x2
 	
 	// Deblocking context
 	union { uint8_t alpha[16]; int32_t alpha_s[4]; i8x16 alpha_v; }; // {internal_Y,internal_Cb,internal_Cr,0,0,0,0,0,left_Y,left_Cb,left_Cr,0,top_Y,top_Cb,top_Cr,0}

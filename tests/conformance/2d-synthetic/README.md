@@ -202,3 +202,9 @@ Without the fix these lines FAIL.
 Guards the switch from 4:2:0 to monochrome within one decoder. The first 2 pictures of the ITU conformance stream HPCALQ_BRCM_B (4:2:0), an end_of_seq NAL and the first 3 pictures of `mono_cabac.264`, both parts cut by `tests/gen_stream_prefix.py`. Both parts share the output format, so the new SPS did not reallocate the frame buffers, and the monochrome pictures reused buffers whose chroma planes still held 4:2:0 samples instead of the neutral value. The same happened to a caller decoding a monochrome stream after a 4:2:0 one with `edge264mvc_flush` in between. A change between 4:0:0 and any other chroma format now counts as a format change; the decoder remembers which of the two its buffers were allocated for, as the end_of_seq NAL (like `edge264mvc_flush`) clears the active SPS. The hash is anchored to the JM reference decoder's output for each part on its own; JM decoding the whole stream writes a 4:2:0 picture output after the change with damaged chroma.
 
 Without the fix this line FAILs.
+
+## `sp_slices_a.264`, `sp_slices_b.264`
+
+Guard SP slices. The first 40 pictures of the ITU conformance streams SP1_BT_A and sp2_bt_b (Extended profile, CAVLC), cut by `tests/gen_stream_prefix.py`; every tenth picture is an SP slice with `sp_for_switch_flag` 0. edge264-mvc reported SP slices as unsupported, and a caller skipping them concealed those pictures and every picture predicted from them. An SP slice parses as a P slice, but its P macroblocks, P_Skip included, do not add a residual to their prediction: every 4x4 block transforms its prediction, adds the scaled levels, requantizes the sum with QS and replaces the prediction with the inverse transform of the result (8.6.1), and the macroblock deblocks as an intra one (8.7.2.1). The pictures hold only P slices, so the output of the prefix is the first 40 frames of the ITU reference.
+
+Without the fix these lines FAIL.

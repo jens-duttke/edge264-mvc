@@ -410,6 +410,10 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 		ctx->BCbCr_int8_v[1] = (i32x8){8, 9, 8, 9, 10, 11, 12, 13};
 	}
 	
+	if (ctx->t.sp_slice) { // the context is not cleared between slices
+		memset(ctx->sp_levels, 0, sizeof(ctx->sp_levels));
+		memset(ctx->sp_levels_dc, 0, sizeof(ctx->sp_levels_dc));
+	}
 	ctx->QP_C_v[0] = loadu128(QP_Y2C + 12 + ctx->t.pps.chroma_qp_index_offset);
 	ctx->QP_C_v[1] = loadu128(QP_Y2C + 28 + ctx->t.pps.chroma_qp_index_offset);
 	ctx->QP_C_v[2] = loadu128(QP_Y2C + 44 + ctx->t.pps.chroma_qp_index_offset);
@@ -929,7 +933,7 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		// waits for them (see Edge264MvcRecord). Take a buffer for it.
 		uint8_t *rec_buf = NULL;
 		const Edge264MvcTask *next = &c.d->tasks[task_id];
-		if (c.thread_id >= 0 && next->slice_type < REC_SLICE_TYPES && !c.log_cb && c.d->rec_active < c.d->rec_max &&
+		if (c.thread_id >= 0 && next->slice_type < REC_SLICE_TYPES && !next->sp_slice && !c.log_cb && c.d->rec_active < c.d->rec_max &&
 			next->gb.end - next->gb.CPB >= (ptrdiff_t)REC_MIN_BYTES_PER_MB * next->pic_width_in_mbs * next->pic_height_in_mbs) {
 			rec_buf = c.d->rec_pool_size > 0 ? c.d->rec_pool[--c.d->rec_pool_size] : malloc(REC_BUF_SIZE);
 			c.d->rec_active += rec_buf != NULL;
@@ -2046,11 +2050,24 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		"  slice_type: %u # %s%s\n"
 		"  pic_parameter_set_id: %u%s\n",
 		t->first_mb_in_slice,
-		slice_type, slice_type_names[t->slice_type], unsup_if(t->slice_type > 2),
+		slice_type, slice_type_names[t->slice_type], unsup_if(t->slice_type > 3),
 		pic_parameter_set_id, unsup_if(pic_parameter_set_id >= 4));
-	if (t->slice_type > 2 || pic_parameter_set_id >= 4)
+	if (t->slice_type > 3 || pic_parameter_set_id >= 4)
 		return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP); // exit now if the rest of the slice can't be correctly parsed
 	t->pps = dec->PPS[pic_parameter_set_id];
+	// An SP slice is parsed as a P slice, whose P macroblocks then decode with
+	// the SP process (8.6.1). That process is implemented for the Extended
+	// profile, which has none of 8x8 transforms, scaling matrices, chroma
+	// formats other than 4:2:0, and of whose features constrained intra
+	// prediction alone would need the P macroblocks told apart from intra ones
+	// after decoding, where they deblock as intra (8.7.2.1).
+	t->sp_slice = t->slice_type == 3;
+	if (t->sp_slice) {
+		t->slice_type = 0;
+		if (t->pps.transform_8x8_mode_flag || t->pps.constrained_intra_pred_flag || t->pps.pic_scaling_matrix_present_flag ||
+			sps->seq_scaling_matrix_present_flag || sps->ChromaArrayType != 1)
+			return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP);
+	}
 	if (!sps->BitDepth_Y || !t->pps.num_ref_idx_active[0])
 		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG); // exit now if SPS or PPS wasn't initialized
 	// Frame buffers are sized from the base SPS (alloc_frame), and every view of
@@ -2538,6 +2555,16 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	}
 	t->QP[0] = t->pps.QPprime_Y + get_se16(&dec->gb, -t->pps.QPprime_Y, 51 - t->pps.QPprime_Y); // FIXME QpBdOffset
 	log_dec(dec, "  slice_qp_delta: %d\n", t->QP[0] - t->pps.QPprime_Y);
+	if (t->sp_slice) {
+		int sp_for_switch_flag = get_u1(&dec->gb);
+		t->QS_Y = t->pps.QSprime_Y + get_se16(&dec->gb, -t->pps.QSprime_Y, 51 - t->pps.QSprime_Y); // (7-31)
+		log_dec(dec, "  sp_for_switch_flag: %u%s\n"
+			"  slice_qs_delta: %d\n",
+			sp_for_switch_flag, unsup_if(sp_for_switch_flag), t->QS_Y - t->pps.QSprime_Y);
+		if (sp_for_switch_flag) // switching pictures (8.6.2), which no conformance stream holds
+			return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP);
+	}
+	
 	if (t->pps.deblocking_filter_control_present_flag) {
 		t->disable_deblocking_filter_idc = get_ue16(&dec->gb, 2);
 		log_dec(dec, "  disable_deblocking_filter_idc: %u # %s\n",
@@ -2841,7 +2868,7 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 	pps.weighted_pred_flag = get_u1(&dec->gb);
 	pps.weighted_bipred_idc = get_uv(&dec->gb, 2);
 	pps.QPprime_Y = get_se16(&dec->gb, -26, 25) + 26; // FIXME QpBdOffset
-	get_se16(&dec->gb, -26, 25); // pic_init_qs
+	pps.QSprime_Y = get_se16(&dec->gb, -26, 25) + 26;
 	pps.second_chroma_qp_index_offset = pps.chroma_qp_index_offset = get_se16(&dec->gb, -12, 12);
 	pps.deblocking_filter_control_present_flag = get_u1(&dec->gb);
 	pps.constrained_intra_pred_flag = get_u1(&dec->gb);

@@ -471,6 +471,22 @@ static inline void CAFUNC(parse_mb_qp_delta)
 
 
 /**
+ * The P macroblocks of SP slices keep the levels of their 4x4 blocks for
+ * decode_sp_mb, which runs once the macroblock is parsed and predicted.
+ */
+#if !CABAC
+	static always_inline int keep_sp_levels(Edge264MvcContext *ctx, int blk) {
+		if (!(ctx->t.sp_slice & mb->mbIsInterFlag))
+			return 0;
+		memcpy(ctx->sp_levels[blk], ctx->c, sizeof(ctx->sp_levels[blk]));
+		ctx->c_v[0] = ctx->c_v[1] = ctx->c_v[2] = ctx->c_v[3] = (i8x16){};
+		return 1;
+	}
+#endif
+
+
+
+/**
  * Parsing for chroma 4:2:2 (7.3.5.3.3), where each component has a 2x4 block
  * of DC coefficients (8.5.11) and eight 4x4 AC blocks, two per row. The DC
  * coefficients of Cb are parsed to ctx->c[0..7] and those of Cr to
@@ -559,7 +575,12 @@ static noinline void CAFUNC(parse_chroma_residual)
 				parse_residual_block_cabac(ctx, 0, 3);
 			}
 		#endif
-		transform_dc2x2(ctx);
+		if (ctx->t.sp_slice & mb->mbIsInterFlag) {
+			memcpy(ctx->sp_levels_dc, ctx->c, sizeof(ctx->sp_levels_dc));
+			ctx->c_v[0] = ctx->c_v[1] = (i8x16){};
+		} else {
+			transform_dc2x2(ctx);
+		}
 		
 		// Eight or sixteen 4x4 AC blocks for the Cb/Cr components
 		if (mb->f.CodedBlockPatternChromaAC) {
@@ -574,16 +595,19 @@ static noinline void CAFUNC(parse_chroma_residual)
 				int nA = *((int8_t *)mbc->nC + 16 + ctx->ACbCr_int8[i4x4]);
 				int nB = *((int8_t *)mbc->nC + 16 + ctx->BCbCr_int8[i4x4]);
 				#if !CABAC
-					if (parse_residual_block_4x4_cavlc(ctx, 1, 16 + i4x4, nA, nB))
-						add_idct4x4(ctx, iYCbCr, i4x4, samples);
-					else
+					if (parse_residual_block_4x4_cavlc(ctx, 1, 16 + i4x4, nA, nB)) {
+						if (!keep_sp_levels(ctx, 16 + i4x4))
+							add_idct4x4(ctx, iYCbCr, i4x4, samples);
+					} else if (!(ctx->t.sp_slice & mb->mbIsInterFlag)) {
 						add_dc4x4(ctx, iYCbCr, i4x4, samples);
+					}
 				#else
 					if (get_ae(ctx, ctx->ctxIdxOffsets[0] + ctx->nC_inc[1][i4x4] + nA + nB * 2)) {
 						mbc->nC[16 + i4x4] = 1;
 						parse_residual_block_cabac(ctx, 1, 15);
-						add_idct4x4(ctx, iYCbCr, i4x4, samples);
-					} else {
+						if (!keep_sp_levels(ctx, 16 + i4x4))
+							add_idct4x4(ctx, iYCbCr, i4x4, samples);
+					} else if (!(ctx->t.sp_slice & mb->mbIsInterFlag)) {
 						add_dc4x4(ctx, iYCbCr, i4x4, samples);
 					}
 				#endif
@@ -720,13 +744,14 @@ static noinline void CAFUNC(parse_NxN_residual)
 					int nB = *((int8_t *)mbc->nC + iYCbCr * 16 + ctx->B4x4_int8[i4x4]);
 					// DC blocks are marginal here (about 16%) so we do not handle them separately
 					#if !CABAC
-						if (parse_residual_block_4x4_cavlc(ctx, 0, iYCbCr * 16 + i4x4, nA, nB))
+						if (parse_residual_block_4x4_cavlc(ctx, 0, iYCbCr * 16 + i4x4, nA, nB) && !keep_sp_levels(ctx, i4x4))
 							add_idct4x4(ctx, iYCbCr, -1, samples); // FIXME 4:4:4
 					#else
 						if (get_ae(ctx, ctx->ctxIdxOffsets[0] + ctx->nC_inc[iYCbCr][i4x4] + nA + nB * 2)) {
 							mbc->nC[iYCbCr * 16 + i4x4] = 1;
 							parse_residual_block_cabac(ctx, 0, 15);
-							add_idct4x4(ctx, iYCbCr, -1, samples); // FIXME 4:4:4
+							if (!keep_sp_levels(ctx, i4x4))
+								add_idct4x4(ctx, iYCbCr, -1, samples); // FIXME 4:4:4
 						}
 					#endif
 				}
@@ -1920,6 +1945,12 @@ static noinline void CAFUNC(parse_slice_data)
 		// Would it actually help to push this test outside the loop?
 		if (ctx->t.slice_type == 0) {
 			CACALL(parse_P_mb);
+			// the P macroblocks of SP slices decode with the SP process, then
+			// deblock as intra ones (8.7.2.1)
+			if (ctx->t.sp_slice & mb->mbIsInterFlag) {
+				decode_sp_mb(ctx);
+				mb->mbIsInterFlag = 0;
+			}
 		} else if (ctx->t.slice_type == 1) {
 			await_frame_progress(ctx, ctx->t.RefPicList[1][0], ctx->CurrMbAddr + 1);
 			CACALL(parse_B_mb);

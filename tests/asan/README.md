@@ -214,3 +214,9 @@ guard against sanitizer aborts and CPU-burn.
   overflow, which UndefinedBehaviorSanitizer reports in a build without the
   -fwrapv of the Makefile. The value is now unsigned, as the picture number it
   is subtracted from already was.
+- sp_level_overflow.264: a fuzzer-found stream with SP slices and damaged
+  levels. The SP decoding of its P macroblocks (decode_sp_mb) scaled and
+  requantized the levels in 32 bits, which overflowed (only caught with
+  `SANITIZE=address,undefined`, or in the fuzz target, which builds without
+  -fwrapv). It now computes in 64 bits and clamps the requantized levels to
+  their 16-bit range (8.5.12), which valid streams stay within.

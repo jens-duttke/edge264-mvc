@@ -160,6 +160,7 @@ Fixes found by checking the code against the H.264 spec and between the SIMD bac
 | Load the left column of an intra 8x8 block in the SSE2 code with an unaligned load (`ldleft8x8`) | the x86-64 baseline code, which a build for several CPU levels runs on CPUs without SSE4.1, read its last four samples as a 4-byte value from an address that is not 4-byte aligned - undefined behaviour, reported by UndefinedBehaviorSanitizer on valid streams |
 | Address the sample above an intra 4x4 block in the SSE2 code with a signed offset (`ldedge4x4`) | the x86-64 baseline code formed its address by adding `3 - stride` as an unsigned value, which wraps the pointer around - undefined behaviour, reported by UndefinedBehaviorSanitizer on valid streams |
 | Ignore the sequence parameter set extension and the slices of an auxiliary coded picture (NAL types 13 and 19), as 7.4.1 allows | a stream carrying an alpha plane counted as unsupported, and a caller that stops at an unsupported NAL unit decoded nothing of it |
+| Honour `constrained_intra_pred_flag`: intra prediction takes no samples from Inter macroblocks, which also send the intra 4x4/8x8 modes of their neighbours to DC (8.3.1.1), with an availability of its own beside the one CAVLC and CABAC read (`parse_I_mb`) | a stream with constrained intra prediction, which encoders use for error resilience, was reported as unsupported |
 
 ## Multithreaded decoding fixes
 

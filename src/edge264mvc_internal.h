@@ -199,6 +199,26 @@ typedef union {
 	};
 	i8x16 v;
 } Edge264MvcMbFlags;
+// unavailability of the neighbours of the 16 4x4 blocks of a macroblock, by the A/B/C/D
+// (bits 0-3) neighbouring macroblocks that are unavailable
+static const i8x16 block_unavailability[16] = {
+	{ 0,  0,  0,  4,  0,  0,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{ 1,  0,  9,  4,  0,  0,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+	{ 6, 14,  0,  4, 14, 10,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{ 7, 14,  9,  4, 14, 10,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+	{ 0,  0,  0,  4,  0,  4,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{ 1,  0,  9,  4,  0,  4,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+	{ 6, 14,  0,  4, 14, 14,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{ 7, 14,  9,  4, 14, 14,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+	{ 8,  0,  0,  4,  0,  0,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{ 9,  0,  9,  4,  0,  0,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+	{14, 14,  0,  4, 14, 10,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{15, 14,  9,  4, 14, 10,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+	{ 8,  0,  0,  4,  0,  4,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{ 9,  0,  9,  4,  0,  4,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+	{14, 14,  0,  4, 14, 14,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
+	{15, 14,  9,  4, 14, 14,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
+};
 static const Edge264MvcMbFlags flags_twice = {
 	.CodedBlockPatternChromaDC = 1,
 	.CodedBlockPatternChromaAC = 1,
@@ -529,6 +549,8 @@ typedef struct Edge264MvcContext {
 	Edge264MvcDecoder *d;
 	Edge264MvcMbFlags inc; // increments for CABAC indices of macroblock syntax elements
 	union { int8_t unavail4x4[48]; i8x16 unavail4x4_v[3]; }; // unavailability of neighbouring A/B/C/D blocks
+	union { int8_t unavail_intra[16]; i8x16 unavail_intra_v; }; // unavail4x4 for intra prediction, where constrained_intra_pred_flag counts Inter neighbours as unavailable
+	int8_t unavail16x16; // unavailability of the neighbouring A/B/C/D macroblocks (bits 0-3)
 	union { int8_t nC_inc[3][16]; i8x16 nC_inc_v[3]; }; // stores the intra/inter default increment from unavailable neighbours (9.3.3.1.1.9)
 	union { uint8_t cabac[1024]; i8x16 cabac_v[64]; };
 	

@@ -2835,15 +2835,13 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 	pps.deblocking_filter_control_present_flag = get_u1(&dec->gb);
 	pps.constrained_intra_pred_flag = get_u1(&dec->gb);
 	pps.redundant_pic_cnt_present_flag = get_u1(&dec->gb);
-	if (pps.constrained_intra_pred_flag)
-		ret = ENOTSUP;
 	log_dec(dec, "  num_ref_idx_default_active: {l0: %u, l1: %u}\n"
 		"  weighted_pred_flag: %u # %s\n"
 		"  weighted_bipred_idc: %u # %s\n"
 		"  pic_init_qp: %u\n"
 		"  chroma_qp_index_offset: %d\n"
 		"  deblocking_filter_control_present_flag: %u\n"
-		"  constrained_intra_pred_flag: %u%s\n"
+		"  constrained_intra_pred_flag: %u\n"
 		"  redundant_pic_cnt_present_flag: %u\n",
 		pps.num_ref_idx_active[0], pps.num_ref_idx_active[1],
 		pps.weighted_pred_flag, weighted_pred_names[pps.weighted_pred_flag],
@@ -2851,7 +2849,7 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 		pps.QPprime_Y,
 		pps.chroma_qp_index_offset,
 		pps.deblocking_filter_control_present_flag,
-		pps.constrained_intra_pred_flag, unsup_if(pps.constrained_intra_pred_flag),
+		pps.constrained_intra_pred_flag,
 		pps.redundant_pic_cnt_present_flag);
 	
 	if (!rbsp_end(&dec->gb, 1)) {

@@ -622,7 +622,7 @@ static noinline void CAFUNC(parse_NxN_residual)
 				size_t stride = ctx->t.stride[iYCbCr];
 				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i4x4] * stride + x444[i4x4];
 				if (!mb->mbIsInterFlag)
-					intra_pred(REC_INTRA4x4, decode_intra4x4, samples, stride, Intra4x4Modes[mbc->Intra4x4PredMode[i4x4]][ctx->unavail4x4[i4x4]], iYCbCr);
+					intra_pred(REC_INTRA4x4, decode_intra4x4, samples, stride, Intra4x4Modes[mbc->Intra4x4PredMode[i4x4]][ctx->unavail_intra[i4x4]], iYCbCr);
 				if (mb->bits[0] & 1 << bit8x8[i4x4 >> 2]) {
 					int nA = *((int8_t *)mbc->nC + iYCbCr * 16 + ctx->A4x4_int8[i4x4]);
 					int nB = *((int8_t *)mbc->nC + iYCbCr * 16 + ctx->B4x4_int8[i4x4]);
@@ -652,7 +652,7 @@ static noinline void CAFUNC(parse_NxN_residual)
 				size_t stride = ctx->t.stride[iYCbCr];
 				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i8x8 * 4] * stride + x444[i8x8 * 4];
 				if (!mb->mbIsInterFlag)
-					intra_pred(REC_INTRA8x8, decode_intra8x8, samples, stride, Intra8x8Modes[mbc->Intra4x4PredMode[i8x8 * 4]][ctx->unavail4x4[i8x8 * 5]], iYCbCr);
+					intra_pred(REC_INTRA8x8, decode_intra8x8, samples, stride, Intra8x8Modes[mbc->Intra4x4PredMode[i8x8 * 4]][ctx->unavail_intra[i8x8 * 5]], iYCbCr);
 				if (mb->bits[0] & 1 << bit8x8[i8x8]) {
 					#if !CABAC
 						for (int i4x4 = 0; i4x4 < 4; i4x4++) {
@@ -746,7 +746,7 @@ static inline void CAFUNC(parse_intra_chroma_pred_mode)
 			mb->f.intra_chroma_pred_mode_non_zero = (mode > 0);
 		#endif
 		log_mb(ctx, "%sintra_chroma_pred_mode: %u\n", ctx->log_indent, mode);
-		intra_pred(REC_INTRA_CHROMA, decode_intraChroma, ctx->samples_mb[1], ctx->t.stride[1] >> 1, IntraChromaModes[mode][(ctx->unavail4x4[0] & 3) | (ctx->unavail4x4[0] >> 1 & 4)], 1);
+		intra_pred(REC_INTRA_CHROMA, decode_intraChroma, ctx->samples_mb[1], ctx->t.stride[1] >> 1, IntraChromaModes[mode][(ctx->unavail_intra[0] & 3) | (ctx->unavail_intra[0] >> 1 & 4)], 1);
 	}
 }
 
@@ -811,6 +811,14 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 	#endif
 	mb->mbIsInterFlag = 0;
 	mb->f.inter_eqs_s = little_endian32(0x1b5fbbff);
+	// With constrained_intra_pred_flag, intra prediction takes no samples from
+	// Inter macroblocks (8.3.1.2, 8.3.2.2, 8.3.3, 8.3.4), unlike the other
+	// processes that read the neighbours, so it gets an availability of its own.
+	ctx->unavail_intra_v = ctx->unavail4x4_v[0];
+	if (ctx->t.pps.constrained_intra_pred_flag) {
+		int inter = mbA->mbIsInterFlag | mbB->mbIsInterFlag << 1 | mbC->mbIsInterFlag << 2 | mbD->mbIsInterFlag << 3;
+		ctx->unavail_intra_v = block_unavailability[ctx->unavail16x16 | inter];
+	}
 	mb->refIdx_l = -1;
 	mb->refPic_l = -1;
 	mb->mvs_v[0] = mb->mvs_v[1] = mb->mvs_v[2] = mb->mvs_v[3] = mb->mvs_v[4] = mb->mvs_v[5] = mb->mvs_v[6] = mb->mvs_v[7] = (i16x8){};
@@ -889,7 +897,7 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 			{I16x16_P_8 , I16x16_DC_A_8, I16x16_DC_B_8, I16x16_DC_AB_8, I16x16_DC_8, I16x16_DC_A_8, I16x16_DC_B_8, I16x16_DC_AB_8},
 		};
 		mbc->Intra4x4PredMode_v = (i8x16){2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-		intra_pred(REC_INTRA16x16, decode_intra16x16, ctx->samples_mb[0], ctx->t.stride[0], Intra16x16Modes[mode][(ctx->unavail4x4[0] & 3) | (ctx->unavail4x4[0] >> 1 & 4)], 0); // FIXME 4:4:4
+		intra_pred(REC_INTRA16x16, decode_intra16x16, ctx->samples_mb[0], ctx->t.stride[0], Intra16x16Modes[mode][(ctx->unavail_intra[0] & 3) | (ctx->unavail_intra[0] >> 1 & 4)], 0); // FIXME 4:4:4
 		CACALL(parse_intra_chroma_pred_mode);
 		CAJUMP(parse_Intra16x16_residual);
 		
@@ -1310,9 +1318,10 @@ static void CAFUNC(parse_B_sub_mb) {
  */
 static void CAFUNC(parse_B_mb)
 {
-	// Inter initializations
+	// Inter initializations, with constrained_intra_pred_flag sending the intra
+	// modes of the neighbours to DC (dcPredModePredictedFlag, 8.3.1.1)
 	mb->mbIsInterFlag = 1;
-	mbc->Intra4x4PredMode_v = (i8x16){2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+	mbc->Intra4x4PredMode_v = set8(ctx->t.pps.constrained_intra_pred_flag ? -2 : 2);
 	#if CABAC
 		mbc->absMvd_v[0] = mbc->absMvd_v[1] = mbc->absMvd_v[2] = mbc->absMvd_v[3] = (i8x16){};
 	#endif
@@ -1579,9 +1588,10 @@ static void CAFUNC(parse_P_sub_mb, unsigned ref_idx_flags)
  */
 static void CAFUNC(parse_P_mb)
 {
-	// Inter initializations
+	// Inter initializations, with constrained_intra_pred_flag sending the intra
+	// modes of the neighbours to DC (dcPredModePredictedFlag, 8.3.1.1)
 	mb->mbIsInterFlag = 1;
-	mbc->Intra4x4PredMode_v = (i8x16){2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+	mbc->Intra4x4PredMode_v = set8(ctx->t.pps.constrained_intra_pred_flag ? -2 : 2);
 	mb->refIdx_l = (int64_t)(i8x8){0, 0, 0, 0, -1, -1, -1, -1};
 	#if CABAC
 		mbc->absMvd_v[0] = mbc->absMvd_v[1] = (i8x16){};
@@ -1662,24 +1672,6 @@ static void CAFUNC(parse_P_mb)
  */
 static noinline void CAFUNC(parse_slice_data)
 {
-	static const i8x16 block_unavailability[16] = {
-		{ 0,  0,  0,  4,  0,  0,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{ 1,  0,  9,  4,  0,  0,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-		{ 6, 14,  0,  4, 14, 10,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{ 7, 14,  9,  4, 14, 10,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-		{ 0,  0,  0,  4,  0,  4,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{ 1,  0,  9,  4,  0,  4,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-		{ 6, 14,  0,  4, 14, 14,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{ 7, 14,  9,  4, 14, 14,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-		{ 8,  0,  0,  4,  0,  0,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{ 9,  0,  9,  4,  0,  0,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-		{14, 14,  0,  4, 14, 10,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{15, 14,  9,  4, 14, 10,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-		{ 8,  0,  0,  4,  0,  4,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{ 9,  0,  9,  4,  0,  4,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-		{14, 14,  0,  4, 14, 14,  0,  4,  0,  0,  0,  4,  0,  4,  0,  4},
-		{15, 14,  9,  4, 14, 14,  0,  4,  9,  0,  9,  4,  0,  4,  0,  4},
-	};
 	
 	int end_of_slice_flag = 0;
 	do {
@@ -1799,6 +1791,7 @@ static noinline void CAFUNC(parse_slice_data)
 		
 		// initialize common macroblock values
 		ctx->unavail4x4_v[0] = block_unavailability[unavail16x16];
+		ctx->unavail16x16 = unavail16x16;
 		ctx->inc.v = mbA->f.v + mbB->f.v + (mbB->f.v & flags_twice.v);
 		mb->f.v = (i8x16){};
 		mb->filter_edges = (ctx->t.disable_deblocking_filter_idc != 1) ? filter_edges : 0;

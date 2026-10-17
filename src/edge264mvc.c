@@ -175,6 +175,10 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 		dec->parse_nal_unit[i] = unsup_NAL;
 	dec->parse_nal_unit[1] = dec->parse_nal_unit[5] = ADD_VARIANT(parse_slice_layer_without_partitioning);
 	dec->parse_nal_unit[6] = dec->parse_nal_unit[9] = dec->parse_nal_unit[11] = dec->parse_nal_unit[12] = ignore_NAL;
+	// the SPS extension and the slices of an auxiliary coded picture (an alpha
+	// plane) may be ignored, which 7.4.1 allows as decoding them has no effect
+	// on the primary pictures
+	dec->parse_nal_unit[13] = dec->parse_nal_unit[19] = ignore_NAL;
 	dec->parse_nal_unit[7] = dec->parse_nal_unit[15] = ADD_VARIANT(parse_seq_parameter_set);
 	dec->parse_nal_unit[8] = ADD_VARIANT(parse_pic_parameter_set);
 	dec->parse_nal_unit[10] = parse_end_of_sequence;
@@ -221,7 +225,7 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 			dec->parse_nal_unit[8] = parse_pic_parameter_set_log;
 			dec->parse_nal_unit[9] = parse_access_unit_delimiter_log;
 			dec->parse_nal_unit[10] = parse_end_of_sequence_log;
-			dec->parse_nal_unit[11] = dec->parse_nal_unit[12] = ignore_NAL_log;
+			dec->parse_nal_unit[11] = dec->parse_nal_unit[12] = dec->parse_nal_unit[13] = dec->parse_nal_unit[19] = ignore_NAL_log;
 			dec->parse_nal_unit[14] = dec->parse_nal_unit[20] = parse_nal_unit_header_extension_log;
 			if (log_mbs)
 				dec->worker_loop = worker_loop_log;

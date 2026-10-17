@@ -60,6 +60,7 @@
 !tests/gen_rejected_first_slice.py
 !tests/gen_sps_fewer_refs.py
 !tests/gen_ref_flip.py
+!tests/gen_aux_picture.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

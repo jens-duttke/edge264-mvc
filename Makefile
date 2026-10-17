@@ -652,6 +652,8 @@ ifeq ($(OS),linux)
 	  test $$? -eq 1 || { echo "edge264mvc_test results check FAILED (a missing file did not FAIL)"; exit 1; }
 	$(Q)$(TIMEOUT) ./edge264mvc_test_stall tests/conformance/manifest.txt > /dev/null 2>&1; \
 	  test $$? -eq 1 || { echo "edge264mvc_test results check FAILED (a file without the .264 suffix did not FAIL)"; exit 1; }
+	$(Q)$(TIMEOUT) ./edge264mvc_test$(EXE) -y tests/conformance/2d-synthetic/aux_picture.264 2>&1 | grep -q "1 .*PASS.*, 0 .*UNSUPPORTED" || \
+	  { echo "edge264mvc_test results check FAILED (the NAL units of an auxiliary picture were not ignored)"; exit 1; }
 	$(Q)echo "edge264mvc_test results check PASS"
 endif
 

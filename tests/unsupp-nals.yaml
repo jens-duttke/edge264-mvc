@@ -16,9 +16,6 @@
   nal_unit_type: 4
 
 - nal_ref_idc: 0
-  nal_unit_type: 13
-
-- nal_ref_idc: 0
   nal_unit_type: 16
 
 - nal_ref_idc: 0
@@ -26,9 +23,6 @@
 
 - nal_ref_idc: 0
   nal_unit_type: 18
-
-- nal_ref_idc: 0
-  nal_unit_type: 19
 
 - nal_ref_idc: 0
   nal_unit_type: 21

@@ -506,10 +506,10 @@ int main(int argc, char *argv[]) {
 	settings.n_threads = 1;
 	settings.log_cb = log_callback;
 	PASSERT(edge264mvc_open(&dec, &settings) == EDGE264MVC_OK, "edge264mvc_open");
-	test("supp-nals", NULL, NULL, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, 0, 0, ENODATA});
-	test("unsupp-nals", NULL, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
-	test("supp-nals", NULL, NULL, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, 0, 0, ENODATA});
-	test("unsupp-nals", unsupported_logger, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
+	test("supp-nals", NULL, NULL, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, 0, 0, ENODATA});
+	test("unsupp-nals", NULL, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
+	test("supp-nals", NULL, NULL, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, 0, 0, ENODATA});
+	test("unsupp-nals", unsupported_logger, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
 	test("fmo-unsupp", NULL, NULL, (uint8_t[]){0, ENOTSUP, ENODATA}); // FMO PPS -> ENOTSUP, not EBADMSG
 	test("redundant-pic-cnt", NULL, NULL, (uint8_t[]){0, 0, 0, ENOTSUP, 0, ENOBUFS, ENODATA}); // primary slices decode, the redundant copy is skipped
 	test("max-logs", max_logs_logger, NULL, (uint8_t[]){0, ENODATA});

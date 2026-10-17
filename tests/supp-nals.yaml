@@ -172,6 +172,12 @@
     mvds: [[0,0],[0,0]]
     coded_block_pattern: 0
 
+- nal_ref_idc: 0
+  nal_unit_type: 13 # Sequence parameter set extension, ignored as 7.4.1 allows
+
+- nal_ref_idc: 0
+  nal_unit_type: 19 # Coded slice of an auxiliary coded picture, ignored as 7.4.1 allows
+
 - nal_ref_idc: 3
   nal_unit_type: 12
 

@@ -531,6 +531,8 @@ endif
 # hash/liveness run cannot. Standalone (not part of `check`): the sanitizer
 # build is heavier and opt-in. Run with SANITIZE empty it just decodes the
 # fixtures uninstrumented (the OOB read is then a benign, undetected read).
+# Leak detection stays on, as in the sanitizer job of CI: a decoder-owned NAL
+# copy that no task frees only shows as a leak.
 # a wall-clock bound for the harnesses that guard hangs, where the system has
 # timeout (GNU coreutils; macOS has none by default, so it runs unbounded there)
 TIMEOUT := $(if $(shell command -v timeout 2>/dev/null),timeout 90)
@@ -701,7 +703,7 @@ check-robustness: asan_check$(EXE)
 
 .PHONY: check-asan
 check-asan: asan_check$(EXE)
-	$(Q)ASAN_OPTIONS=detect_leaks=0:max_allocation_size_mb=2048 $(TIMEOUT) ./asan_check$(EXE) run tests/asan/manifest.txt tests/asan
+	$(Q)ASAN_OPTIONS=detect_leaks=1:max_allocation_size_mb=2048 $(TIMEOUT) ./asan_check$(EXE) run tests/asan/manifest.txt tests/asan
 
 asan_check$(EXE): tests/asan_check.c edge264mvc.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/asan_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@

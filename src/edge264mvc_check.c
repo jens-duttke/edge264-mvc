@@ -510,7 +510,7 @@ int main(int argc, char *argv[]) {
 	test("unsupp-nals", NULL, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
 	test("supp-nals", NULL, NULL, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, 0, 0, ENODATA});
 	test("unsupp-nals", unsupported_logger, NULL, (uint8_t[]){ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENOTSUP, ENODATA});
-	test("fmo-unsupp", NULL, NULL, (uint8_t[]){0, ENOTSUP, ENODATA}); // FMO PPS -> ENOTSUP, not EBADMSG
+	test("fmo-pps", NULL, NULL, (uint8_t[]){0, 0, ENODATA}); // FMO PPS, parsed whole
 	test("redundant-pic-cnt", NULL, NULL, (uint8_t[]){0, 0, 0, ENOTSUP, 0, ENOBUFS, ENODATA}); // primary slices decode, the redundant copy is skipped
 	test("max-logs", max_logs_logger, NULL, (uint8_t[]){0, ENODATA});
 	test("finish-frame", NULL, finish_frame_post, (uint8_t[]){0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ENOBUFS, ENODATA});

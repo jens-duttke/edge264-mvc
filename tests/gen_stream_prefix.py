@@ -7,7 +7,8 @@
 # The monochrome fixtures of tests/conformance/2d-synthetic come from the ITU
 # vectors HPCAMOLQ_BRCM_B and HPCVMOLQ_BRCM_B (FRExt), with N = 10; mono_after_420 is
 # HPCALQ_BRCM_B with N = 2, an end_of_seq NAL (00 00 00 01 0a) and mono_cabac with N = 3;
-# sp_slices_a and sp_slices_b are SP1_BT_A and sp2_bt_b with N = 40.
+# sp_slices_a and sp_slices_b are SP1_BT_A and sp2_bt_b with N = 40; fmo_maps is
+# FM1_BT_B with N = 10.
 import sys
 from gen_slice_deblock_offsets import split_nals
 

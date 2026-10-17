@@ -334,6 +334,15 @@ typedef struct {
 	int8_t transform_8x8_mode_flag; // 0..1
 	int8_t pic_scaling_matrix_present_flag; // 0..1
 	int8_t second_chroma_qp_index_offset; // -12..12
+	// slice groups (FMO, 7.4.2.2), with the explicit map of type 6 kept in the
+	// decoder (pps_slice_group_ids), as tasks copy the PPS
+	int8_t num_slice_groups; // 1..8
+	int8_t slice_group_map_type; // 0..6
+	int8_t slice_group_change_direction_flag; // 0..1
+	int32_t SliceGroupChangeRate; // 1..PicSizeInMapUnits
+	int32_t run_length_minus1[8]; // type 0
+	int32_t top_left[8], bottom_right[8]; // type 2
+	int32_t pic_size_in_map_units; // type 6
 	union { uint8_t weightScale4x4[6][16]; i8x16 weightScale4x4_v[6]; };
 	union { uint8_t weightScale8x8[6][64]; i8x16 weightScale8x8_v[6*4]; };
 } Edge264MvcPicParameterSet;
@@ -436,6 +445,8 @@ typedef struct {
 	int8_t FilterOffsetB;
 	int8_t ChromaArrayType; // 0..3
 	int8_t sp_slice; // 0..1, an SP slice parsed as a P slice whose P macroblocks decode with 8.6.1
+	int8_t fmo_group; // slice group of the slice when fmo_map is set
+	const uint8_t *fmo_map; // slice group of every macroblock of the picture (8.2.2.8) with FMO, else NULL
 	int8_t QS_Y; // 0..51, QSY of an SP slice (7-31)
 	int8_t mb_height_C; // rows of a macroblock in each chroma plane, 16 in 4:2:2 and 8 otherwise
 	int8_t direct_8x8_inference_flag; // 0..1
@@ -533,6 +544,7 @@ typedef struct Edge264MvcContext {
 	union { int32_t c[64]; i32x4 c_v[16]; i32x8 c_V[8]; }; // non-scaled residual coefficients
 	int32_t sp_levels[24][16]; // the levels of the 4x4 blocks of a P macroblock in an SP slice, luma then Cb and Cr AC, like c
 	int32_t sp_levels_dc[8]; // and its chroma DC levels, at the positions of c for transform_dc2x2
+	int32_t fmo_decoded; // macroblocks a slice with slice groups decoded, as they are not consecutive
 	
 	// Deblocking context
 	union { uint8_t alpha[16]; int32_t alpha_s[4]; i8x16 alpha_v; }; // {internal_Y,internal_Cb,internal_Cr,0,0,0,0,0,left_Y,left_Cb,left_Cr,0,top_Y,top_Cb,top_Cr,0}
@@ -611,6 +623,10 @@ struct Edge264MvcDecoder {
 	void *(*worker_loop)(void *);
 	uint8_t *samples_buffers[MAX_FRAMES];
 	Edge264MvcMacroblock *mb_buffers[MAX_FRAMES];
+	uint8_t *fmo_maps[MAX_FRAMES]; // the macroblock to slice group map of each picture with FMO
+	int32_t fmo_map_sizes[MAX_FRAMES];
+	int32_t fmo_map_ids[MAX_FRAMES]; // FrameId the map was derived for
+	uint8_t *pps_slice_group_ids[256]; // slice_group_id of the PPSs of map type 6
 	FrameMask stale_frames; // frames of a previous frame format held by the caller, freed when released
 	void *mbc_ring_allocs[MAX_THREADS + 1]; // per worker (thread_id + 1), see Edge264MvcMbCache
 	int32_t mbc_ring_sizes[MAX_THREADS + 1];
@@ -657,7 +673,7 @@ struct Edge264MvcDecoder {
 	int64_t OutputPocBase[2];
 	int64_t PrevOutputUnwrapped[2]; // previous exported DisplayPoc per view, kept strictly increasing (see edge264mvc_unwrap_output_poc)
 	int8_t HavePrevOutputPoc[2];
-	Edge264MvcPicParameterSet PPS[4];
+	Edge264MvcPicParameterSet PPS[256]; // every pic_parameter_set_id (7.4.2.2)
 	
 	// frame buffer as a Structure Of Arrays
 	FrameMask short_term_frames; // bitfield for indices of short-term or non-existing frame/view references for current view

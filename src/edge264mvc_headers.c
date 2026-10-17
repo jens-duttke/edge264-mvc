@@ -334,6 +334,7 @@ static void clear_decoder(Edge264MvcDecoder *dec) {
 	dec->PrevRefFrameNum[0] = dec->PrevRefFrameNum[1] = -1;
 	memset(dec->get_frame_queue, -1, sizeof(dec->get_frame_queue));
 	memset(dec->taskPics, -1, sizeof(dec->taskPics));
+	memset(dec->fmo_map_ids, -1, sizeof(dec->fmo_map_ids)); // FrameIds restart
 }
 
 int ADD_VARIANT(parse_end_of_sequence)(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg) {
@@ -747,6 +748,10 @@ static void deblock_range(Edge264MvcContext *c, int currPic, int from, int to) {
 enum { SLICE_ABANDONED, SLICE_TURN, SLICE_DEFERRED };
 static int slice_turn(Edge264MvcContext *c, int currPic, uint32_t seq, int keep_mb, int ret) {
 	Edge264MvcDecoder *dec = c->d;
+	// a picture with slice groups (FMO) is deblocked and published whole, once
+	// its last macroblock is decoded, as its slices interleave
+	if (c->t.fmo_map)
+		return SLICE_ABANDONED;
 	int32_t first = c->t.first_mb_in_slice;
 	int32_t cur = __atomic_load_n(&dec->next_deblock_addr[currPic], __ATOMIC_ACQUIRE);
 	if (cur < first && c->thread_id >= 0) {
@@ -967,9 +972,10 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		if (c.d->mbc_ring_allocs[slot])
 			c.mbc_ring = (Edge264MvcMbCache *)(((uintptr_t)c.d->mbc_ring_allocs[slot] + 63) & -64) + 1;
 	decode_slice:;
-		int in_turn = cur_deblock_addr == c.t.first_mb_in_slice && !after_spec;
+		int in_turn = cur_deblock_addr == c.t.first_mb_in_slice && !after_spec && !c.t.fmo_map;
 		c.t.next_deblock_idc = in_turn ? currPic : -1;
-		c.t.next_deblock_addr = (in_turn || c.t.disable_deblocking_filter_idc == 2) ? c.t.first_mb_in_slice : INT_MIN;
+		c.t.next_deblock_addr = (in_turn || c.t.disable_deblocking_filter_idc == 2) && !c.t.fmo_map ? c.t.first_mb_in_slice : INT_MIN;
+		c.fmo_decoded = 0;
 		// A slice started before its bound is known decodes, deblocks and publishes
 		// as usual: should it go past the bound, the slice following it is the next
 		// NAL, so no task of a later picture reads this one yet, and its rows can be
@@ -1066,8 +1072,9 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		if (c.t.next_deblock_addr >= 0 && (turn != SLICE_DEFERRED || c.t.disable_deblocking_filter_idc == 2))
 			deblock_range(&c, currPic, max(c.t.next_deblock_addr, (int)c.t.first_mb_in_slice), keep_mb);
 		
-		// on error, recover the other mbs and signal them as erroneous
-		if (__builtin_expect(ret != 0, 0))
+		// on error, recover the other mbs and signal them as erroneous (those of a
+		// slice group are left to conceal_frame, as recover_slice takes them in a row)
+		if (__builtin_expect(ret != 0, 0) && !c.t.fmo_map)
 			recover_slice(&c, currPic, keep_mb);
 		
 		// update c.d->next_deblock_addr (atomic: read concurrently by other threads)
@@ -1078,7 +1085,8 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 
 		// deblock the rest of the frame if all mbs have been decoded correctly
 		// (only left when slices arrived out of order)
-		int remaining_mbs = ret ?: __atomic_sub_fetch(&c.d->remaining_mbs[currPic], end_mb - c.t.first_mb_in_slice, __ATOMIC_ACQ_REL);
+		int remaining_mbs = ret ?: __atomic_sub_fetch(&c.d->remaining_mbs[currPic],
+			c.t.fmo_map ? c.fmo_decoded : end_mb - (int)c.t.first_mb_in_slice, __ATOMIC_ACQ_REL);
 		if (remaining_mbs == 0) {
 			int total_mbs = c.t.pic_width_in_mbs * c.t.pic_height_in_mbs;
 			deblock_range(&c, currPic, __atomic_load_n(&c.d->next_deblock_addr[currPic], __ATOMIC_ACQUIRE), total_mbs);
@@ -1566,6 +1574,102 @@ static int parse_ref_pic_list_modification(Edge264MvcDecoder *dec, Edge264MvcSeq
 /**
  * This fonction copies the last set of fields to finish initializing the task.
  */
+/**
+ * Derives the slice group of every macroblock of a frame (8.2.2.1 to 8.2.2.8,
+ * where map units are macroblocks with frame_mbs_only_flag), once per picture
+ * as all its slices carry the same parameters (7.4.3). Returns 0 or ENOMEM.
+ */
+static int derive_fmo_map(Edge264MvcDecoder *dec, int pic, const Edge264MvcPicParameterSet *pps,
+	const uint8_t *slice_group_ids, int w, int h, int slice_group_change_cycle)
+{
+	int size = w * h;
+	if (dec->fmo_map_sizes[pic] < size) {
+		uint8_t *m = realloc(dec->fmo_maps[pic], size);
+		if (m == NULL)
+			return ENOMEM;
+		dec->fmo_maps[pic] = m;
+		dec->fmo_map_sizes[pic] = size;
+	}
+	uint8_t *map = dec->fmo_maps[pic];
+	int n = pps->num_slice_groups;
+	int flag = pps->slice_group_change_direction_flag;
+	int64_t units0 = (int64_t)slice_group_change_cycle * pps->SliceGroupChangeRate; // MapUnitsInSliceGroup0 (7-34)
+	int MapUnitsInSliceGroup0 = units0 < size ? units0 : size;
+	int sizeOfUpperLeftGroup = flag ? size - MapUnitsInSliceGroup0 : MapUnitsInSliceGroup0; // (7-35)
+	switch (pps->slice_group_map_type) {
+	case 0: { // interleaved (8.2.2.1)
+		int i = 0;
+		do {
+			for (int iGroup = 0; iGroup < n && i < size; i += pps->run_length_minus1[iGroup++] + 1) {
+				for (int j = 0; j <= pps->run_length_minus1[iGroup] && i + j < size; j++)
+					map[i + j] = iGroup;
+			}
+		} while (i < size);
+		} break;
+	case 1: // dispersed (8.2.2.2)
+		for (int i = 0; i < size; i++)
+			map[i] = ((i % w) + (((i / w) * n) / 2)) % n;
+		break;
+	case 2: // foreground with left-over (8.2.2.3)
+		memset(map, n - 1, size);
+		for (int iGroup = n - 2; iGroup >= 0; iGroup--) {
+			int yTopLeft = pps->top_left[iGroup] / w, xTopLeft = pps->top_left[iGroup] % w;
+			int yBottomRight = pps->bottom_right[iGroup] / w, xBottomRight = pps->bottom_right[iGroup] % w;
+			for (int y = yTopLeft; y <= yBottomRight && y < h; y++) {
+				for (int x = xTopLeft; x <= xBottomRight; x++)
+					map[y * w + x] = iGroup;
+			}
+		}
+		break;
+	case 3: { // box-out (8.2.2.4), bounded for a damaged stream as it fills a unit at most every 4 * size steps
+		memset(map, 1, size);
+		int x = (w - flag) / 2, y = (h - flag) / 2;
+		int leftBound = x, topBound = y, rightBound = x, bottomBound = y;
+		int xDir = flag - 1, yDir = flag;
+		for (int k = 0, steps = 0, mapUnitVacant; k < MapUnitsInSliceGroup0 && steps < 8 * size + 16; k += mapUnitVacant, steps++) {
+			mapUnitVacant = map[y * w + x] == 1;
+			if (mapUnitVacant)
+				map[y * w + x] = 0;
+			if (xDir == -1 && x == leftBound) {
+				leftBound = max(leftBound - 1, 0);
+				x = leftBound;
+				xDir = 0, yDir = 2 * flag - 1;
+			} else if (xDir == 1 && x == rightBound) {
+				rightBound = min(rightBound + 1, w - 1);
+				x = rightBound;
+				xDir = 0, yDir = 1 - 2 * flag;
+			} else if (yDir == -1 && y == topBound) {
+				topBound = max(topBound - 1, 0);
+				y = topBound;
+				xDir = 1 - 2 * flag, yDir = 0;
+			} else if (yDir == 1 && y == bottomBound) {
+				bottomBound = min(bottomBound + 1, h - 1);
+				y = bottomBound;
+				xDir = 2 * flag - 1, yDir = 0;
+			} else {
+				x += xDir, y += yDir;
+			}
+		}
+		} break;
+	case 4: // raster scan (8.2.2.5)
+		for (int i = 0; i < size; i++)
+			map[i] = i < sizeOfUpperLeftGroup ? flag : 1 - flag;
+		break;
+	case 5: { // wipe (8.2.2.6)
+		int k = 0;
+		for (int j = 0; j < w; j++) {
+			for (int i = 0; i < h; i++)
+				map[i * w + j] = k++ < sizeOfUpperLeftGroup ? flag : 1 - flag;
+		}
+		} break;
+	default: // explicit (8.2.2.7), whose size 7.4.2.2 ties to the picture, a damaged PPS not
+		for (int i = 0; i < size; i++)
+			map[i] = slice_group_ids && i < pps->pic_size_in_map_units ? slice_group_ids[i] : 0;
+		break;
+	}
+	return 0;
+}
+
 static void initialize_task(Edge264MvcDecoder *dec, Edge264MvcSeqParameterSet *sps, Edge264MvcTask *t)
 {
 	// copy most essential fields from dec
@@ -2015,11 +2119,11 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	int pic_parameter_set_id = get_ue16(&dec->gb, 255);
 	log_dec(dec, "  first_mb_in_slice: %u\n"
 		"  slice_type: %u # %s%s\n"
-		"  pic_parameter_set_id: %u%s\n",
+		"  pic_parameter_set_id: %u\n",
 		t->first_mb_in_slice,
 		slice_type, slice_type_names[t->slice_type], unsup_if(t->slice_type > 3),
-		pic_parameter_set_id, unsup_if(pic_parameter_set_id >= 4));
-	if (t->slice_type > 3 || pic_parameter_set_id >= 4)
+		pic_parameter_set_id);
+	if (t->slice_type > 3)
 		return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP); // exit now if the rest of the slice can't be correctly parsed
 	t->pps = dec->PPS[pic_parameter_set_id];
 	// An SP slice is parsed as a P slice, whose P macroblocks then decode with
@@ -2551,6 +2655,27 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	// deblocking that may run when another slice completes the picture (8.7.2.2)
 	t->QP[3] = (t->FilterOffsetA >> 1 & 15) | (t->FilterOffsetB >> 1) * 16;
 	
+	// slice groups (FMO): the map of the picture, derived from its first slice
+	t->fmo_map = NULL;
+	if (t->pps.num_slice_groups > 1) {
+		int w = sps->pic_width_in_mbs, size = w * sps->pic_height_in_mbs;
+		int slice_group_change_cycle = 0;
+		if (t->pps.slice_group_map_type >= 3 && t->pps.slice_group_map_type <= 5) {
+			int bits = 0; // Ceil(Log2(PicSizeInMapUnits / SliceGroupChangeRate + 1)) (7-36)
+			while (((int64_t)t->pps.SliceGroupChangeRate << bits) < size + t->pps.SliceGroupChangeRate)
+				bits++;
+			slice_group_change_cycle = get_uv(&dec->gb, bits);
+			log_dec(dec, "  slice_group_change_cycle: %u\n", slice_group_change_cycle);
+		}
+		if (dec->fmo_map_ids[dec->currPic] != dec->FrameIds[dec->currPic]) {
+			if (derive_fmo_map(dec, dec->currPic, &t->pps, dec->pps_slice_group_ids[pic_parameter_set_id], w, sps->pic_height_in_mbs, slice_group_change_cycle))
+				return print_dec(dec, "  decode_NAL_result: %s\n", ENOMEM);
+			dec->fmo_map_ids[dec->currPic] = dec->FrameIds[dec->currPic];
+		}
+		t->fmo_map = dec->fmo_maps[dec->currPic];
+		t->fmo_group = t->fmo_map[t->first_mb_in_slice];
+	}
+	
 	// add the new frame into the DPB if not done already (C.4.5)
 	if (!(dec->to_get_frames & (FrameMask)1 << dec->currPic)) {
 		FrameMask short_term_frames = dec->prev_short_term_frames & ~same_views | dec->short_term_frames;
@@ -2610,8 +2735,10 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	int prev = dec->held_task;
 	if (prev >= 0) {
 		uint32_t prev_first = dec->tasks[prev].first_mb_in_slice;
-		release_held_task(dec, dec->taskPics[prev] == dec->currPic && t->first_mb_in_slice > prev_first ?
-			(int32_t)t->first_mb_in_slice : INT_MAX);
+		// a slice of a slice group (FMO) ends with its data, its macroblocks not
+		// being followed by those of the next slice
+		release_held_task(dec, dec->taskPics[prev] == dec->currPic && t->first_mb_in_slice > prev_first &&
+			!dec->tasks[prev].fmo_map ? (int32_t)t->first_mb_in_slice : INT_MAX);
 	}
 	// A slice whose macroblocks may overlap those of an older one still busy (a
 	// lower slice arriving later, or one before it that had no bound) starts after
@@ -2805,33 +2932,49 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 	};
 	int ret = 0;
 	
-	// Actual streams never use more than 4 PPSs (I, P, B, b).
 	int pic_parameter_set_id = get_ue16(&dec->gb, 255);
-	if (pic_parameter_set_id >= 4)
-		ret = ENOTSUP;
 	get_ue16(&dec->gb, 31); // seq_parameter_set_id
 	pps.entropy_coding_mode_flag = get_u1(&dec->gb);
 	pps.bottom_field_pic_order_in_frame_present_flag = get_u1(&dec->gb);
-	int num_slice_groups = get_ue16(&dec->gb, 7) + 1;
-	if (num_slice_groups > 1)
-		ret = ENOTSUP;
-	log_dec(dec, "  pic_parameter_set_id: %u%s\n"
+	pps.num_slice_groups = get_ue16(&dec->gb, 7) + 1;
+	log_dec(dec, "  pic_parameter_set_id: %u\n"
 		"  entropy_coding_mode_flag: %u # %s\n"
 		"  bottom_field_pic_order_in_frame_present_flag: %u\n"
-		"  num_slice_groups: %u%s\n",
-		pic_parameter_set_id, unsup_if(pic_parameter_set_id >= 4),
+		"  num_slice_groups: %u\n",
+		pic_parameter_set_id,
 		pps.entropy_coding_mode_flag, pps.entropy_coding_mode_flag ? "CABAC" : "CAVLC",
 		pps.bottom_field_pic_order_in_frame_present_flag,
-		num_slice_groups, unsup_if(num_slice_groups > 1));
-	// FMO (multiple slice groups) is unsupported, and the slice_group_map syntax
-	// that follows here is deliberately not parsed. Bail out now: leaving the bit
-	// position mid-map would make the rbsp_end check at the end of this function
-	// misfire EBADMSG (a hard decode error, reported as a FAIL) instead of the
-	// intended ENOTSUP. Returning unsupported cleanly lets a caller skip the
-	// stream rather than treat it as corrupt (matching the SPS's early ENOTSUP
-	// exits for other unsupported feature sets).
-	if (num_slice_groups > 1)
-		return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP);
+		pps.num_slice_groups);
+	
+	// slice groups (7.3.2.2), with the explicit slice_group_id of type 6 parsed
+	// to a buffer committed with the PPS
+	uint8_t *slice_group_ids = NULL;
+	if (pps.num_slice_groups > 1) {
+		pps.slice_group_map_type = get_ue16(&dec->gb, 6);
+		log_dec(dec, "  slice_group_map_type: %u\n", pps.slice_group_map_type);
+		if (pps.slice_group_map_type == 0) {
+			for (int i = 0; i < pps.num_slice_groups; i++)
+				pps.run_length_minus1[i] = get_ue32(&dec->gb, 139263);
+		} else if (pps.slice_group_map_type == 2) {
+			for (int i = 0; i < pps.num_slice_groups - 1; i++) {
+				pps.top_left[i] = get_ue32(&dec->gb, 139263);
+				pps.bottom_right[i] = get_ue32(&dec->gb, 139263);
+			}
+		} else if (pps.slice_group_map_type >= 3 && pps.slice_group_map_type <= 5) {
+			pps.slice_group_change_direction_flag = get_u1(&dec->gb);
+			pps.SliceGroupChangeRate = get_ue32(&dec->gb, 139263) + 1;
+		} else if (pps.slice_group_map_type == 6) {
+			pps.pic_size_in_map_units = get_ue32(&dec->gb, 139263) + 1;
+			int bits = 32 - __builtin_clz(pps.num_slice_groups - 1); // Ceil(Log2(num_slice_groups_minus1 + 1))
+			slice_group_ids = malloc(pps.pic_size_in_map_units);
+			if (slice_group_ids == NULL)
+				return print_dec(dec, "  decode_NAL_result: %s\n", ENOMEM);
+			for (int i = 0; i < pps.pic_size_in_map_units; i++) {
+				int id = get_uv(&dec->gb, bits);
+				slice_group_ids[i] = id < pps.num_slice_groups ? id : 0; // 7.4.2.2 bounds it, a damaged PPS not
+			}
+		}
+	}
 
 	// (num_ref_idx_active[0] != 0) is used as indicator that the PPS is initialised.
 	pps.num_ref_idx_active[0] = get_ue16(&dec->gb, 31) + 1;
@@ -2878,8 +3021,13 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 	// decoding errors have more precedence over unsupported features (in case errors enabled them)
 	if (!rbsp_end(&dec->gb, 1))
 		ret = EBADMSG;
-	if (ret == 0)
+	if (ret == 0) {
 		dec->PPS[pic_parameter_set_id] = pps;
+		free(dec->pps_slice_group_ids[pic_parameter_set_id]);
+		dec->pps_slice_group_ids[pic_parameter_set_id] = slice_group_ids;
+	} else {
+		free(slice_group_ids);
+	}
 	return print_dec(dec, "  decode_NAL_result: %s\n", ret);
 }
 

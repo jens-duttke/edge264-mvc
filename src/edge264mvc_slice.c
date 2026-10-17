@@ -1793,6 +1793,142 @@ static void CAFUNC(parse_P_mb)
 
 
 
+#if !CABAC
+/**
+ * With slice groups (FMO), the macroblocks of a slice are not consecutive, so
+ * a neighbour is available if it belongs to the slice group of the slice and
+ * comes at or after the slice's first macroblock (6.4.1). The neighbouring
+ * offsets are set anew for each macroblock (rather than once, when each
+ * neighbour becomes available), from their values of initialize_context.
+ * Returns the unavailability of A, B, C and D (bits 0 to 3).
+ */
+static noinline int fmo_neighbours(Edge264MvcContext *ctx) {
+	int a = ctx->CurrMbAddr, w = ctx->t.pic_width_in_mbs, x = ctx->mbx, y = ctx->mby;
+	const uint8_t *map = ctx->t.fmo_map;
+	int g = ctx->t.fmo_group, first = ctx->t.first_mb_in_slice;
+	#define IN_SLICE(n) (map[n] == g && (n) >= first)
+	int availA = x > 0 && IN_SLICE(a - 1);
+	int availB = y > 0 && IN_SLICE(a - w);
+	int availC = y > 0 && x < w - 1 && IN_SLICE(a - w + 1);
+	int availD = x > 0 && y > 0 && IN_SLICE(a - w - 1);
+	#undef IN_SLICE
+	ctx->A4x4_int8_v = (i16x16){0, 0, 2, 2, 1, 4, 3, 6, 8, 8, 10, 10, 9, 12, 11, 14};
+	ctx->B4x4_int8_v = (i32x16){0, 1, 0, 1, 4, 5, 4, 5, 2, 3, 8, 9, 6, 7, 12, 13};
+	if (ctx->t.ChromaArrayType == 1) {
+		ctx->ACbCr_int8_v[0] = (i16x8){0, 0, 2, 2, 4, 4, 6, 6};
+		ctx->BCbCr_int8_v[0] = (i32x8){0, 1, 0, 1, 4, 5, 4, 5};
+	} else if (ctx->t.ChromaArrayType == 2) {
+		ctx->ACbCr_int8_v[0] = (i16x8){0, 0, 2, 2, 4, 4, 6, 6};
+		ctx->ACbCr_int8_v[1] = (i16x8){8, 8, 10, 10, 12, 12, 14, 14};
+		ctx->BCbCr_int8_v[0] = (i32x8){0, 1, 0, 1, 2, 3, 4, 5};
+		ctx->BCbCr_int8_v[1] = (i32x8){8, 9, 8, 9, 10, 11, 12, 13};
+	}
+	ctx->absMvd_A_v = (i16x16){0, 0, 4, 4, 2, 8, 6, 12, 16, 16, 20, 20, 18, 24, 22, 28};
+	ctx->absMvd_B_v = (i32x16){0, 2, 0, 2, 8, 10, 8, 10, 4, 6, 16, 18, 12, 14, 24, 26};
+	ctx->mvs_A_v = (i16x16){0, 0, 2, 2, 1, 4, 3, 6, 8, 8, 10, 10, 9, 12, 11, 14};
+	ctx->mvs_B_v = (i32x16){0, 1, 0, 1, 4, 5, 4, 5, 2, 3, 8, 9, 6, 7, 12, 13};
+	ctx->mvs_C_v = (i32x16){0, 1, 1, -1, 4, 5, 5, -1, 3, 6, 9, -1, 7, -1, 13, -1};
+	ctx->mvs_D_v = (i32x16){0, 1, 2, 0, 4, 5, 1, 4, 8, 2, 10, 8, 3, 6, 9, 12};
+	if (availA) { // as when A becomes available in parse_slice_data
+		ctx->A4x4_int8[0] = 5 - (int)sizeof(*mbc);
+		ctx->A4x4_int8[2] = 7 - (int)sizeof(*mbc);
+		ctx->A4x4_int8[8] = 13 - (int)sizeof(*mbc);
+		ctx->A4x4_int8[10] = 15 - (int)sizeof(*mbc);
+		ctx->absMvd_A[0] = 10 - (int)sizeof(*mbc);
+		ctx->absMvd_A[2] = 14 - (int)sizeof(*mbc);
+		ctx->absMvd_A[8] = 26 - (int)sizeof(*mbc);
+		ctx->absMvd_A[10] = 30 - (int)sizeof(*mbc);
+		ctx->mvs_A[0] = 5 - (int)(sizeof(*mb) >> 2);
+		ctx->mvs_A[2] = 7 - (int)(sizeof(*mb) >> 2);
+		ctx->mvs_A[8] = 13 - (int)(sizeof(*mb) >> 2);
+		ctx->mvs_A[10] = 15 - (int)(sizeof(*mb) >> 2);
+		ctx->mvs_D[2] = 5 - (int)(sizeof(*mb) >> 2);
+		ctx->mvs_D[8] = 7 - (int)(sizeof(*mb) >> 2);
+		ctx->mvs_D[10] = 13 - (int)(sizeof(*mb) >> 2);
+		if (ctx->t.ChromaArrayType == 1) {
+			ctx->ACbCr_int8[0] = 1 - (int)sizeof(*mbc);
+			ctx->ACbCr_int8[2] = 3 - (int)sizeof(*mbc);
+			ctx->ACbCr_int8[4] = 5 - (int)sizeof(*mbc);
+			ctx->ACbCr_int8[6] = 7 - (int)sizeof(*mbc);
+		} else if (ctx->t.ChromaArrayType == 2) {
+			for (int i = 0; i < 16; i += 2)
+				ctx->ACbCr_int8[i] = i + 1 - (int)sizeof(*mbc);
+		}
+	}
+	if (availB) { // as when B becomes available
+		int offB_int8 = -(int)sizeof(*mbc);
+		int offB_int32 = ((w + 1) * (int)sizeof(*mb)) >> 2;
+		ctx->B4x4_int8[0] = 10 - offB_int8;
+		ctx->B4x4_int8[1] = 11 - offB_int8;
+		ctx->B4x4_int8[4] = 14 - offB_int8;
+		ctx->B4x4_int8[5] = 15 - offB_int8;
+		ctx->absMvd_B[0] = 20 - offB_int8;
+		ctx->absMvd_B[1] = 22 - offB_int8;
+		ctx->absMvd_B[4] = 28 - offB_int8;
+		ctx->absMvd_B[5] = 30 - offB_int8;
+		ctx->mvs_B[0] = 10 - offB_int32;
+		ctx->mvs_B[1] = 11 - offB_int32;
+		ctx->mvs_B[4] = 14 - offB_int32;
+		ctx->mvs_B[5] = 15 - offB_int32;
+		ctx->mvs_C[0] = 11 - offB_int32;
+		ctx->mvs_C[1] = 14 - offB_int32;
+		ctx->mvs_C[4] = 15 - offB_int32;
+		ctx->mvs_D[1] = 10 - offB_int32;
+		ctx->mvs_D[4] = 11 - offB_int32;
+		ctx->mvs_D[5] = 14 - offB_int32;
+		if (ctx->t.ChromaArrayType == 1) {
+			ctx->BCbCr_int8[0] = 2 - offB_int8;
+			ctx->BCbCr_int8[1] = 3 - offB_int8;
+			ctx->BCbCr_int8[4] = 6 - offB_int8;
+			ctx->BCbCr_int8[5] = 7 - offB_int8;
+		} else if (ctx->t.ChromaArrayType == 2) {
+			ctx->BCbCr_int8[0] = 6 - offB_int8;
+			ctx->BCbCr_int8[1] = 7 - offB_int8;
+			ctx->BCbCr_int8[8] = 14 - offB_int8;
+			ctx->BCbCr_int8[9] = 15 - offB_int8;
+		}
+	}
+	if (availC)
+		ctx->mvs_C[5] = 10 - ((w * (int)sizeof(*mb)) >> 2);
+	if (availD)
+		ctx->mvs_D[0] = 15 - (((w + 2) * (int)sizeof(*mb)) >> 2);
+	return !availA | !availB << 1 | !availC << 2 | !availD << 3;
+}
+
+/**
+ * Moves to the next macroblock of the slice group (8.2.2 nextMbAddress), or
+ * returns 0 at the end of the group. The pointers that parse_slice_data moves
+ * by one macroblock are set from the address, keeping the copies at both
+ * ends of the ring of neighbouring values (see advance_mbc).
+ */
+static noinline int fmo_next_mb(Edge264MvcContext *ctx) {
+	int w = ctx->t.pic_width_in_mbs, size = w * ctx->t.pic_height_in_mbs;
+	int n = ctx->CurrMbAddr + 1;
+	while (n < size && ctx->t.fmo_map[n] != ctx->t.fmo_group)
+		n++;
+	if (n >= size)
+		return 0;
+	Edge264MvcMbCache *e = ctx->_mbc;
+	if (e == ctx->mbc_ring)
+		e[ctx->mbc_ring_size] = *e;
+	if (e == ctx->mbc_ring + ctx->mbc_ring_size - 1)
+		ctx->mbc_ring[-1] = *e;
+	int x = n % w, y = n / w, off = x + y * (w + 1);
+	ctx->CurrMbAddr = n;
+	ctx->mbx = x;
+	ctx->mby = y;
+	ctx->_mb = ctx->t.mb_buffer + off;
+	ctx->mbCol = ctx->t.slice_type == 1 ? ctx->t.mbCol_buffer + off : ctx->_mb;
+	ctx->_mbc = ctx->mbc_ring + off % ctx->mbc_ring_size;
+	ctx->samples_mb[0] = ctx->t.samples_buffers[ctx->currPic] + (x + y * ctx->t.stride[0]) * 16;
+	ctx->samples_mb[1] = ctx->t.samples_buffers[ctx->currPic] + x * 8 + y * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
+	ctx->samples_mb[2] = ctx->samples_mb[1] + (ctx->t.stride[1] >> 1);
+	return 1;
+}
+#endif
+
+
+
 /**
  * This function loops through the macroblocks of a slice, initialising their
  * data and calling parse_{I/P/B}_mb for each one.
@@ -1835,7 +1971,23 @@ static noinline void CAFUNC(parse_slice_data)
 		mbC = mbB + 1;
 		mbD = mbB - 1;
 		int decoded = ctx->CurrMbAddr - ctx->t.first_mb_in_slice;
-		if (decoded <= ctx->t.pic_width_in_mbs + 1) {
+		if (__builtin_expect(ctx->t.fmo_map != NULL, 0)) {
+			int unavail = fmo_neighbours(ctx);
+			if (unavail & ~unavail16x16 & 1)
+				filter_edges &= ~(ctx->t.disable_deblocking_filter_idc >> 1); // A of another slice
+			if (unavail & ~unavail16x16 & 2)
+				filter_edges &= ~ctx->t.disable_deblocking_filter_idc; // B of another slice
+			unavail16x16 |= unavail;
+			if (unavail & 1)
+				mbA = &unavail_mb;
+			if (unavail & 2)
+				mbB = &unavail_mb;
+			if (unavail & 4)
+				mbC = &unavail_mb;
+			if (unavail & 8)
+				mbD = &unavail_mb;
+			ctx->fmo_decoded++;
+		} else if (decoded <= ctx->t.pic_width_in_mbs + 1) {
 			if (decoded == 1) { // A becomes available
 				ctx->A4x4_int8[0] = 5 - (int)sizeof(*mbc);
 				ctx->A4x4_int8[2] = 7 - (int)sizeof(*mbc);
@@ -1969,6 +2121,13 @@ static noinline void CAFUNC(parse_slice_data)
 			if (mb->f.transform_size_8x8_flag)
 				mb->nC_Y_v = (i8x16)((i32x4)mb->nC_Y_v == 0) - -1;
 		#endif
+		// with slice groups, jump to the next macroblock of the group, the slice
+		// ending with the group (the picture is deblocked once complete)
+		if (__builtin_expect(ctx->t.fmo_map != NULL, 0)) {
+			if (!fmo_next_mb(ctx))
+				return;
+			continue;
+		}
 		advance_mbc(ctx);
 		
 		// deblock mbB while in cache, then point to the next macroblock

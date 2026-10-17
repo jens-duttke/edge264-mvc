@@ -359,7 +359,10 @@ static void free_decoder(Edge264MvcDecoder **pdec) {
 		for (int i = 0; i < MAX_FRAMES; i++) {
 			if (dec->samples_buffers[i] != NULL)
 				dec->free_cb(dec->samples_buffers[i], dec->mb_buffers[i], dec->alloc_arg);
+			free(dec->fmo_maps[i]);
 		}
+		for (int i = 0; i < 256; i++)
+			free(dec->pps_slice_group_ids[i]);
 		for (int i = 0; i < MAX_THREADS + 1; i++) {
 			free(dec->mbc_ring_allocs[i]);
 			free(dec->spec_rows_allocs[i]);

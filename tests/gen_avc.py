@@ -373,7 +373,7 @@ def gen_pic_parameter_set(bits, f, pps):
 	bits = bits << 1 | pps.bottom_field_pic_order_in_frame_present_flag
 	num_slice_groups = vars(pps).get("num_slice_groups", 1)
 	bits = gen_ue(bits, num_slice_groups - 1) # num_slice_groups_minus1
-	if num_slice_groups > 1: # FMO (unsupported by the decoder); emit a minimal valid map
+	if num_slice_groups > 1: # FMO; emit a minimal valid map
 		bits = gen_ue(bits, 0) # slice_group_map_type 0 (interleaved)
 		for _ in range(num_slice_groups):
 			bits = gen_ue(bits, 0) # run_length_minus1[i]

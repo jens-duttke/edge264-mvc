@@ -208,3 +208,9 @@ Without the fix this line FAILs.
 Guard SP slices. The first 40 pictures of the ITU conformance streams SP1_BT_A and sp2_bt_b (Extended profile, CAVLC), cut by `tests/gen_stream_prefix.py`; every tenth picture is an SP slice with `sp_for_switch_flag` 0. edge264-mvc reported SP slices as unsupported, and a caller skipping them concealed those pictures and every picture predicted from them. An SP slice parses as a P slice, but its P macroblocks, P_Skip included, do not add a residual to their prediction: every 4x4 block transforms its prediction, adds the scaled levels, requantizes the sum with QS and replaces the prediction with the inverse transform of the result (8.6.1), and the macroblock deblocks as an intra one (8.7.2.1). The pictures hold only P slices, so the output of the prefix is the first 40 frames of the ITU reference.
 
 Without the fix these lines FAIL.
+
+## `fmo_maps.264`
+
+Guards slice groups (FMO). The first 10 pictures of the ITU conformance stream FM1_BT_B (Baseline, CAVLC), cut by `tests/gen_stream_prefix.py`, whose eight PPSs cover the seven slice group map types (8.2.2): interleaved, dispersed, foreground with left-over, box-out, raster scan, wipe and explicit. edge264-mvc reported a PPS with more than one slice group as unsupported, and one with a `pic_parameter_set_id` above 3. A slice of a slice group takes the next macroblock of its group (8.2.2.8), whose neighbours belong to the slice only if they are in the same group and not before its first macroblock, and the picture is deblocked once all its macroblocks are decoded, as its slices interleave. The hash is anchored to the JM reference decoder, whose output for it is the first 10 frames of the ITU reference.
+
+Without the fix this line FAILs.

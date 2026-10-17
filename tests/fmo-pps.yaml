@@ -1,4 +1,4 @@
---- # A PPS declaring FMO (num_slice_groups > 1) must return ENOTSUP, not EBADMSG
+--- # A PPS declaring FMO (num_slice_groups > 1, with a slice group map of type 0) is parsed whole and accepted
 
 - nal_ref_idc: 3
   nal_unit_type: 7 # Sequence parameter set
@@ -19,7 +19,7 @@
   pic_parameter_set_id: 0
   entropy_coding_mode_flag: 0 # CAVLC
   bottom_field_pic_order_in_frame_present_flag: 0
-  num_slice_groups: 2 # FMO -> unsupported (must be reported ENOTSUP, not EBADMSG)
+  num_slice_groups: 2 # FMO
   num_ref_idx_default_active: {l0: 1, l1: 1}
   weighted_pred_flag: 0 # average
   weighted_bipred_idc: 0 # average

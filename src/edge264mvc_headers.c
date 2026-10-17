@@ -263,6 +263,19 @@ static void flush_frames(Edge264MvcDecoder *dec) {
 		progress_or_wait(dec);
 }
 
+// Gives every macroblock of a slot the flip bit of the picture it holds, as
+// decoding or concealing all of them does, so that the next picture in the slot,
+// which flips the bit, finds none of them claimed (see parse_slice_data).
+static void settle_recovery_bits(Edge264MvcDecoder *dec, int id) {
+	int8_t flip = dec->frame_flip_bits >> id & 1;
+	Edge264MvcMacroblock *m = dec->mb_buffers[id];
+	int width = dec->sps.pic_width_in_mbs;
+	for (int row = 0; row < dec->sps.pic_height_in_mbs * (width + 1); row += width + 1) {
+		for (int x = row; x < row + width; x++)
+			m[x].recovery_bits = (m[x].recovery_bits & ~1) | flip;
+	}
+}
+
 // Returns ENOMEM if the memory could not be allocated, which no number of
 // frames received would change (AGAIN would promise that).
 static int alloc_frame(Edge264MvcDecoder *dec, int id) {
@@ -2351,13 +2364,17 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 			} else {
 				memset(dec->samples_buffers[i], 0, dec->plane_size_Y + dec->plane_size_C);
 			}
+			// the frame is complete, so its macroblocks get its flip bit, though
+			// the picture before it in the slot may have left them another one
+			// (see settle_recovery_bits)
 			Edge264MvcMacroblock *m = dec->mb_buffers[i];
 			int width = dec->sps.pic_width_in_mbs;
+			int8_t flip = dec->frame_flip_bits >> i & 1;
 			for (int row = 0; row < dec->sps.pic_height_in_mbs * (width + 1); row += width + 1) {
 				for (int x = row; x < row + width; x++) {
 					int8_t recovery_bits = m[x].recovery_bits;
 					m[x] = unavail_mb;
-					m[x].recovery_bits = recovery_bits;
+					m[x].recovery_bits = (recovery_bits & ~1) | flip;
 				}
 			}
 			prev = i;
@@ -2404,6 +2421,14 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		dec->frame_pts[currPic] = dec->in_pts;
 		dec->frame_user_data[currPic] = dec->in_user_data;
 		dec->non_base_frames = dec->non_base_frames & ~((FrameMask)1 << currPic) | (FrameMask)non_base_view << currPic;
+		// A picture left in this slot neither decoded nor concealed (one whose
+		// slice header was rejected once it had the slot, for instance) kept the
+		// flip bit of the picture before it in its macroblocks, which flipping the
+		// bit again made look decoded already, so that this picture skipped them:
+		// a slice lost single-threaded, and multithreaded only when the timing
+		// gave it that slot. Settle them first.
+		if (__atomic_load_n(&dec->next_deblock_addr[currPic], __ATOMIC_ACQUIRE) != INT_MAX)
+			settle_recovery_bits(dec, currPic);
 		dec->frame_flip_bits ^= (FrameMask)1 << currPic;
 		dec->FrameIds[currPic] = ++dec->prevFrameId;
 		dec->FrameNums[currPic] = dec->FrameNum;

@@ -9,7 +9,7 @@ edge264-mvc is derived from [edge264](https://github.com/tvlabs/edge264) by Thib
 ## Why edge264-mvc
 
 - **3D Blu-ray decoding that works end to end** - both eye views of every picture, paired and in display order, tested on complete commercial 3D Blu-ray films.
-- **Fast** - consecutive pictures are decoded in parallel on all cores: on an 8-core CPU, 1080p video decodes about 4 times as fast with all cores as with one. On a single core, edge264-mvc is 3% to 24% faster than edge264, depending on CPU and compiler. edge264's multithreading is an experimental feature that does not work, and edge264 itself fails on 3D Blu-ray and 4K video, even on one core.
+- **Fast** - consecutive pictures are decoded in parallel on all cores: on an 8-core CPU, 1080p video decodes about 4 times as fast with all cores as with one. On a single core, edge264-mvc is faster than edge264 as well, from slightly to about 20% faster, depending on CPU and compiler. edge264's multithreading is an experimental feature that does not work, and edge264 itself fails on 3D Blu-ray and 4K video, even on one core.
 - **Robust on damaged streams** - missing or damaged parts are concealed and decoding continues. The decoder is fuzzed under AddressSanitizer and UndefinedBehaviorSanitizer, and its threading is checked with ThreadSanitizer.
 - **A small API that is hard to misuse** - send NAL units, receive frames; timestamps travel with their pictures, every frame reports whether part of it was concealed, and the results have the same values on every platform.
 - **Tested on every change** - the output is compared with the ITU reference decoder on the conformance streams, on Linux and Windows, single- and multithreaded, and the decoder runs under the sanitizers and a fuzzer.
@@ -20,7 +20,7 @@ See [IMPROVEMENTS.md](IMPROVEMENTS.md) for everything that edge264-mvc changes o
 
 ![Single-threaded decoding time](README-benchmark-1T.svg)
 
-*Decoding time of the [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4) (2D, 1080p), the fastest of 10 runs on GitHub-hosted runners, once with all cores (the default) and once on one core. A red cross marks a decoder without a multithreaded result: OpenH264's decoder has no multithreading, and the experimental multithreading of the original edge264 (at a fixed commit) hangs on this video. The runners have only a few cores, so a many-core machine gains more from multithreading.*
+*Decoding time of the [Big Buck Bunny test video](https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4) (2D, 1080p), the fastest of 10 runs on GitHub-hosted runners, once with all cores (the default) and once on one core. A red cross marks a decoder without a multithreaded result: OpenH264's decoder has no multithreading, and the experimental multithreading of the original edge264 (at a fixed commit) hangs on this video. The runners are shared virtual machines with only a few cores: their times vary by several percent from run to run, and a many-core machine gains more from multithreading.*
 
 
 ## Supported streams and platforms

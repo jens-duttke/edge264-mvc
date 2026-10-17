@@ -125,7 +125,11 @@ static int bump_frame(Edge264MvcDecoder *dec, int non_base_view, FrameMask ignor
 			if (!paired)
 				continue;
 		}
-		if (dec->FieldOrderCnt[0][i] < lowest_poc)
+		// pictures with the same POC (a damaged stream) come out in decoding
+		// order, rather than in the order of their slots, which depends on the
+		// thread timing
+		if (pic < 0 || dec->FieldOrderCnt[0][i] < lowest_poc ||
+			(dec->FieldOrderCnt[0][i] == lowest_poc && dec->FrameIds[i] < dec->FrameIds[pic]))
 			lowest_poc = dec->FieldOrderCnt[0][pic = i];
 	}
 	if (pic < 0)

@@ -91,7 +91,7 @@ def run_dump(exe: Path, fixture: Path, mode: str, timeout: float) -> bytes:
     label = f"{fixture.name} {mode} dump"
     try:
         completed = subprocess.run(
-            [str(exe), str(fixture), mode, "-o", "-k"],
+            [str(exe), str(fixture), mode, "-o"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
@@ -110,9 +110,9 @@ def run_dump(exe: Path, fixture: Path, mode: str, timeout: float) -> bytes:
             f"{label} did not finish as a passing decode\n"
             f"stderr:\n{completed.stderr.decode(errors='replace')}"
         )
-    # -k also skips corrupt NALs (EBADMSG) and still reports a passing decode.
-    # These fixtures miss slices but every NAL they carry is valid, so a skip
-    # here is a decoder regression, not stream damage.
+    # Without a YUV pair the tool also skips corrupt NALs (EBADMSG) and still
+    # reports a passing decode. These fixtures miss slices but every NAL they
+    # carry is valid, so a skip here is a decoder regression, not stream damage.
     if b"skipped corrupt NAL unit" in completed.stderr:
         raise RuntimeError(
             f"{label} skipped a corrupt NAL unit on a stream without one\n"
@@ -153,7 +153,7 @@ def run_corrupt_slice(exe: Path, fixture: Path, mode: str, stdin: bool, timeout:
     label = f"{fixture.name} {mode} {'stdin' if stdin else 'regular'}"
     try:
         completed = subprocess.run(
-            [str(exe), "-" if stdin else str(fixture), mode, "-O", "-k"],
+            [str(exe), "-" if stdin else str(fixture), mode, "-O"],
             input=fixture.read_bytes() if stdin else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

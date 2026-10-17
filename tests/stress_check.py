@@ -38,7 +38,7 @@ def decode(tool: str, exes: dict, fixture: Path, threads, timeout: float):
     env.pop("EDGE264MVC_THREADS", None)
     if tool == "test":
         # edge264mvc_test: -s single-threaded, -m with EDGE264MVC_THREADS or auto
-        command = [str(exes[tool]), str(fixture), "-s" if threads == "1" else "-m", "-y", "-k", "-O"]
+        command = [str(exes[tool]), str(fixture), "-s" if threads == "1" else "-m", "-y", "-O"]
         if threads not in (None, "1"):
             env["EDGE264MVC_THREADS"] = threads
     else:

@@ -98,7 +98,7 @@ ffmpeg -i vid.mp4 -vcodec copy -bsf h264_mp4toannexb -an vid.264 # optional, con
 ./edge264mvc_test movie.264 -O | ffmpeg -i - -c:v libx264 -crf 18 -x264opts frame-packing=3 out_sbs3d.mp4
 ```
 
-Real 3D Blu-rays carry per-access-unit unspecified NALs (type 24) that the decoder reports as unsupported; add `-k` so the decode runs to the end instead of stopping at the first one (`-ok` / `-Ok`). The frame rate is taken from the stream's VUI and can be overridden downstream (`ffmpeg -r ...`).
+Like a player, the tool skips the NAL units it cannot use, such as the unspecified type-24 units in every access unit of a 3D Blu-ray, and damaged ones, whose pictures are concealed; `-e` stops at the first such NAL unit instead. The frame rate is taken from the stream's VUI and can be overridden downstream (`ffmpeg -r ...`).
 
 The input path can also be `-` to read an Annex B stream from standard input, so a demuxer can pipe straight into the decoder without a temporary file (`demux ... | edge264mvc_test - -O | ffmpeg -i - ...`); on POSIX a named pipe (FIFO) path works the same way. Stream input is buffered one NAL unit at a time (capped at 64 MiB), while regular files stay on the memory-mapped fast path.
 

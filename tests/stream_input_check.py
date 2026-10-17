@@ -53,8 +53,9 @@ THREADS = (((), "auto"), (("-s",), "single"))
 
 
 def assert_no_corrupt_nal_skipped(label: str, stderr: bytes) -> None:
-    # -k also skips corrupt NALs (EBADMSG) and still exits 0. These fixtures are
-    # valid streams, so a skip here is a decoder regression, not stream damage.
+    # Without a YUV pair the tool also skips corrupt NALs (EBADMSG) and still
+    # exits 0. These fixtures are valid streams, so a skip here is a decoder
+    # regression, not stream damage.
     if b"skipped corrupt NAL unit" in stderr:
         raise RuntimeError(
             f"{label} skipped a corrupt NAL unit on a valid stream\n"
@@ -149,7 +150,7 @@ def edge264mvc_argv(
     mode: str,
     thread_args: Sequence[str],
 ) -> List[str]:
-    return [str(exe), source, mode, "-k", "-y", *thread_args]
+    return [str(exe), source, mode, "-y", *thread_args]
 
 
 def run_fifo(

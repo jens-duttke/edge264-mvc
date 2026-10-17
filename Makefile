@@ -652,8 +652,12 @@ ifeq ($(OS),linux)
 	  test $$? -eq 1 || { echo "edge264mvc_test results check FAILED (a missing file did not FAIL)"; exit 1; }
 	$(Q)$(TIMEOUT) ./edge264mvc_test_stall tests/conformance/manifest.txt > /dev/null 2>&1; \
 	  test $$? -eq 1 || { echo "edge264mvc_test results check FAILED (a file without the .264 suffix did not FAIL)"; exit 1; }
-	$(Q)$(TIMEOUT) ./edge264mvc_test$(EXE) -y tests/conformance/2d-synthetic/aux_picture.264 2>&1 | grep -q "1 .*PASS.*, 0 .*UNSUPPORTED" || \
+	$(Q)$(TIMEOUT) ./edge264mvc_test$(EXE) -e -y tests/conformance/2d-synthetic/aux_picture.264 2>&1 | grep -q "1 .*PASS.*, 0 .*UNSUPPORTED" || \
 	  { echo "edge264mvc_test results check FAILED (the NAL units of an auxiliary picture were not ignored)"; exit 1; }
+	$(Q){ printf '\000\000\001\030\200'; cat tests/conformance/2d/CABA3_Sony_C.264; } | $(TIMEOUT) ./edge264mvc_test$(EXE) -y - 2>&1 | grep -q "1 .*PASS.*, 0 .*UNSUPPORTED" || \
+	  { echo "edge264mvc_test results check FAILED (an unspecified NAL unit was not skipped)"; exit 1; }
+	$(Q){ printf '\000\000\001\030\200'; cat tests/conformance/2d/CABA3_Sony_C.264; } | $(TIMEOUT) ./edge264mvc_test$(EXE) -e -y - 2>&1 | grep -q "0 .*PASS.*, 1 .*UNSUPPORTED" || \
+	  { echo "edge264mvc_test results check FAILED (-e did not stop at an unspecified NAL unit)"; exit 1; }
 	$(Q)echo "edge264mvc_test results check PASS"
 endif
 

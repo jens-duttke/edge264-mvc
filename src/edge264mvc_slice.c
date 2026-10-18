@@ -2017,6 +2017,28 @@ static noinline void CAFUNC(parse_slice_data)
 		}
 		if (ctx->CurrMbAddr >= ctx->t.mb_bound)
 			return;
+		// reason: the claim is the first write to the macroblock, whose cache lines
+		// another thread usually wrote last, so fetch those of the next one into
+		// L2 ahead of it (into L1 they displaced data of CABAC-heavy macroblocks)
+		for (int l = 0; l < (int)sizeof(*mb); l += 64)
+			__builtin_prefetch((char *)(mb + 1) + l, 0, 2);
+		// reason: the samples a picture writes were last used by an older picture
+		// in its slot and have mostly left the caches, and every first write to a
+		// cache line waited for it to be read, so fetch the rows of the next 64
+		// bytes of samples into L2 whenever a macroblock starts 64 bytes of them
+		// (every 4 macroblocks for 8-bit luma, 8 for chroma)
+		if (!(ctx->mbx * ctx->t.mbw_Y & 63)) {
+			const char *p = (const char *)ctx->samples_mb[0] + 64;
+			for (int y = 0; y < 16; y++)
+				__builtin_prefetch(p + y * ctx->t.stride[0], 1, 2);
+		}
+		if (!(ctx->mbx * ctx->t.mbw_C & 63)) {
+			const char *p = (const char *)ctx->samples_mb[1] + 64;
+			for (int y = 0; y < ctx->t.mb_height_C; y++) {
+				__builtin_prefetch(p + y * ctx->t.stride[1], 1, 2);
+				__builtin_prefetch(p + y * ctx->t.stride[1] + ctx->t.stride_Cr, 1, 2);
+			}
+		}
 		int prev_recovery_bits = __atomic_exchange_n(&mb->recovery_bits, ctx->t.frame_flip_bit, __ATOMIC_ACQ_REL);
 		if (prev_recovery_bits == ctx->t.frame_flip_bit && !claim_after_older_slices(ctx))
 			return;

@@ -32,6 +32,8 @@ Measured on an 8-core / 16-thread laptop CPU, by running the old and new build s
 | Use Windows' slim reader/writer locks and condition variables for the decoder's locks instead of winpthreads, which waits on kernel events | 2% to 8% faster on Windows, with about a fifth less time spent in the kernel |
 | Add an x86-64-v4 (AVX-512) variant to the runtime dispatch (`VARIANTS=x86-64-v4`), whose encoding gives the 128-bit vector code 32 registers and three-input logic operations | 2% faster single-threaded on 1080p and 3% to 4% on 4K, 1% with 16 threads, MVC unchanged |
 | Keep the CABAC range and offset in registers through the loops over the coefficients of a residual block (`get_ae_regs`), instead of storing and reloading them for every bin | 1% faster on MVC with 16 threads, 0.5% single-threaded |
+| Prefetch the values of the next macroblock into L2 before claiming the current one, whose first write waited for cache lines another thread had written last | 3.5% faster on 1080p and 6% on 4K with 16 threads, 2% single-threaded on 4K |
+| Prefetch the next 64 bytes of each row of samples a picture writes, since the older picture in its slot has mostly left the caches and every first write to a cache line waited for it to be read | 7% faster single-threaded on MVC and 1080p and 9% on 4K, with 7% to 10% less CPU time on 2 threads and 1.5% to 3% faster with 16 threads |
 
 ## MVC / stereo correctness
 

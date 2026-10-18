@@ -835,13 +835,14 @@ static int spec_rows(Edge264MvcContext *c, int slot, int restore) {
 	Edge264MvcDecoder *dec = c->d;
 	int width = c->t.pic_width_in_mbs;
 	int y = c->t.first_mb_in_slice / width, x = c->t.first_mb_in_slice % width;
+	int hC = c->t.mb_height_C; // the chroma rows of a macroblock, 16 in 4:2:2
 	struct { size_t offset, stride; int lines, from, to; } parts[6] = {
 		{0, c->t.stride[0], y > 0 ? 4 : 0, x * 16, width * 16}, // luma above
 		{0, c->t.stride[0], 16, 0, x * 16}, // luma before
 		{c->t.plane_size_Y, c->t.stride[1], y > 0 ? 2 : 0, x * 8, width * 8}, // Cb above
-		{c->t.plane_size_Y, c->t.stride[1], 8, 0, x * 8}, // Cb before
+		{c->t.plane_size_Y, c->t.stride[1], hC, 0, x * 8}, // Cb before
 		{c->t.plane_size_Y + (c->t.stride[1] >> 1), c->t.stride[1], y > 0 ? 2 : 0, x * 8, width * 8}, // Cr above
-		{c->t.plane_size_Y + (c->t.stride[1] >> 1), c->t.stride[1], 8, 0, x * 8}, // Cr before
+		{c->t.plane_size_Y + (c->t.stride[1] >> 1), c->t.stride[1], hC, 0, x * 8}, // Cr before
 	};
 	size_t size = 0;
 	for (int i = 0; i < 6; i++)
@@ -857,7 +858,7 @@ static int spec_rows(Edge264MvcContext *c, int slot, int restore) {
 	}
 	uint8_t *buf = dec->spec_rows_allocs[slot];
 	for (int i = 0; i < 6; i++) {
-		int first_line = (i & 1) ? y * (i < 2 ? 16 : 8) : y * (i < 2 ? 16 : 8) - parts[i].lines;
+		int first_line = (i & 1) ? y * (i < 2 ? 16 : hC) : y * (i < 2 ? 16 : hC) - parts[i].lines;
 		size_t n = parts[i].to - parts[i].from;
 		for (int l = 0; l < parts[i].lines; l++, buf += n) {
 			uint8_t *p = c->t.samples_buffers[c->currPic] + parts[i].offset + (size_t)(first_line + l) * parts[i].stride + parts[i].from;

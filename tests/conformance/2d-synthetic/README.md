@@ -117,6 +117,12 @@ Guards a slice that a worker thread decodes past the start of the next slice bef
 
 Without the wait, or without the restored samples, most multithreaded runs of `slice_overrun_check` differ from the single-threaded output.
 
+## `overrun_reference_422.264`
+
+The same in 4:2:2 (`tests/gen_overrun_reference.py --422`), whose macroblocks also carry chroma DC coefficients, so that deblocking changes chroma samples across slice edges. The samples restored for a slice that ran past its end covered the 8 chroma rows of a 4:2:0 macroblock, while a 4:2:2 one has 16 (`spec_rows`). The hash is the single-threaded decode.
+
+Without the fix, every multithreaded run of `slice_overrun_check` differs from the single-threaded output.
+
 ## `plane_without_d.264`
 
 Guards Intra_16x16 and chroma Plane prediction where the macroblock above-left of the current one (D) is not available. Three 1920x1080 IDR pictures of two slices each (`tests/gen_plane_without_d.py`): the first slice ends with an I_PCM macroblock in the middle of a row, the second one starts after it, and its macroblock one row below that start signals Intra_16x16 Plane prediction for luma and chroma, with its left and upper neighbours in its own slice but its above-left neighbour in the first slice. Plane prediction needs that sample (8.3.3.4, 8.3.4.4), and a macroblock of another slice is not available for intra prediction, so the stream is non-conformant; the JM reference decoder stops on it. The decoder used to select Plane prediction from the availability of the left and upper neighbours alone and read the sample anyway: single-threaded it got the I_PCM sample, with worker threads usually whatever was there before the first slice wrote it, so the output varied from run to run. Plane prediction now falls back to DC prediction from the left and upper neighbours when D is not available, as it already did when one of those is missing. The hash is anchored to the single-threaded decode; FFmpeg reads the sample of the other slice and differs.

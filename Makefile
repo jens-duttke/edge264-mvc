@@ -565,6 +565,7 @@ multi_decoder_check$(EXE): tests/multi_decoder_check.c edge264mvc.h $(LIBNAME)
 .PHONY: check-slice-overrun
 check-slice-overrun: slice_overrun_check$(EXE)
 	$(Q)$(TIMEOUT) ./slice_overrun_check$(EXE) tests/conformance/2d-synthetic/overrun_reference.264 8 300 20
+	$(Q)$(TIMEOUT) ./slice_overrun_check$(EXE) tests/conformance/2d-synthetic/overrun_reference_422.264 8 300 20
 
 slice_overrun_check$(EXE): tests/slice_overrun_check.c edge264mvc.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/slice_overrun_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@

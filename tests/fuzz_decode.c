@@ -7,7 +7,7 @@
  * AddressSanitizer and UndefinedBehaviorSanitizer.
  *
  * Build (clang): see `make fuzz`, then run e.g.
- *   ./fuzz_decode -max_len=262144 -timeout=10 -rss_limit_mb=4096 corpus tests/conformance/2d
+ *   ./fuzz_decode -max_len=262144 -timeout=30 -rss_limit_mb=4096 corpus tests/conformance/2d
  * EDGE264MVC_FUZZ_THREADS sets n_threads (default 1: decode on the calling
  * thread, which keeps every finding reproducible).
  */

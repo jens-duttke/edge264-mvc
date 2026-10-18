@@ -1,0 +1,53 @@
+--- # Monochrome Intra 16x16 macroblocks whose mb_type codes chroma blocks, which 4:0:0 has none of
+
+- nal_ref_idc: 3
+  nal_unit_type: 7 # Sequence parameter set
+  profile_idc: 100 # High
+  constraint_set_flags: [0,0,0,0,0,0]
+  level_idc: 1.0
+  chroma_format_idc: 0 # 4:0:0
+  bit_depth: {luma: 8, chroma: 8}
+  qpprime_y_zero_transform_bypass_flag: 0
+  log2_max_frame_num: 4
+  pic_order_cnt_type: 2
+  max_num_ref_frames: 1
+  gaps_in_frame_num_value_allowed_flag: 0
+  pic_size_in_mbs: {width: 2, height: 1}
+  frame_mbs_only_flag: 1
+  direct_8x8_inference_flag: 1
+
+- nal_ref_idc: 3
+  nal_unit_type: 8 # Picture parameter set
+  pic_parameter_set_id: 0
+  entropy_coding_mode_flag: 0 # CAVLC
+  bottom_field_pic_order_in_frame_present_flag: 0
+  num_slice_groups: 1
+  num_ref_idx_default_active: {l0: 1, l1: 1}
+  weighted_pred_flag: 0 # average
+  weighted_bipred_idc: 0 # average
+  pic_init_qp: 26
+  chroma_qp_index_offset: 0
+  deblocking_filter_control_present_flag: 0
+  constrained_intra_pred_flag: 0
+  redundant_pic_cnt_present_flag: 0
+
+- nal_ref_idc: 3
+  nal_unit_type: 5 # Coded slice of an IDR picture
+  first_mb_in_slice: 0
+  slice_type: 7 # I
+  pic_parameter_set_id: 0
+  frame_num: {bits: 4, absolute: 0}
+  idr_pic_id: 0
+  pic_order_cnt: {type: 2}
+  no_output_of_prior_pics_flag: 0
+  long_term_reference_flag: 0
+  slice_qp_delta: 0
+  macroblocks_cavlc:
+  - mb_type: 11 # Intra 16x16, DC prediction, CodedBlockPatternChroma 2
+    mb_qp_delta: 0
+    coeffLevels:
+    - {nC: 0, c: [5, -3, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}
+  - mb_type: 7 # Intra 16x16, DC prediction, CodedBlockPatternChroma 1
+    mb_qp_delta: 0
+    coeffLevels:
+    - {nC: 0, c: [-4, 0, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}

@@ -1012,6 +1012,11 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 				(mb->f.CodedBlockPatternChromaDC + mb->f.CodedBlockPatternChromaAC) * 4 +
 				mode + (ctxIdx == 17 ? 6 : ctxIdx == 32 ? 24 : 1));
 		#endif
+		// a mb_type coding chroma blocks is not allowed in 4:0:0 (7.4.5), which
+		// has none to parse, as damaged streams code them (as the JM reference
+		// decoder does, the bits are ignored)
+		if (ctx->t.ChromaArrayType == 0)
+			mb->f.CodedBlockPatternChromaDC = mb->f.CodedBlockPatternChromaAC = 0;
 		
 		// decode the samples before parsing residuals
 		// indexed with the availability of A, B and D (bit 2), as Plane prediction

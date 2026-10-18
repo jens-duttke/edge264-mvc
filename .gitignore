@@ -79,6 +79,7 @@
 !tests/conformance/2d-synthetic
 !tests/conformance/2d-synthetic/*.264
 !tests/conformance/2d-synthetic/*.md
+!tests/conformance/2d-synthetic/*.yaml
 !tests/conformance/*.txt
 !tests/conformance/*.md
 !tests/liveness_check.c

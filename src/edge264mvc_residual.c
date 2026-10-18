@@ -168,6 +168,11 @@ static noinline void add_idct4x4(Edge264MvcContext *ctx, int iYCbCr, int DCidx, 
 		*(int32_t *)SADDR(p, 1) = u[1];
 		*(int32_t *)SADDR(p, 2) = u[2];
 		*(int32_t *)SADDR(p, 3) = u[3];
+	} else {
+		int16_t r[16];
+		memcpy(r, &r0, 16);
+		memcpy(r + 8, &r1, 16);
+		hbd_add4x4(p, stride, r, ctx->t.samples_clip[iYCbCr][0]);
 	}
 }
 
@@ -183,6 +188,8 @@ static void add_dc4x4(Edge264MvcContext *ctx, int iYCbCr, int DCidx, uint8_t *p)
 		*(int32_t *)SADDR(p, 1) = u[1];
 		*(int32_t *)SADDR(p, 2) = u[2];
 		*(int32_t *)SADDR(p, 3) = u[3];
+	} else {
+		hbd_add_dc4x4(p, stride, (int16_t)r[0], ctx->t.samples_clip[iYCbCr][0]);
 	}
 }
 
@@ -344,7 +351,19 @@ static void add_idct8x8(Edge264MvcContext *ctx, int iYCbCr, uint8_t *dst0)
 		*(int64_t *)SADDR(dst7, -2) = u2[1];
 		*(int64_t *)SADDR(dst7, -1) = u3[0];
 		*(int64_t *)SADDR(dst7,  0) = u3[1];
-	} // FIXME else 16bit
+	} else {
+		// scaling (8-356, 8-357) in 64 bits, bounded to 2^22 for damaged streams
+		// (valid ones stay within 2^(7 + bitDepth), 8.5.13.1)
+		int32_t d[64]; // by rows
+		const uint8_t *wS = ctx->t.pps.weightScale8x8[iYCbCr * 2 + mb->mbIsInterFlag];
+		for (int k = 0; k < 64; k++) {
+			int64_t LS = wS[k] * normAdjust8x8[qP % 6 * 2 + (k >> 4 & 1)][k & 15];
+			int64_t v = qP >= 36 ? ctx->c[k] * (LS << (qP / 6 - 6)) : (ctx->c[k] * LS + (1 << (5 - qP / 6))) >> (6 - qP / 6);
+			d[(k & 7) * 8 + (k >> 3)] = v < -(1 << 22) ? -(1 << 22) : v > 1 << 22 ? 1 << 22 : v;
+		}
+		memset(ctx->c, 0, 64 * sizeof(*ctx->c));
+		hbd_add_idct8x8(d, dst0, ctx->t.stride[iYCbCr], ctx->t.samples_clip[iYCbCr][0]);
+	}
 }
 
 
@@ -454,6 +473,10 @@ static void transform_dc4x4(Edge264MvcContext *ctx, int iYCbCr)
 			*(i8x16 *)(p + stride    ) = packus16(addlou8s16(pD, lo3), addhiu8s16(pD, hi3));
 			*(i8x16 *)(p + stride * 2) = packus16(addlou8s16(pE, lo3), addhiu8s16(pE, hi3));
 			*(i8x16 *)(p + stride * 3) = packus16(addlou8s16(pF, lo3), addhiu8s16(pF, hi3));
+		} else {
+			i32x4 r[4] = {r0, r1, r2, r3}; // rows of 4x4 blocks
+			for (int i = 0; i < 16; i++)
+				hbd_add_dc4x4(p + (i >> 2) * 4 * stride + (i & 3) * 8, stride, (int16_t)r[i >> 2][i & 3], ctx->t.samples_clip[iYCbCr][0]);
 		}
 	}
 }
@@ -538,6 +561,12 @@ static void transform_dc2x2(Edge264MvcContext *ctx)
 			*(int64_t *)(p + stride    ) = rB[0];
 			*(int64_t *)(p + stride * 2) = bB[1];
 			*(int64_t *)(p + stride * 3) = rB[1];
+		} else {
+			for (int i = 0; i < 4; i++) { // 4x4 blocks in raster order
+				uint8_t *q = p + (i >> 1) * 8 * stride + (i & 1) * 8;
+				hbd_add_dc4x4(q, stride * 2, (int16_t)rb[i], ctx->t.samples_clip[1][0]);
+				hbd_add_dc4x4(q + stride, stride * 2, (int16_t)rr[i], ctx->t.samples_clip[2][0]);
+			}
 		}
 	}
 }

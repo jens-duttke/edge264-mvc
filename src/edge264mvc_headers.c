@@ -4,6 +4,7 @@ static noinline int claim_after_older_slices(Edge264MvcContext *ctx);
 static void ack_mb_bound(Edge264MvcDecoder *dec, int task_id, int pic);
 
 #include "edge264mvc_bitstream.c"
+#include "edge264mvc_hbd.c"
 #include "edge264mvc_deblock.c"
 #include "edge264mvc_inter.c"
 #include "edge264mvc_intra.c"
@@ -301,8 +302,15 @@ static int alloc_frame(Edge264MvcDecoder *dec, int id) {
 	dec->alloc_cb((void **)&dec->samples_buffers[id], samples_size, (void **)&dec->mb_buffers[id], mbs_size, dec->alloc_arg);
 	Edge264MvcMacroblock *m = dec->mb_buffers[id];
 	if (dec->samples_buffers[id] && m) {
-		if (dec->sps.ChromaArrayType == 0) // never written, see the frame format in parse_seq_parameter_set
-			memset(dec->samples_buffers[id] + dec->plane_size_Y, 1 << (dec->sps.BitDepth_C - 1), dec->plane_size_C);
+		if (dec->sps.ChromaArrayType == 0) { // never written, see the frame format in parse_seq_parameter_set
+			if (dec->sps.BitDepth_C == 8) {
+				memset(dec->samples_buffers[id] + dec->plane_size_Y, 128, dec->plane_size_C);
+			} else {
+				uint16_t *c = (uint16_t *)(dec->samples_buffers[id] + dec->plane_size_Y);
+				for (unsigned i = 0; i < dec->plane_size_C / 2; i++)
+					c[i] = 1 << (dec->sps.BitDepth_C - 1);
+			}
+		}
 		for (int i = 0; i < guard; i++)
 			m[i] = unavail_mb;
 		m = dec->mb_buffers[id] = m + guard;
@@ -392,8 +400,8 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 	ctx->CurrMbAddr = ctx->t.first_mb_in_slice;
 	ctx->mby = (unsigned)ctx->t.first_mb_in_slice / (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->mbx = (unsigned)ctx->t.first_mb_in_slice % (unsigned)ctx->t.pic_width_in_mbs;
-	ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + (ctx->mbx + ctx->mby * ctx->t.stride[0]) * 16;
-	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + ctx->mbx * 8 + ctx->mby * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
+	ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + ctx->mbx * ctx->t.mbw_Y + ctx->mby * ctx->t.stride[0] * 16;
+	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + ctx->mbx * ctx->t.mbw_C + ctx->mby * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
 	ctx->samples_mb[2] = ctx->samples_mb[1] + (ctx->t.stride[1] >> 1);
 	int mb_offset = ctx->mbx + ctx->mby * (ctx->t.pic_width_in_mbs + 1);
 	ctx->mbCol = ctx->_mb = ctx->t.mb_buffer + mb_offset;
@@ -415,14 +423,25 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 		memset(ctx->sp_levels, 0, sizeof(ctx->sp_levels));
 		memset(ctx->sp_levels_dc, 0, sizeof(ctx->sp_levels_dc));
 	}
-	ctx->QP_C_v[0] = loadu128(QP_Y2C + 12 + ctx->t.pps.chroma_qp_index_offset);
-	ctx->QP_C_v[1] = loadu128(QP_Y2C + 28 + ctx->t.pps.chroma_qp_index_offset);
-	ctx->QP_C_v[2] = loadu128(QP_Y2C + 44 + ctx->t.pps.chroma_qp_index_offset);
-	ctx->QP_C_v[3] = loadu128(QP_Y2C + 60 + ctx->t.pps.chroma_qp_index_offset);
-	ctx->QP_C_v[4] = loadu128(QP_Y2C + 12 + ctx->t.pps.second_chroma_qp_index_offset);
-	ctx->QP_C_v[5] = loadu128(QP_Y2C + 28 + ctx->t.pps.second_chroma_qp_index_offset);
-	ctx->QP_C_v[6] = loadu128(QP_Y2C + 44 + ctx->t.pps.second_chroma_qp_index_offset);
-	ctx->QP_C_v[7] = loadu128(QP_Y2C + 60 + ctx->t.pps.second_chroma_qp_index_offset);
+	if (ctx->t.QpBdOffset_Y | ctx->t.QpBdOffset_C) {
+		// QP'C of each QP'Y (8.5.8 and Table 8-15), from qPI = Clip3(-QpBdOffsetC, 51, QPY + offset)
+		for (int c = 0; c < 2; c++) {
+			int offset = c ? ctx->t.pps.second_chroma_qp_index_offset : ctx->t.pps.chroma_qp_index_offset;
+			for (int q = 0; q < 64; q++) {
+				int qPI = clip3(-ctx->t.QpBdOffset_C, 51, q - ctx->t.QpBdOffset_Y + offset);
+				ctx->QP_C[c][q] = (qPI < 0 ? qPI : QP_Y2C[12 + qPI]) + ctx->t.QpBdOffset_C;
+			}
+		}
+	} else {
+		ctx->QP_C_v[0] = loadu128(QP_Y2C + 12 + ctx->t.pps.chroma_qp_index_offset);
+		ctx->QP_C_v[1] = loadu128(QP_Y2C + 28 + ctx->t.pps.chroma_qp_index_offset);
+		ctx->QP_C_v[2] = loadu128(QP_Y2C + 44 + ctx->t.pps.chroma_qp_index_offset);
+		ctx->QP_C_v[3] = loadu128(QP_Y2C + 60 + ctx->t.pps.chroma_qp_index_offset);
+		ctx->QP_C_v[4] = loadu128(QP_Y2C + 12 + ctx->t.pps.second_chroma_qp_index_offset);
+		ctx->QP_C_v[5] = loadu128(QP_Y2C + 28 + ctx->t.pps.second_chroma_qp_index_offset);
+		ctx->QP_C_v[6] = loadu128(QP_Y2C + 44 + ctx->t.pps.second_chroma_qp_index_offset);
+		ctx->QP_C_v[7] = loadu128(QP_Y2C + 60 + ctx->t.pps.second_chroma_qp_index_offset);
+	}
 	ctx->t.QP[1] = ctx->QP_C[0][ctx->t.QP[0]];
 	ctx->t.QP[2] = ctx->QP_C[1][ctx->t.QP[0]];
 	for (int i = 1; i < 4; i++) {
@@ -533,8 +552,8 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 	// mark all previous mbs as erroneous and assign them an error probability
 	ctx->mby = (unsigned)ctx->t.first_mb_in_slice / (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->mbx = (unsigned)ctx->t.first_mb_in_slice % (unsigned)ctx->t.pic_width_in_mbs;
-	ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + (ctx->mbx + ctx->mby * ctx->t.stride[0]) * 16;
-	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + ctx->mbx * 8 + ctx->mby * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
+	ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + ctx->mbx * ctx->t.mbw_Y + ctx->mby * ctx->t.stride[0] * 16;
+	ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + ctx->mbx * ctx->t.mbw_C + ctx->mby * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
 	ctx->samples_mb[2] = ctx->samples_mb[1] + (ctx->t.stride[1] >> 1);
 	int mb_offset = ctx->mbx + ctx->mby * (ctx->t.pic_width_in_mbs + 1);
 	ctx->_mb = ctx->t.mb_buffer + mb_offset;
@@ -554,7 +573,9 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 		// FIXME use Intra function instead
 		// reason: an I macroblock without error weight keeps its samples, and the
 		// blend could not express it on SSE, whose signed 8-bit weights stop at 127
-		if (ctx->t.slice_type == 2 && p128 > 0) { // I slice -> blend with intra DC
+		// (the blend is for 8-bit samples, those of 9 and 10 bits keep theirs, and an
+		// I slice never takes the P/B recovery below, which needs references)
+		if (ctx->t.slice_type == 2 && p128 > 0 && !ctx->t.px_shift) { // I slice -> blend with intra DC
 			size_t stride_Y = ctx->t.stride[0];
 			DECL_SSTRIDE(stride_Y);
 			uint8_t * restrict y0 = ctx->samples_mb[0];
@@ -652,7 +673,7 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 			*(int64_t *)DADDR(cE,  0) = v7[0];
 			*(int64_t *)DADDR(cE,  1) = v7[1];
 			}
-		} else if (i > 0 && p128 >= 32) { // recover above 25% error (arbitrary)
+		} else if (ctx->t.slice_type != 2 && i > 0 && p128 >= 32) { // recover above 25% error (arbitrary)
 			if (ctx->t.slice_type == 0) { // P slice -> P_Skip
 				mb->nC_Y_v = (i8x16){};
 				// reason: decode_P_skip relies on the refIdx the P macroblock parser
@@ -673,17 +694,17 @@ static void recover_slice(Edge264MvcContext *ctx, int currPic, int keep_mb) {
 		ctx->_mb++;
 		ctx->mbx++;
 		ctx->mbCol++;
-		ctx->samples_mb[0] += 16;
-		ctx->samples_mb[1] += 8;
-		ctx->samples_mb[2] += 8;
+		ctx->samples_mb[0] += ctx->t.mbw_Y;
+		ctx->samples_mb[1] += ctx->t.mbw_C;
+		ctx->samples_mb[2] += ctx->t.mbw_C;
 		if (ctx->mbx >= ctx->t.pic_width_in_mbs) {
 			ctx->_mb++;
 			ctx->mbx = 0;
 			ctx->mby++;
 			ctx->mbCol++;
-			ctx->samples_mb[0] += ctx->t.stride[0] * 16 - ctx->t.pic_width_in_mbs * 16;
-			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
-			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
+			ctx->samples_mb[0] += ctx->t.stride[0] * 16 - ctx->t.pic_width_in_mbs * ctx->t.mbw_Y;
+			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * ctx->t.mbw_C;
+			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * ctx->t.mbw_C;
 		}
 	}
 }
@@ -710,23 +731,23 @@ static void deblock_range(Edge264MvcContext *c, int currPic, int from, int to) {
 		return;
 	c->mby = (unsigned)from / (unsigned)c->t.pic_width_in_mbs;
 	c->mbx = (unsigned)from % (unsigned)c->t.pic_width_in_mbs;
-	c->samples_mb[0] = c->t.samples_buffers[currPic] + (c->mbx + c->mby * c->t.stride[0]) * 16;
-	c->samples_mb[1] = c->t.samples_buffers[currPic] + c->mbx * 8 + c->mby * c->t.stride[1] * c->t.mb_height_C + c->t.plane_size_Y;
+	c->samples_mb[0] = c->t.samples_buffers[currPic] + c->mbx * c->t.mbw_Y + c->mby * c->t.stride[0] * 16;
+	c->samples_mb[1] = c->t.samples_buffers[currPic] + c->mbx * c->t.mbw_C + c->mby * c->t.stride[1] * c->t.mb_height_C + c->t.plane_size_Y;
 	c->samples_mb[2] = c->samples_mb[1] + (c->t.stride[1] >> 1);
 	c->_mb = (Edge264MvcMacroblock *)c->t.mb_buffer + c->mbx + c->mby * (c->t.pic_width_in_mbs + 1);
 	for (int addr = from; addr < to; addr++) {
 		deblock_mb(c);
 		c->_mb++;
 		c->mbx++;
-		c->samples_mb[0] += 16;
-		c->samples_mb[1] += 8;
-		c->samples_mb[2] += 8;
+		c->samples_mb[0] += c->t.mbw_Y;
+		c->samples_mb[1] += c->t.mbw_C;
+		c->samples_mb[2] += c->t.mbw_C;
 		if (c->mbx >= c->t.pic_width_in_mbs) {
 			c->_mb++;
 			c->mbx = 0;
-			c->samples_mb[0] += c->t.stride[0] * 16 - c->t.pic_width_in_mbs * 16;
-			c->samples_mb[1] += c->t.stride[1] * c->t.mb_height_C - c->t.pic_width_in_mbs * 8;
-			c->samples_mb[2] += c->t.stride[1] * c->t.mb_height_C - c->t.pic_width_in_mbs * 8;
+			c->samples_mb[0] += c->t.stride[0] * 16 - c->t.pic_width_in_mbs * c->t.mbw_Y;
+			c->samples_mb[1] += c->t.stride[1] * c->t.mb_height_C - c->t.pic_width_in_mbs * c->t.mbw_C;
+			c->samples_mb[2] += c->t.stride[1] * c->t.mb_height_C - c->t.pic_width_in_mbs * c->t.mbw_C;
 		}
 	}
 }
@@ -835,14 +856,16 @@ static int spec_rows(Edge264MvcContext *c, int slot, int restore) {
 	Edge264MvcDecoder *dec = c->d;
 	int width = c->t.pic_width_in_mbs;
 	int y = c->t.first_mb_in_slice / width, x = c->t.first_mb_in_slice % width;
-	int hC = c->t.mb_height_C; // the chroma rows of a macroblock, 16 in 4:2:2
+	// in bytes, with the macroblock rows of the chroma planes of 4:2:2 and the
+	// samples of 16 bits above 8 bits
+	int wY = c->t.mbw_Y, wC = c->t.mbw_C, hC = c->t.mb_height_C;
 	struct { size_t offset, stride; int lines, from, to; } parts[6] = {
-		{0, c->t.stride[0], y > 0 ? 4 : 0, x * 16, width * 16}, // luma above
-		{0, c->t.stride[0], 16, 0, x * 16}, // luma before
-		{c->t.plane_size_Y, c->t.stride[1], y > 0 ? 2 : 0, x * 8, width * 8}, // Cb above
-		{c->t.plane_size_Y, c->t.stride[1], hC, 0, x * 8}, // Cb before
-		{c->t.plane_size_Y + (c->t.stride[1] >> 1), c->t.stride[1], y > 0 ? 2 : 0, x * 8, width * 8}, // Cr above
-		{c->t.plane_size_Y + (c->t.stride[1] >> 1), c->t.stride[1], hC, 0, x * 8}, // Cr before
+		{0, c->t.stride[0], y > 0 ? 4 : 0, x * wY, width * wY}, // luma above
+		{0, c->t.stride[0], 16, 0, x * wY}, // luma before
+		{c->t.plane_size_Y, c->t.stride[1], y > 0 ? 2 : 0, x * wC, width * wC}, // Cb above
+		{c->t.plane_size_Y, c->t.stride[1], hC, 0, x * wC}, // Cb before
+		{c->t.plane_size_Y + (c->t.stride[1] >> 1), c->t.stride[1], y > 0 ? 2 : 0, x * wC, width * wC}, // Cr above
+		{c->t.plane_size_Y + (c->t.stride[1] >> 1), c->t.stride[1], hC, 0, x * wC}, // Cr before
 	};
 	size_t size = 0;
 	for (int i = 0; i < 6; i++)
@@ -1677,6 +1700,11 @@ static void initialize_task(Edge264MvcDecoder *dec, Edge264MvcSeqParameterSet *s
 	memcpy(&t->gb, &dec->gb, sizeof(dec->gb)); // GCC-14 crashes on dec->out = format
 	t->ChromaArrayType = sps->ChromaArrayType;
 	t->mb_height_C = sps->ChromaArrayType == 2 ? 16 : 8;
+	t->mbw_Y = 16 << (sps->BitDepth_Y > 8);
+	t->mbw_C = 8 << (sps->BitDepth_C > 8);
+	t->px_shift = sps->BitDepth_Y > 8;
+	t->QpBdOffset_Y = 6 * (sps->BitDepth_Y - 8);
+	t->QpBdOffset_C = 6 * (sps->BitDepth_C - 8);
 	t->direct_8x8_inference_flag = sps->direct_8x8_inference_flag;
 	t->pic_width_in_mbs = sps->pic_width_in_mbs;
 	t->pic_height_in_mbs = sps->pic_height_in_mbs;
@@ -1813,20 +1841,21 @@ static int conceal_frame(Edge264MvcDecoder *dec, int id) {
 		// recovery bit 0 matches the picture's), which do not depend on timing
 		if ((m[y * (width + 1) + x].recovery_bits & 1) == (recovery_bits & 1))
 			continue;
-		size_t offY = (size_t)y * 16 * stride_Y + x * 16;
 		int rows_C = dec->sps.ChromaArrayType == 2 ? 16 : 8;
-		size_t offC = dec->plane_size_Y + (size_t)y * rows_C * stride_C + x * 8;
+		int wY = 16 << (dec->sps.BitDepth_Y > 8), wC = 8 << (dec->sps.BitDepth_C > 8); // bytes per macroblock row
+		size_t offY = (size_t)y * 16 * stride_Y + x * wY;
+		size_t offC = dec->plane_size_Y + (size_t)y * rows_C * stride_C + x * wC;
 		for (int r = 0; r < 16; r++, offY += stride_Y) {
 			if (src)
-				memcpy(dst + offY, src + offY, 16);
+				memcpy(dst + offY, src + offY, wY);
 			else
-				memset(dst + offY, 0, 16);
+				memset(dst + offY, 0, wY);
 		}
 		for (int r = 0; r < rows_C * 2 && dec->sps.ChromaArrayType; r++, offC += stride_C >> 1) { // Cb and Cr rows alternate, none to conceal in 4:0:0
 			if (src)
-				memcpy(dst + offC, src + offC, 8);
+				memcpy(dst + offC, src + offC, wC);
 			else
-				memset(dst + offC, 0, 8);
+				memset(dst + offC, 0, wC);
 		}
 		int row = y * (width + 1);
 		m[row + x] = unavail_mb;
@@ -2130,14 +2159,14 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	// An SP slice is parsed as a P slice, whose P macroblocks then decode with
 	// the SP process (8.6.1). That process is implemented for the Extended
 	// profile, which has none of 8x8 transforms, scaling matrices, chroma
-	// formats other than 4:2:0, and of whose features constrained intra
-	// prediction alone would need the P macroblocks told apart from intra ones
-	// after decoding, where they deblock as intra (8.7.2.1).
+	// formats other than 4:2:0 or bit depths above 8, and of whose features
+	// constrained intra prediction alone would need the P macroblocks told
+	// apart from intra ones after decoding, where they deblock as intra (8.7.2.1).
 	t->sp_slice = t->slice_type == 3;
 	if (t->sp_slice) {
 		t->slice_type = 0;
 		if (t->pps.transform_8x8_mode_flag || t->pps.constrained_intra_pred_flag || t->pps.pic_scaling_matrix_present_flag ||
-			sps->seq_scaling_matrix_present_flag || sps->ChromaArrayType != 1)
+			sps->seq_scaling_matrix_present_flag || sps->ChromaArrayType != 1 || sps->BitDepth_Y > 8)
 			return print_dec(dec, "  decode_NAL_result: %s\n", ENOTSUP);
 	}
 	if (!sps->BitDepth_Y || !t->pps.num_ref_idx_active[0])
@@ -2625,8 +2654,11 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		t->cabac_init_idc = 1 + get_ue16(&dec->gb, 2);
 		log_dec(dec, "  cabac_init_idc: %u\n", t->cabac_init_idc - 1);
 	}
-	t->QP[0] = t->pps.QPprime_Y + get_se16(&dec->gb, -t->pps.QPprime_Y, 51 - t->pps.QPprime_Y); // FIXME QpBdOffset
-	log_dec(dec, "  slice_qp_delta: %d\n", t->QP[0] - t->pps.QPprime_Y);
+	// SliceQPY lies in -QpBdOffsetY..51 (7.4.3), kept as QP'Y = SliceQPY + QpBdOffsetY
+	int QpBdOffset_Y = 6 * (sps->BitDepth_Y - 8);
+	int slice_qp_delta = get_se16(&dec->gb, -QpBdOffset_Y - t->pps.QPprime_Y, 51 - t->pps.QPprime_Y);
+	t->QP[0] = t->pps.QPprime_Y + slice_qp_delta + QpBdOffset_Y;
+	log_dec(dec, "  slice_qp_delta: %d\n", slice_qp_delta);
 	if (t->sp_slice) {
 		int sp_for_switch_flag = get_u1(&dec->gb);
 		t->QS_Y = t->pps.QSprime_Y + get_se16(&dec->gb, -t->pps.QSprime_Y, 51 - t->pps.QSprime_Y); // (7-31)
@@ -2982,7 +3014,7 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 	pps.num_ref_idx_active[1] = get_ue16(&dec->gb, 31) + 1;
 	pps.weighted_pred_flag = get_u1(&dec->gb);
 	pps.weighted_bipred_idc = get_uv(&dec->gb, 2);
-	pps.QPprime_Y = get_se16(&dec->gb, -26, 25) + 26; // FIXME QpBdOffset
+	pps.QPprime_Y = get_se16(&dec->gb, -26 - 12, 25) + 26; // 26 + pic_init_qp_minus26, down to -QpBdOffsetY of 10 bits
 	pps.QSprime_Y = get_se16(&dec->gb, -26, 25) + 26;
 	pps.second_chroma_qp_index_offset = pps.chroma_qp_index_offset = get_se16(&dec->gb, -12, 12);
 	pps.deblocking_filter_control_present_flag = get_u1(&dec->gb);
@@ -2991,7 +3023,7 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 	log_dec(dec, "  num_ref_idx_default_active: {l0: %u, l1: %u}\n"
 		"  weighted_pred_flag: %u # %s\n"
 		"  weighted_bipred_idc: %u # %s\n"
-		"  pic_init_qp: %u\n"
+		"  pic_init_qp: %d\n"
 		"  chroma_qp_index_offset: %d\n"
 		"  deblocking_filter_control_present_flag: %u\n"
 		"  constrained_intra_pred_flag: %u\n"
@@ -3412,18 +3444,20 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 			log_dec(dec, "  separate_colour_plane_flag: %u\n",
 				separate_colour_plane_flag);
 		}
+		// 9 and 10 bits are reconstructed in 16 bits (edge264mvc_hbd.c), with
+		// luma and chroma of the same depth
 		sps.BitDepth_Y = 8 + get_ue16(&dec->gb, 6);
-		if (sps.BitDepth_Y > 8)
-			ret = ENOTSUP;
 		sps.BitDepth_C = 8 + get_ue16(&dec->gb, 6);
-		if (sps.BitDepth_C > 8)
+		if (sps.chroma_format_idc == 0) // unused by 4:0:0, whose grey chroma planes take the depth of luma
+			sps.BitDepth_C = sps.BitDepth_Y;
+		if (sps.BitDepth_Y > 10 || sps.BitDepth_C != sps.BitDepth_Y)
 			ret = ENOTSUP;
 		sps.qpprime_y_zero_transform_bypass_flag = get_u1(&dec->gb);
 		if (sps.qpprime_y_zero_transform_bypass_flag)
 			ret = ENOTSUP;
 		log_dec(dec, "  bit_depth: {luma: %u, chroma: %u}%s\n"
 			"  qpprime_y_zero_transform_bypass_flag: %u%s\n",
-			sps.BitDepth_Y, sps.BitDepth_C, unsup_if(sps.BitDepth_Y + sps.BitDepth_C != 16),
+			sps.BitDepth_Y, sps.BitDepth_C, unsup_if(sps.BitDepth_Y > 10 || sps.BitDepth_C != sps.BitDepth_Y),
 			sps.qpprime_y_zero_transform_bypass_flag, unsup_if(sps.qpprime_y_zero_transform_bypass_flag));
 		sps.seq_scaling_matrix_present_flag = get_u1(&dec->gb);
 		if (sps.seq_scaling_matrix_present_flag) {

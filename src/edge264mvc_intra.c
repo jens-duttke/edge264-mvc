@@ -291,6 +291,10 @@
  * Intra 4x4
  */
 static cold noinline void decode_intra4x4(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
+	if (clip[0] > 255) {
+		hbd_intra4x4(p, stride, mode, clip[0]);
+		return;
+	}
 	static const i8x16 shuf[6] = {
 		{0, 1, 2, 3, 1, 2, 3, 4, 2, 3, 4, 5, 3, 4, 5, 6},
 		{3, 4, 5, 6, 2, 3, 4, 5, 1, 2, 3, 4, 0, 1, 2, 3},
@@ -383,6 +387,10 @@ static cold noinline void decode_intra4x4(uint8_t * restrict p, size_t stride, i
  * i being p[-1,-1] or p[-1,0] if unavailable, and j being p[-1,-1] or p[0,-1].
  */
 static cold noinline void decode_intra8x8(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
+	if (clip[0] > 255) {
+		hbd_intra8x8(p, stride, mode, clip[0]);
+		return;
+	}
 	const uint8_t *pT = p - stride;
 	i8x16 i2a, j2s, j2y, k2z, k2r, h2a;
 	i64x2 p0, p1, p2, p3, p4, p5, p6, p7;
@@ -625,6 +633,10 @@ static cold noinline void decode_intra8x8(uint8_t * restrict p, size_t stride, i
  * Intra 16x16
  */
 static cold noinline void decode_intra16x16(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
+	if (clip[0] > 255) {
+		hbd_intra16x16(p, stride, mode, clip[0]);
+		return;
+	}
 	const uint8_t *pT = p - stride;
 	i8x16 pred;
 	switch (mode) {
@@ -690,6 +702,10 @@ static cold noinline void decode_intra16x16(uint8_t * restrict p, size_t stride,
  * Intra Chroma
  */
 static cold noinline void decode_intraChroma(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
+	if (clip[0] > 255) {
+		hbd_intraChroma(p, stride, mode, clip[0], 8);
+		return;
+	}
 	static const i8x16 shufDC = {0, 0, 0, 0, 4, 4, 4, 4, 8, 8, 8, 8, 12, 12, 12, 12};
 	static const i8x16 shufDCA = {0, 0, 0, 0, 12, 12, 12, 12, 0, 0, 0, 0, 12, 12, 12, 12};
 	static const i8x16 shufDCB = {0, 0, 0, 0, 0, 0, 0, 0, 12, 12, 12, 12, 12, 12, 12, 12};
@@ -777,6 +793,10 @@ static cold noinline void decode_intraChroma(uint8_t * restrict p, size_t stride
  * preference that depends on its position (8.3.4.1 to 8.3.4.3).
  */
 static cold noinline void decode_intraChroma422(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
+	if (clip[0] > 255) {
+		hbd_intraChroma(p, stride, mode, clip[0], 16);
+		return;
+	}
 	int availA = mode != IC8x8_DC_A_8 && mode != IC8x8_DC_AB_8;
 	int availB = mode != IC8x8_DC_B_8 && mode != IC8x8_DC_AB_8;
 	int max = clip[0];

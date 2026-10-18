@@ -1244,6 +1244,10 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	// deblocking the macroblock row below may still modify
 	int mby_ref = min(max(yInt_Y + h + 6, 0) >> 4, ctx->t.pic_height_in_mbs - 1);
 	await_frame_progress(ctx, refPic, (mby_ref + 1) * ctx->t.pic_width_in_mbs);
+	if (ctx->t.px_shift) {
+		hbd_decode_inter(ctx, i, w, h);
+		return;
+	}
 	const uint8_t *src_Y = ref + xInt_Y + yInt_Y * ctx->t.stride[0];
 	const uint8_t *src_C = ref + xInt_C + yInt_C * ctx->t.stride[1] + ctx->t.plane_size_Y;
 	size_t sstride_Y = ctx->t.stride[0];

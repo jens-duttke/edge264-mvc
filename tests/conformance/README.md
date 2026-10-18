@@ -24,7 +24,7 @@ compares from the committed `.264` alone.
   128-bit FNV-1a (32 hex chars) over the cropped planes in display order.
 
 Only streams edge264-mvc fully decodes are included; interlaced (field /
-MBAFF / PAFF) streams and those of higher bit depths or 4:4:4 chroma,
+MBAFF / PAFF) streams and those of 4:4:4 chroma or more than 10 bits,
 which the decoder does not support, are deliberately absent.
 
 ## Provenance
@@ -45,7 +45,9 @@ bitstreams only).
   `conformance_check emit`, which decodes a stream and verifies its hash
   equals the hash of the official ITU reference `.yuv` *before* accepting
   the line (it printed `check=OK`). So every committed 2D hash equals the
-  ITU reference output.
+  ITU reference output, except for the vectors whose zip ships no
+  reference `.yuv` (Hi422FR9_SONY_A), which are anchored to the output of
+  the JM reference decoder and say so in `manifest.txt`.
 - **MVC: anchored to the JMVC reference decoder.** The ITU MVC area
   publishes no reference YUVs, so both views of each committed MVC stream
   were checked against the output of JMVC, the MVC reference software

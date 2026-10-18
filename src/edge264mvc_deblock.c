@@ -1003,9 +1003,10 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 	i32x4 qPAB = {(int32_t)mbA->QP_s & 0xffffff, (int32_t)mbB->QP_s & 0xffffff};
 	i8x16 qPav = avgu8(qP, ziplo64(qP, qPAB)); // mid/mid/A/B
 	i8x16 c51 = set8(51);
-	// the offsets of the slice containing the macroblock (8.7.2.2)
-	int FilterOffsetA = ((int8_t)(mb->QP[3] << 4) >> 4) * 2;
-	int FilterOffsetB = ((int8_t)mb->QP[3] >> 4) * 2;
+	// the offsets of the slice containing the macroblock (8.7.2.2), and the
+	// QpBdOffset of QP' (equal for luma and chroma) since qPp is QP (8-461)
+	int FilterOffsetA = ((int8_t)(mb->QP[3] << 4) >> 4) * 2 - ctx->t.QpBdOffset_Y;
+	int FilterOffsetB = ((int8_t)mb->QP[3] >> 4) * 2 - ctx->t.QpBdOffset_Y;
 	// ARM64 can use vsqaddq_u8 here but this is not critical
 	i8x16 indexA = minu8(max8(qPav + set8(FilterOffsetA), zero), c51);
 	i8x16 indexB = minu8(max8(qPav + set8(FilterOffsetB), zero), c51);
@@ -1201,5 +1202,8 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 	}
 	
 	// jump to luma deblocking filter
-	deblock_Y_8bit(ctx);
+	if (ctx->t.px_shift)
+		hbd_deblock_mb(ctx);
+	else
+		deblock_Y_8bit(ctx);
 }

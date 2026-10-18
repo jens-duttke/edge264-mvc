@@ -18,6 +18,7 @@
 	#include <unistd.h>
 #endif
 #include "edge264mvc_internal.h"
+#include "edge264mvc_hbd.c"
 #include "edge264mvc_intra.c"
 #include "edge264mvc_inter.c"
 // reason: edge264mvc_inter.c refers to these functions of edge264mvc_headers.c,
@@ -87,6 +88,26 @@ static void assert_block(const char *name, size_t pstride, const uint8_t *p, int
 			putchar('\t');
 			for (int x = 0; x < w; x++)
 				printf(" %3d", q[x + y * w]);
+			putchar('\n');
+		}
+		exit(1);
+	}
+}
+
+
+
+// the same check for 16-bit samples, where dc_ab expects the 512 of 10 bits instead of 128
+static void assert_block16(const char *name, size_t pstride, const uint16_t *p, int w, int h, const uint8_t *q, int dc_ab) {
+	int pass = 1;
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++)
+			pass &= p[x + y * pstride] == (dc_ab ? 512 : q[x + y * w]);
+	}
+	if (!pass) {
+		printf("%s (10 bits): block differs from expected\n", name);
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++)
+				printf(p[x + y * pstride] == (dc_ab ? 512 : q[x + y * w]) ? " %3d" : RED " %3d" RESET, p[x + y * pstride]);
 			putchar('\n');
 		}
 		exit(1);
@@ -313,6 +334,34 @@ static void test_intra_decoding() {
 	for (int mode = 0; mode <= IC8x8_P_8; mode++) {
 		decode_intraChroma(p, 32, mode, clip);
 		assert_block(IC8x8_names[mode], 32, p, 8, 16, IC8x8_expect[mode]);
+	}
+	
+	// the same modes at 10 bits (edge264mvc_hbd.c), from the same neighbours
+	// in 16-bit samples, which predict the same values
+	uint16_t buf16[32 * 18] __attribute__((aligned(16)));
+	uint16_t *p16 = buf16 + 80;
+	for (int x = -1; x < 16; x++) {
+		p16[x - 32] = 194 + x * 4;
+		p16[x - 64] = 198 + x * 4;
+	}
+	for (int y = 0; y < 16; y++)
+		p16[y * 32 - 1] = 186 - y * 4;
+	i16x8 clip10 = {1023, 1023, 1023, 1023, 1023, 1023, 1023, 1023};
+	for (int mode = 0; mode <= I4x4_HU_8; mode++) {
+		decode_intra4x4((uint8_t *)p16, 64, mode, clip10);
+		assert_block16(I4x4_names[mode], 32, p16, 4, 4, I4x4_expect[mode], mode == I4x4_DC_AB_8);
+	}
+	for (int mode = 0; mode <= I8x8_HU_8; mode++) {
+		decode_intra8x8((uint8_t *)p16, 64, mode, clip10);
+		assert_block16(I8x8_names[mode], 32, p16, 8, 8, I8x8_expect[mode], mode == I8x8_DC_AB_8);
+	}
+	for (int mode = 0; mode <= I16x16_P_8; mode++) {
+		decode_intra16x16((uint8_t *)p16, 64, mode, clip10);
+		assert_block16(I16x16_names[mode], 32, p16, 16, 16, I16x16_expect[mode], mode == I16x16_DC_AB_8);
+	}
+	for (int mode = 0; mode <= IC8x8_P_8; mode++) {
+		decode_intraChroma((uint8_t *)p16, 64, mode, clip10);
+		assert_block16(IC8x8_names[mode], 32, p16, 8, 16, IC8x8_expect[mode], mode == IC8x8_DC_AB_8);
 	}
 	count_pass += 1;
 }

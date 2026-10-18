@@ -445,10 +445,12 @@
 static inline void CAFUNC(parse_mb_qp_delta)
 {
 	#if !CABAC
-		int mb_qp_delta = get_se16(&ctx->t.gb, -26, 25); // FIXME QpBdOffset
+		// QP'Y wraps modulo 52 + QpBdOffsetY (7-37)
+		int range = 52 + ctx->t.QpBdOffset_Y;
+		int mb_qp_delta = get_se16(&ctx->t.gb, -(26 + ctx->t.QpBdOffset_Y / 2), 25 + ctx->t.QpBdOffset_Y / 2);
 		if (mb_qp_delta) {
 			int sum = ctx->t.QP[0] + mb_qp_delta;
-			int QP_Y = (sum < 0) ? sum + 52 : (sum >= 52) ? sum - 52 : sum;
+			int QP_Y = (sum < 0) ? sum + range : (sum >= range) ? sum - range : sum;
 			mb->QP_s = ctx->t.QP_s = (i8x4){QP_Y, ctx->QP_C[0][QP_Y], ctx->QP_C[1][QP_Y], ctx->t.QP[3]};
 		}
 	#else
@@ -456,12 +458,13 @@ static inline void CAFUNC(parse_mb_qp_delta)
 		ctx->mb_qp_delta_nz = mb_qp_delta_nz;
 		int mb_qp_delta = 0;
 		if (mb_qp_delta_nz) {
+			int range = 52 + ctx->t.QpBdOffset_Y; // QP'Y wraps modulo it (7-37)
 			unsigned count = 1, ctxIdx = 62;
-			while (get_ae(ctx, ctxIdx) && count < 52) // FIXME QpBdOffset
+			while (get_ae(ctx, ctxIdx) && count < range)
 				count++, ctxIdx = 63;
 			mb_qp_delta = count & 1 ? count / 2 + 1 : -(count / 2);
 			int sum = ctx->t.QP[0] + mb_qp_delta;
-			int QP_Y = (sum < 0) ? sum + 52 : (sum >= 52) ? sum - 52 : sum;
+			int QP_Y = (sum < 0) ? sum + range : (sum >= range) ? sum - range : sum;
 			mb->QP_s = ctx->t.QP_s = (i8x4){QP_Y, ctx->QP_C[0][QP_Y], ctx->QP_C[1][QP_Y], ctx->t.QP[3]};
 		}
 	#endif
@@ -521,7 +524,7 @@ static noinline void CAFUNC(parse_chroma422_residual)
 	ctx->scan_v[0] = scan_4x4[0];
 	for (int i4x4 = 0; i4x4 < 16; i4x4++) {
 		int iYCbCr = 1 + (i4x4 >> 3);
-		uint8_t *samples = ctx->samples_mb[iYCbCr] + (i4x4 >> 1 & 3) * 4 * ctx->t.stride[1] + (i4x4 & 1) * 4;
+		uint8_t *samples = ctx->samples_mb[iYCbCr] + (i4x4 >> 1 & 3) * 4 * ctx->t.stride[1] + ((i4x4 & 1) * 4 << ctx->t.px_shift);
 		if (mb->f.CodedBlockPatternChromaAC) {
 			int nA = *((int8_t *)mbc->nC + 16 + ctx->ACbCr_int8[i4x4]);
 			int nB = *((int8_t *)mbc->nC + 16 + ctx->BCbCr_int8[i4x4]);
@@ -591,7 +594,7 @@ static noinline void CAFUNC(parse_chroma_residual)
 			ctx->scan_v[0] = scan_4x4[0];
 			for (int i4x4 = 0; i4x4 < 8; i4x4++) {
 				int iYCbCr = 1 + (i4x4 >> 2);
-				uint8_t *samples = ctx->samples_mb[iYCbCr] + y420[i4x4] * ctx->t.stride[1] + x420[i4x4];
+				uint8_t *samples = ctx->samples_mb[iYCbCr] + y420[i4x4] * ctx->t.stride[1] + (x420[i4x4] << ctx->t.px_shift);
 				int nA = *((int8_t *)mbc->nC + 16 + ctx->ACbCr_int8[i4x4]);
 				int nB = *((int8_t *)mbc->nC + 16 + ctx->BCbCr_int8[i4x4]);
 				#if !CABAC
@@ -657,7 +660,7 @@ static noinline void CAFUNC(parse_Intra16x16_residual)
 				ctx->coeff_abs_inc_l = (i8x8){6, 7, 8, 9, 9};
 			#endif
 			for (int i4x4 = 0; i4x4 < 16; i4x4++) {
-				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i4x4] * ctx->t.stride[iYCbCr] + x444[i4x4];
+				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i4x4] * ctx->t.stride[iYCbCr] + (x444[i4x4] << ctx->t.px_shift);
 				int nA = *((int8_t *)mbc->nC + iYCbCr * 16 + ctx->A4x4_int8[i4x4]);
 				int nB = *((int8_t *)mbc->nC + iYCbCr * 16 + ctx->B4x4_int8[i4x4]);
 				#if !CABAC
@@ -736,7 +739,7 @@ static noinline void CAFUNC(parse_NxN_residual)
 			// Decoding directly follows parsing to avoid duplicate loops.
 			for (int i4x4 = 0; i4x4 < 16; i4x4++) {
 				size_t stride = ctx->t.stride[iYCbCr];
-				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i4x4] * stride + x444[i4x4];
+				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i4x4] * stride + (x444[i4x4] << ctx->t.px_shift);
 				if (!mb->mbIsInterFlag)
 					decode_intra4x4(samples, stride, Intra4x4Modes[mbc->Intra4x4PredMode[i4x4]][ctx->unavail_intra[i4x4]], ctx->t.samples_clip_v[iYCbCr]);
 				if (mb->bits[0] & 1 << bit8x8[i4x4 >> 2]) {
@@ -767,7 +770,7 @@ static noinline void CAFUNC(parse_NxN_residual)
 			
 			for (int i8x8 = 0; i8x8 < 4; i8x8++) {
 				size_t stride = ctx->t.stride[iYCbCr];
-				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i8x8 * 4] * stride + x444[i8x8 * 4];
+				uint8_t *samples = ctx->samples_mb[iYCbCr] + y444[i8x8 * 4] * stride + (x444[i8x8 * 4] << ctx->t.px_shift);
 				if (!mb->mbIsInterFlag)
 					decode_intra8x8(samples, stride, Intra8x8Modes[mbc->Intra4x4PredMode[i8x8 * 4]][ctx->unavail_intra[i8x8 * 5]], ctx->t.samples_clip_v[iYCbCr]);
 				if (mb->bits[0] & 1 << bit8x8[i8x8]) {
@@ -1017,7 +1020,7 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 		// decoder does, the bits are ignored)
 		if (ctx->t.ChromaArrayType == 0)
 			mb->f.CodedBlockPatternChromaDC = mb->f.CodedBlockPatternChromaAC = 0;
-		
+
 		// decode the samples before parsing residuals
 		// indexed with the availability of A, B and D (bit 2), as Plane prediction
 		// also reads p[-1,-1] (8.3.3.4), falling back to DC like the chroma modes
@@ -1046,7 +1049,8 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 		
 		ctx->mb_qp_delta_nz = 0;
 		mb->f.v |= flags_twice.v; // ChromaDC, ChromaAC and flags_16x16, just what we need :)
-		mb->QP_s = (i8x4){0, ctx->QP_C[0][0], ctx->QP_C[1][0], ctx->t.QP[3]};
+		int QP0 = ctx->t.QpBdOffset_Y; // QP'Y of QPY 0, which deblocking takes for I_PCM (8.7.2.2)
+		mb->QP_s = (i8x4){QP0, ctx->QP_C[0][QP0], ctx->QP_C[1][QP0], ctx->t.QP[3]};
 		mb->bits_l = (uint64_t)(i32x2){0xac, 0xacacac}; // FIXME 4:2:2
 		mbc->nC_v[0] = mbc->nC_v[1] = mbc->nC_v[2] = CACOND(
 			((i8x16){16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16}),
@@ -1925,8 +1929,8 @@ static noinline int fmo_next_mb(Edge264MvcContext *ctx) {
 	ctx->_mb = ctx->t.mb_buffer + off;
 	ctx->mbCol = ctx->t.slice_type == 1 ? ctx->t.mbCol_buffer + off : ctx->_mb;
 	ctx->_mbc = ctx->mbc_ring + off % ctx->mbc_ring_size;
-	ctx->samples_mb[0] = ctx->t.samples_buffers[ctx->currPic] + (x + y * ctx->t.stride[0]) * 16;
-	ctx->samples_mb[1] = ctx->t.samples_buffers[ctx->currPic] + x * 8 + y * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
+	ctx->samples_mb[0] = ctx->t.samples_buffers[ctx->currPic] + x * ctx->t.mbw_Y + y * ctx->t.stride[0] * 16;
+	ctx->samples_mb[1] = ctx->t.samples_buffers[ctx->currPic] + x * ctx->t.mbw_C + y * ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.plane_size_Y;
 	ctx->samples_mb[2] = ctx->samples_mb[1] + (ctx->t.stride[1] >> 1);
 	return 1;
 }
@@ -2144,14 +2148,14 @@ static noinline void CAFUNC(parse_slice_data)
 			ctx->samples_mb[2] -= ctx->t.stride[1] * ctx->t.mb_height_C;
 			deblock_mb(ctx);
 			mb += ctx->t.pic_width_in_mbs + 2;
-			ctx->samples_mb[0] += ctx->t.stride[0] * 16 + 16;
-			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C + 8;
-			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C + 8;
+			ctx->samples_mb[0] += ctx->t.stride[0] * 16 + ctx->t.mbw_Y;
+			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.mbw_C;
+			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C + ctx->t.mbw_C;
 		} else {
 			mb++;
-			ctx->samples_mb[0] += 16; // FIXME 16bit
-			ctx->samples_mb[1] += 8; // FIXME 16bit
-			ctx->samples_mb[2] += 8;
+			ctx->samples_mb[0] += ctx->t.mbw_Y;
+			ctx->samples_mb[1] += ctx->t.mbw_C;
+			ctx->samples_mb[2] += ctx->t.mbw_C;
 		}
 		ctx->mbx++;
 		ctx->CurrMbAddr++;
@@ -2163,9 +2167,9 @@ static noinline void CAFUNC(parse_slice_data)
 			ctx->mbCol++;
 			ctx->mby++;
 			ctx->mbx = 0;
-			ctx->samples_mb[0] += ctx->t.stride[0] * 16 - ctx->t.pic_width_in_mbs * 16;
-			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
-			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * 8;
+			ctx->samples_mb[0] += ctx->t.stride[0] * 16 - ctx->t.pic_width_in_mbs * ctx->t.mbw_Y;
+			ctx->samples_mb[1] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * ctx->t.mbw_C;
+			ctx->samples_mb[2] += ctx->t.stride[1] * ctx->t.mb_height_C - ctx->t.pic_width_in_mbs * ctx->t.mbw_C;
 			if (ctx->t.next_deblock_idc >= 0) {
 				publish_frame_progress(ctx->d, ctx->t.next_deblock_idc,
 					(ctx->t.disable_deblocking_filter_idc != 1) ? ctx->t.next_deblock_addr : ctx->CurrMbAddr);

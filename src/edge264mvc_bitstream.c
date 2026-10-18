@@ -338,7 +338,7 @@ static int cabac_terminate(Edge264MvcContext *ctx) {
  * unoptimised version.
  */
 static void cabac_init(Edge264MvcContext *ctx) {
-	i8x16 mul = set16(max(ctx->t.QP[0], 0) + 4096);
+	i8x16 mul = set16(max(ctx->t.QP[0] - ctx->t.QpBdOffset_Y, 0) + 4096); // SliceQPY, QP[0] being QP'Y
 	i8x16 c1 = set8(1), c64 = set8(64), c126 = set8(126);
 	const i8x16 *src = (i8x16 *)cabac_context_init[ctx->t.cabac_init_idc];
 	for (i8x16 *dst = ctx->cabac_v; dst < ctx->cabac_v + 64; dst++, src += 2) {

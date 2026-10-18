@@ -449,6 +449,9 @@ typedef struct {
 	const uint8_t *fmo_map; // slice group of every macroblock of the picture (8.2.2.8) with FMO, else NULL
 	int8_t QS_Y; // 0..51, QSY of an SP slice (7-31)
 	int8_t mb_height_C; // rows of a macroblock in each chroma plane, 16 in 4:2:2 and 8 otherwise
+	int8_t mbw_Y, mbw_C; // bytes of a macroblock row in the luma and in each chroma plane, 16 and 8 at 8 bits, twice that above
+	int8_t px_shift; // log2 of the bytes of a sample, 1 above 8 bits (luma and chroma have the same bit depth)
+	int8_t QpBdOffset_Y, QpBdOffset_C; // 6 * (BitDepth - 8) (7-4, 7-6), QP and QP_C holding QP' = QP + QpBdOffset
 	int8_t direct_8x8_inference_flag; // 0..1
 	int8_t cabac_init_idc; // 0..3
 	int8_t next_deblock_idc; // -1..31, -1 if next_deblock_addr is not written back to dec, currPic otherwise

@@ -288,22 +288,28 @@ static void dump_frame(void)
 		// a Y4M stream keeps the frame size of its header, so side by side is
 		// decided once, by the first frame
 		y4m_sbs = dump == 2 && out.views[1].planes[0] != NULL;
-		fprintf(stdout, "YUV4MPEG2 W%d H%d F%d:%d Ip A1:1 %s\n",
-			out.width_Y << y4m_sbs, out.height_Y, fnum, fden, out.height_C < out.height_Y ? "C420mpeg2" : "C422");
+		// samples above 8 bits are 16-bit little-endian words, as Y4M has them
+		const char *chroma = out.height_C < out.height_Y ? (out.bit_depth_Y > 8 ? "C420" : "C420mpeg2") : "C422";
+		char depth[16] = "";
+		if (out.bit_depth_Y > 8)
+			snprintf(depth, sizeof(depth), "p%d", out.bit_depth_Y);
+		fprintf(stdout, "YUV4MPEG2 W%d H%d F%d:%d Ip A1:1 %s%s\n",
+			out.width_Y << y4m_sbs, out.height_Y, fnum, fden, chroma, depth);
 		y4m_started = 1;
 	}
 	fputs("FRAME\n", stdout);
+	int wY = out.width_Y << (out.bit_depth_Y > 8), wC = out.width_C << (out.bit_depth_C > 8); // bytes per row
 	if (y4m_sbs) {
 		// a frame without its dependent view (damaged or truncated MVC input)
 		// shows its base view on both sides, rather than breaking the frame size
 		const Edge264MvcView *right = &out.views[out.views[1].planes[0] != NULL];
-		write_plane_sbs(out.views[0].planes[0], right->planes[0], out.stride_Y, out.width_Y, out.height_Y);
-		write_plane_sbs(out.views[0].planes[1], right->planes[1], out.stride_C, out.width_C, out.height_C);
-		write_plane_sbs(out.views[0].planes[2], right->planes[2], out.stride_C, out.width_C, out.height_C);
+		write_plane_sbs(out.views[0].planes[0], right->planes[0], out.stride_Y, wY, out.height_Y);
+		write_plane_sbs(out.views[0].planes[1], right->planes[1], out.stride_C, wC, out.height_C);
+		write_plane_sbs(out.views[0].planes[2], right->planes[2], out.stride_C, wC, out.height_C);
 	} else {
-		write_plane(out.views[0].planes[0], out.stride_Y, out.width_Y, out.height_Y);
-		write_plane(out.views[0].planes[1], out.stride_C, out.width_C, out.height_C);
-		write_plane(out.views[0].planes[2], out.stride_C, out.width_C, out.height_C);
+		write_plane(out.views[0].planes[0], out.stride_Y, wY, out.height_Y);
+		write_plane(out.views[0].planes[1], out.stride_C, wC, out.height_C);
+		write_plane(out.views[0].planes[2], out.stride_C, wC, out.height_C);
 	}
 }
 

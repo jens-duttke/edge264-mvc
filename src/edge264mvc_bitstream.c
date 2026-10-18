@@ -253,10 +253,21 @@ static noinline int renorm_fixed(Edge264MvcContext * restrict ctx, int ret) {
 	return ret;
 }
 
-static inline int get_ae_inline(Edge264MvcContext * restrict ctx, int ctxIdx) {
+/**
+ * The engine on range and offset held by the caller in local variables, which
+ * the loops decoding most bins (residual blocks) keep in registers across bins,
+ * as they take their addresses in these always_inline functions only. Kept in
+ * ctx->t.gb (get_ae_inline, get_bypass), they went through memory at every bin,
+ * adding a store-to-load round trip to the dependency chain from bin to bin.
+ */
+static noinline size_t refill_offset(Edge264MvcContext * restrict ctx, size_t offset, int bytes) {
+	return shld(get_bytes(&ctx->t.gb, bytes), offset, bytes * 8);
+}
+
+static always_inline int get_ae_regs(Edge264MvcContext * restrict ctx, int ctxIdx, size_t *prange, size_t *poffset) {
 	size_t state = ctx->cabac[ctxIdx];
-	size_t range = ctx->t.gb.range;
-	size_t offset = ctx->t.gb.offset;
+	size_t range = *prange;
+	size_t offset = *poffset;
 	size_t shift = clz(range); // [0..SIZE_BIT-9]
 	size_t idx = (state & -4) + (range << shift >> (SIZE_BIT - 3));
 	size_t rangeLPS = (size_t)((uint8_t *)rangeTabLPS - 4)[idx] << (SIZE_BIT - 9 - shift);
@@ -266,13 +277,38 @@ static inline int get_ae_inline(Edge264MvcContext * restrict ctx, int ctxIdx) {
 		offset -= range;
 		range = rangeLPS;
 	}
+	ctx->cabac[ctxIdx] = transIdx[state];
+	if (__builtin_expect(range < 256, 0)) {
+		offset = refill_offset(ctx, offset, SIZE_BIT / 8 - 1);
+		range <<= SIZE_BIT - 8;
+	}
+	*prange = range;
+	*poffset = offset;
+	return state & 1;
+}
+
+static always_inline int get_bypass_regs(Edge264MvcContext * restrict ctx, size_t *prange, size_t *poffset) {
+	size_t range = *prange;
+	size_t offset = *poffset;
+	if (__builtin_expect(range < 512, 0)) {
+		// as renorm_bits(ctx, SIZE_BIT - 9), whose bits & 7 remain in range
+		offset = refill_offset(ctx, offset, (SIZE_BIT - 9) >> 3);
+		range <<= (SIZE_BIT - 9) & -8;
+	}
+	range >>= 1;
+	size_t binVal = offset >= range;
+	*poffset = binVal ? offset - range : offset;
+	*prange = range;
+	return binVal;
+}
+
+static inline int get_ae_inline(Edge264MvcContext * restrict ctx, int ctxIdx) {
+	size_t range = ctx->t.gb.range;
+	size_t offset = ctx->t.gb.offset;
+	int binVal = get_ae_regs(ctx, ctxIdx, &range, &offset);
 	ctx->t.gb.range = range;
 	ctx->t.gb.offset = offset;
-	ctx->cabac[ctxIdx] = transIdx[state];
-	int binVal = state & 1;
-	if (range >= 256)
-		return binVal;
-	return renorm_fixed(ctx, binVal);
+	return binVal;
 }
 
 static noinline int get_ae(Edge264MvcContext * restrict ctx, int ctxIdx) {
@@ -280,11 +316,11 @@ static noinline int get_ae(Edge264MvcContext * restrict ctx, int ctxIdx) {
 }
 
 static inline int get_bypass(Edge264MvcContext *ctx) {
-	if (__builtin_expect(ctx->t.gb.range < 512, 0))
-		renorm_bits(ctx, SIZE_BIT - 9);
-	ctx->t.gb.range >>= 1;
-	size_t binVal = ctx->t.gb.offset >= ctx->t.gb.range;
-	ctx->t.gb.offset = binVal ? ctx->t.gb.offset - ctx->t.gb.range : ctx->t.gb.offset;
+	size_t range = ctx->t.gb.range;
+	size_t offset = ctx->t.gb.offset;
+	int binVal = get_bypass_regs(ctx, &range, &offset);
+	ctx->t.gb.range = range;
+	ctx->t.gb.offset = offset;
 	return binVal;
 }
 

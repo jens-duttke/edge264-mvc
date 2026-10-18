@@ -31,6 +31,7 @@ Measured on an 8-core / 16-thread laptop CPU, by running the old and new build s
 | Start three worker threads per logical CPU by default, since a worker waiting for the rows of a reference picture sleeps, with room for 256 slices in flight instead of 128, and decode fewer pictures at once above 1080p (`pics_in_flight`) | 1.4x faster on 1080p video, 1.2x on Blu-ray video with several slices per picture, 4K unchanged |
 | Use Windows' slim reader/writer locks and condition variables for the decoder's locks instead of winpthreads, which waits on kernel events | 2% to 8% faster on Windows, with about a fifth less time spent in the kernel |
 | Add an x86-64-v4 (AVX-512) variant to the runtime dispatch (`VARIANTS=x86-64-v4`), whose encoding gives the 128-bit vector code 32 registers and three-input logic operations | 2% faster single-threaded on 1080p and 3% to 4% on 4K, 1% with 16 threads, MVC unchanged |
+| Keep the CABAC range and offset in registers through the loops over the coefficients of a residual block (`get_ae_regs`), instead of storing and reloading them for every bin | 1% faster on MVC with 16 threads, 0.5% single-threaded |
 
 ## MVC / stereo correctness
 

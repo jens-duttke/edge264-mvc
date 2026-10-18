@@ -351,49 +351,51 @@
  * maintain, this function is designed to be simple and compact.
  */
 #if CABAC
-	static noinline void parse_residual_coeffs_cabac(Edge264MvcContext *ctx, uint64_t significant_coeff_flags) {
+	static noinline void parse_residual_coeffs_cabac(Edge264MvcContext * restrict ctx, uint64_t significant_coeff_flags, size_t range, size_t offset) {
 		// Now loop on set bits to parse all non-zero coefficients.
 		int ctxIdx0 = ctx->ctxIdxOffsets[3] + 1;
 		int ctxIdx1 = ctx->ctxIdxOffsets[3] + 5;
 		do {
 			int coeff_level;
-			if (!get_ae_inline(ctx, ctxIdx0)) {
+			if (!get_ae_regs(ctx, ctxIdx0, &range, &offset)) {
 				static const int8_t trans[5] = {0, 2, 3, 4, 4};
 				ctxIdx0 = ctx->ctxIdxOffsets[3] + trans[ctxIdx0 - ctx->ctxIdxOffsets[3]];
-				coeff_level = get_bypass(ctx) ? -1 : 1;
+				coeff_level = get_bypass_regs(ctx, &range, &offset) ? -1 : 1;
 			} else {
 				coeff_level = 2;
-				while (get_ae_inline(ctx, ctxIdx1) && ++coeff_level != 15)
+				while (get_ae_regs(ctx, ctxIdx1, &range, &offset) && ++coeff_level != 15)
 					continue;
 				#if SIZE_BIT == 32
 					if (coeff_level == 15) {
 						// the largest value to encode is -2^(14+7)+14, for which k=20 (see 9.3.2.3)
 						int k = 0;
-						while (get_bypass(ctx) && k < 20)
+						while (get_bypass_regs(ctx, &range, &offset) && k < 20)
 							k++;
 						coeff_level = 1;
 						while (k--)
-							coeff_level += coeff_level + get_bypass(ctx);
+							coeff_level += coeff_level + get_bypass_regs(ctx, &range, &offset);
 						coeff_level += 14;
 					}
-					coeff_level = get_bypass(ctx) ? -coeff_level : coeff_level;
+					coeff_level = get_bypass_regs(ctx, &range, &offset) ? -coeff_level : coeff_level;
 				#elif SIZE_BIT == 64
 					if (coeff_level != 15) {
-						coeff_level = get_bypass(ctx) ? -coeff_level : coeff_level;
+						coeff_level = get_bypass_regs(ctx, &range, &offset) ? -coeff_level : coeff_level;
 					} else {
 						// we need at least 51 bits in offset to get 42 bits with a division by 9 bits
+						ctx->t.gb.range = range;
+						ctx->t.gb.offset = offset;
 						int zeros = clz(ctx->t.gb.range);
 						if (zeros > 64 - 51)
 							zeros = renorm_bits(ctx, zeros);
-						size_t range = ctx->t.gb.range >> 42;
-						size_t quo = ctx->t.gb.offset / range; // contains 42 bypass bits in lsb
-						size_t rem = ctx->t.gb.offset % range;
+						size_t range42 = ctx->t.gb.range >> 42;
+						size_t quo = ctx->t.gb.offset / range42; // contains 42 bypass bits in lsb
+						size_t rem = ctx->t.gb.offset % range42;
 						int k = clz(~quo << (64 - 42) | (size_t)1 << (64 - 21));
 						int unused = 42 - k * 2 - 2;
 						coeff_level = 14 + (1 << k) + ((unsigned)(quo >> unused >> 1) & ((1 << k) - 1));
 						coeff_level = (quo & (size_t)1 << unused) ? -coeff_level : coeff_level;
-						ctx->t.gb.offset = (quo & (((size_t)1 << unused) - 1)) * range + rem;
-						ctx->t.gb.range = range << unused;
+						offset = (quo & (((size_t)1 << unused) - 1)) * range42 + rem;
+						range = range42 << unused;
 					}
 				#endif
 				ctxIdx0 = ctx->ctxIdxOffsets[3];
@@ -405,35 +407,41 @@
 			ctx->c[ctx->scan[i]] = coeff_level;
 			significant_coeff_flags &= ~((uint64_t)1 << i);
 		} while (significant_coeff_flags != 0);
+		ctx->t.gb.range = range;
+		ctx->t.gb.offset = offset;
 	}
 	
 	static noinline void parse_residual_block_8x8_cabac(Edge264MvcContext * restrict ctx, int startIdx, int endIdx) {
 		uint64_t significant_coeff_flags = 0;
+		size_t range = ctx->t.gb.range;
+		size_t offset = ctx->t.gb.offset;
 		int i = startIdx;
 		do {
-			if (get_ae_inline(ctx, ctx->ctxIdxOffsets[1] + ctx->sig_inc[i])) {
+			if (get_ae_regs(ctx, ctx->ctxIdxOffsets[1] + ctx->sig_inc[i], &range, &offset)) {
 				significant_coeff_flags |= (uint64_t)1 << i;
-				if (get_ae_inline(ctx, ctx->ctxIdxOffsets[2] + ctx->last_inc[i]))
+				if (get_ae_regs(ctx, ctx->ctxIdxOffsets[2] + ctx->last_inc[i], &range, &offset))
 					break;
 			}
 		} while (++i < endIdx);
 		significant_coeff_flags |= (uint64_t)1 << i;
-		parse_residual_coeffs_cabac(ctx, significant_coeff_flags);
+		parse_residual_coeffs_cabac(ctx, significant_coeff_flags, range, offset);
 	}
 	
 	static noinline void parse_residual_block_cabac(Edge264MvcContext * restrict ctx, int startIdx, int endIdx) {
 		// we could preload all states in a vector, but cache misses aren't an issue here
 		unsigned significant_coeff_flags = 0;
+		size_t range = ctx->t.gb.range;
+		size_t offset = ctx->t.gb.offset;
 		int i = startIdx;
 		do {
-			if (get_ae_inline(ctx, ctx->ctxIdxOffsets[1] + i)) {
+			if (get_ae_regs(ctx, ctx->ctxIdxOffsets[1] + i, &range, &offset)) {
 				significant_coeff_flags |= 1 << i;
-				if (get_ae_inline(ctx, ctx->ctxIdxOffsets[2] + i))
+				if (get_ae_regs(ctx, ctx->ctxIdxOffsets[2] + i, &range, &offset))
 					break;
 			}
 		} while (++i < endIdx);
 		significant_coeff_flags |= 1 << i;
-		parse_residual_coeffs_cabac(ctx, significant_coeff_flags);
+		parse_residual_coeffs_cabac(ctx, significant_coeff_flags, range, offset);
 	}
 #endif
 

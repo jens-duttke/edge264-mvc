@@ -658,7 +658,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		// terminates - what ffmpeg does (it conceals the partial picture).
 		// The picture being parsed is never emitted before it is complete, as
 		// more of its slices are still to come.
-		if (__atomic_load_n(&dec->next_deblock_addr[queued], __ATOMIC_ACQUIRE) != INT_MAX &&
+		if (!frame_complete(dec, queued) &&
 			(!dec->flushing || queued == dec->currPic))
 			continue;
 		if (idx0 >= 0 && order >= lowest_order)
@@ -684,7 +684,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		int in_flight = lowest_any_pic == dec->currPic;
 		int i;
 		TM_FOREACH(i, dec->busy_tasks) {
-			if (dec->taskPics[i] == lowest_any_pic) {
+			if (dec->taskPics[i] >= 0 && (slot_bits(dec, (FrameMask)1 << dec->taskPics[i]) >> lowest_any_pic & 1)) {
 				in_flight = 1;
 				break;
 			}
@@ -698,7 +698,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 				int queued = dec->get_frame_queue[1][i];
 				if (queued < 0)
 					break; // the entries stay packed at the front (see dequeue_frame)
-				if (__atomic_load_n(&dec->next_deblock_addr[queued], __ATOMIC_ACQUIRE) != INT_MAX)
+				if (!frame_complete(dec, queued))
 					continue;
 				// Match on (FrameNum, POC), not POC alone: two access units in
 				// different sequences (POC is reset by an IDR) can share a POC, so
@@ -746,7 +746,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 				if (same_access_unit(dec, pic0, j) && (d < 0 || dec->FrameIds[j] < dec->FrameIds[d]))
 					d = j;
 			}
-			if (d >= 0 && __atomic_load_n(&dec->next_deblock_addr[d], __ATOMIC_ACQUIRE) == INT_MAX) {
+			if (d >= 0 && frame_complete(dec, d)) {
 				dec->output_frames |= (FrameMask)1 << d;
 				queue_push(dec, 1, d);
 				idx1 = 0;
@@ -803,7 +803,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 		out->samples[1] = dec->samples_buffers[pic0] + offC;
 		out->samples[2] = dec->samples_buffers[pic0] + offC + (dec->out.stride_C >> 1);
 		out->FrameId = dec->FrameIds[pic0];
-		out->Poc = dec->FieldOrderCnt[0][pic0];
+		out->Poc = frame_poc(dec, pic0);
 		out->Poc_mvc = 0;
 		out->DisplayPoc = edge264mvc_unwrap_output_poc(dec, 0, out->Poc);
 		out->DisplayPoc_mvc = 0;
@@ -843,7 +843,7 @@ static int get_frame(Edge264MvcDecoder *dec, Edge264MvcOutput *out, int borrow) 
 	// it live too); this therefore never fires on a conformant stream.
 	int dropped_orphan = 0;
 	if (res != 0 && dec->ssps.BitDepth_Y != 0) {
-		FrameMask inflight = writing_frames(dec);
+		FrameMask inflight = slot_bits(dec, writing_frames(dec));
 		FrameMask live_bases = (dec->to_get_frames | inflight) & ~dec->non_base_frames;
 		for (int i = 0; i < QUEUE_SIZE; ++i) {
 			int dep = dec->get_frame_queue[1][i];

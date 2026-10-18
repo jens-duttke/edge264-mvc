@@ -368,6 +368,14 @@ typedef struct {
 	#define MAX_FRAMES 64
 	typedef uint64_t FrameMask;
 #endif
+// In interlaced streams (frame_mbs_only_flag 0) the frames take the slots below
+// FIELD_ID, and a field picture is known as its slot for the top field and its
+// slot + FIELD_ID for the bottom one: as the reference of a macroblock (refPic),
+// the entry of a reference list, the target of a task (taskPics) and the index
+// of its decoding progress (next_deblock_addr, remaining_mbs). A frame picture
+// is known as its slot, its bottom index staying complete (INT_MAX).
+#define FIELD_ID (MAX_FRAMES / 2)
+enum { COL_FRM_TO_FLD = 1, COL_FLD_TO_FRM }; // vertMvScale of a colocated picture of the other structure (8.4.1.2.1)
 #define MAX_THREADS 128
 #define MAX_TASKS 256
 #define TASK_WORDS (MAX_TASKS / 64)
@@ -438,6 +446,7 @@ typedef struct {
 	int8_t MbaffFrameFlag; // 0..1
 	int8_t direct_spatial_mv_pred_flag; // 0..1
 	int8_t col_short_term; // 0..1, RefPicList1[0] is a short-term reference (B slices)
+	int8_t col_structure; // 0, or COL_FRM_TO_FLD / COL_FLD_TO_FRM when the colocated picture is a frame for a field or a field for a frame (Table 8-8)
 	int8_t luma_log2_weight_denom; // 0..7
 	int8_t chroma_log2_weight_denom; // 0..7
 	int8_t disable_deblocking_filter_idc; // 0..2
@@ -453,6 +462,10 @@ typedef struct {
 	int8_t px_shift; // log2 of the bytes of a sample, 1 above 8 bits (luma and chroma have the same bit depth)
 	int8_t QpBdOffset_Y, QpBdOffset_C; // 6 * (BitDepth - 8) (7-4, 7-6), QP and QP_C holding QP' = QP + QpBdOffset
 	int8_t direct_8x8_inference_flag; // 0..1
+	int8_t interlaced; // 0..1, frame_mbs_only_flag is 0, see FIELD_ID
+	int32_t field_C_adjust; // added to plane_size_Y for the chroma plane of a bottom field (an index of FIELD_ID or more when interlaced)
+	uint16_t stride_Cr; // from a Cb row to the Cr row of the same y, half the chroma stride of a frame
+	FrameMask field_frames; // slots holding field pictures rather than a frame, when interlaced
 	int8_t cabac_init_idc; // 0..3
 	int8_t next_deblock_idc; // -1..31, -1 if next_deblock_addr is not written back to dec, currPic otherwise
 	int8_t frame_flip_bit; // 0..1
@@ -507,6 +520,7 @@ typedef struct Edge264MvcContext {
 	const Edge264MvcMacroblock * _mbC; // backup storage for macro mbC
 	const Edge264MvcMacroblock * _mbD; // backup storage for macro mbD
 	const Edge264MvcMacroblock *mbCol;
+	Edge264MvcMacroblock mbCol_cross __attribute__((aligned(64))); // colocated values gathered from another picture structure (see colocated_cross)
 	Edge264MvcDecoder *d;
 	Edge264MvcMbFlags inc; // increments for CABAC indices of macroblock syntax elements
 	union { int8_t unavail4x4[48]; i8x16 unavail4x4_v[3]; }; // unavailability of neighbouring A/B/C/D blocks
@@ -643,6 +657,7 @@ struct Edge264MvcDecoder {
 	pthread_cond_t task_complete;
 	Edge264MvcOutput out;
 	int8_t out_monochrome; // the frame buffers were allocated for 4:0:0, so their chroma planes are neutral
+	int8_t interlaced; // the frame buffers were allocated for frame_mbs_only_flag 0, so they may hold field pictures, see FIELD_ID
 	int32_t max_frame_pixels; // largest frame accepted after cropping, 0 for the largest any level allows
 	int8_t want_frame; // send_nal returned EDGE264MVC_AGAIN, so receive_frame waits for a frame
 	int8_t ended; // send_end was called, so receive_frame drains to EDGE264MVC_END
@@ -657,6 +672,11 @@ struct Edge264MvcDecoder {
 	int8_t currPic_marked; // the last slice of currPic marked it as reference, even if it then discarded it
 	int8_t currPic_reference; // the first slice of currPic has nal_ref_idc != 0 (7.4.1.2.4)
 	int8_t basePic; // index of last base frame for cross-reference in MVC
+	int8_t currVp; // currPic, plus FIELD_ID for a bottom field picture
+	int8_t currField; // structure of currPic: 0 for a frame, 1 + bottom_field_flag for a field
+	int8_t field_slot[2]; // slot of a first field still without its second field in each view (whose fields interleave), or -1
+	int8_t field_slot_bottom[2]; // its bottom_field_flag
+	int8_t field_slot_reference[2]; // it has nal_ref_idc != 0
 	int8_t hH; // last decoded timestamp hours, 0..23
 	int8_t mM; // last decoded timestamp minutes, 0..59
 	int8_t sS; // last decoded timestamp seconds, 0..59
@@ -687,6 +707,10 @@ struct Edge264MvcDecoder {
 	FrameMask leading_frames; // bitfield for frames displayed before the non-IDR picture decoding resumed at, decoded but never output
 	FrameMask prev_short_term_frames; // state of short_term_frames for both views before current frame
 	FrameMask prev_long_term_frames; // state of long_term_frames for both views before current frame
+	FrameMask field_frames; // slots holding field pictures rather than a frame (interlaced)
+	FrameMask started_fields; // field pictures (see FIELD_ID) of which a slice was parsed
+	FrameMask short_term_fields[2], long_term_fields[2]; // marking of the fields of the slots [bottom_field_flag] when interlaced, short_term_frames and long_term_frames holding the slots of which either field is marked
+	FrameMask prev_short_term_fields[2], prev_long_term_fields[2];
 	int32_t FrameNums[MAX_FRAMES]; // signed to be used along FieldOrderCnt in initial reference ordering
 	int32_t FrameIds[MAX_FRAMES]; // unique identifiers for each frame, incremented in decoding order
 	int32_t DispOrder[MAX_FRAMES]; // monotonic display-order rank, assigned when a frame is bumped for output (see next_dispnum)
@@ -1496,7 +1520,41 @@ static FrameMask refs_to_mask(Edge264MvcTask *t) {
 		if (pic >= 0)
 			refs |= (FrameMask)1 << pic;
 	}
+	// a frame picture reads both fields of a reference held as fields
+	if (t->interlaced && !t->field_pic_flag)
+		refs |= refs << FIELD_ID;
 	return refs;
+}
+// Offset of the chroma plane of picture pic from its luma plane, which a bottom
+// field of an interlaced stream starts one row below the top field in both.
+#define PLANE_C(t, pic) ((t)->plane_size_Y + ((pic) >= FIELD_ID) * (t)->field_C_adjust)
+// The slots of a mask of pictures, with the bottom fields of interlaced
+// streams folded onto their slots (see FIELD_ID).
+static always_inline FrameMask slot_bits(Edge264MvcDecoder *dec, FrameMask m) {
+	return dec->interlaced ? (m | m >> FIELD_ID) & (((FrameMask)1 << FIELD_ID) - 1) : m;
+}
+// The slots taken by a mask of pictures, and in interlaced streams those from
+// FIELD_ID on, which are never allocated.
+static always_inline FrameMask slots_of(Edge264MvcDecoder *dec, FrameMask m) {
+	return dec->interlaced ? slot_bits(dec, m) | ~(((FrameMask)1 << FIELD_ID) - 1) : m;
+}
+// PicOrderCnt of the frame in slot i (8-1), the lower of its fields in
+// interlaced streams (the top field alone otherwise, as frames come out).
+static always_inline int32_t frame_poc(const Edge264MvcDecoder *dec, int i) {
+	return dec->interlaced ? minw(dec->FieldOrderCnt[0][i], dec->FieldOrderCnt[1][i]) : dec->FieldOrderCnt[0][i];
+}
+// A frame is complete once its frame picture or both of its fields are.
+static always_inline int frame_complete(Edge264MvcDecoder *dec, int pic) {
+	return __atomic_load_n(&dec->next_deblock_addr[pic], __ATOMIC_ACQUIRE) == INT_MAX &&
+		(!dec->interlaced || __atomic_load_n(&dec->next_deblock_addr[pic + FIELD_ID], __ATOMIC_ACQUIRE) == INT_MAX);
+}
+// One past the highest slot that scans of all slots visit: frame_slots, which
+// interlaced streams bound to the slots below FIELD_ID (a progressive sequence
+// before a format change may have left it higher, and the field of slot i is
+// i + FIELD_ID).
+static always_inline int scanned_slots(Edge264MvcDecoder *c) {
+	int n = __atomic_load_n(&c->frame_slots, __ATOMIC_RELAXED);
+	return c->interlaced ? min(n, FIELD_ID) : n;
 }
 static always_inline FrameMask ready_frames(Edge264MvcDecoder *c) {
 	// next_deblock_addr is written without the lock by worker threads (the
@@ -1506,8 +1564,11 @@ static always_inline FrameMask ready_frames(Edge264MvcDecoder *c) {
 	// weakly-ordered target, could observe a torn or stale completion flag.
 	// Slots past frame_slots never held a picture, so none of them is wanted.
 	FrameMask ready = 0;
-	for (int i = 0, n = __atomic_load_n(&c->frame_slots, __ATOMIC_RELAXED); i < n; i++)
+	for (int i = 0, n = scanned_slots(c); i < n; i++) {
 		ready |= (FrameMask)(__atomic_load_n(&c->next_deblock_addr[i], __ATOMIC_ACQUIRE) == INT_MAX) << i;
+		if (c->interlaced) // the bottom fields, see FIELD_ID
+			ready |= (FrameMask)(__atomic_load_n(&c->next_deblock_addr[i + FIELD_ID], __ATOMIC_ACQUIRE) == INT_MAX) << (i + FIELD_ID);
+	}
 	return ready;
 }
 // Frames targeted by a busy (pending or running) task, i.e. that will make

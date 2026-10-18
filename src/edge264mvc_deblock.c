@@ -528,33 +528,38 @@ static void deblock_CbCr_8bit(Edge264MvcContext *ctx) {
  * with the rows of Cb and Cr alternating. Its vertical edges take the bS of
  * the luma edges a and c at the same rows, and its horizontal edges at chroma
  * rows 0, 4, 8 and 12 those of the luma edges e, f, g and h (8.7.2), all four
- * filtered whatever the transform size (8.7). Rare enough for plain C.
+ * filtered whatever the transform size (8.7). Rare enough for plain C, which
+ * also deblocks the chroma of field pictures (whose Cb and Cr rows are not
+ * those of the vector code, and 4:2:0 then has its edges at chroma rows 0 and 4).
  */
-static void deblock_CbCr_422(Edge264MvcContext *ctx) {
-	size_t stride = ctx->t.stride[1] >> 1; // from a Cb row to the Cr row of the same y
+static void deblock_CbCr_scalar(Edge264MvcContext *ctx) {
+	int h = ctx->t.mb_height_C;
 	const int8_t *tC0v[2] = {(int8_t *)&ctx->tC0_l[4], (int8_t *)&ctx->tC0_l[5]};
 	const int8_t *tC0h[4] = {(int8_t *)&ctx->tC0_l[6], (int8_t *)&ctx->tC0_fh_l[0], (int8_t *)&ctx->tC0_l[7], (int8_t *)&ctx->tC0_fh_l[1]};
+	if (h == 8) // 4:2:0, edges at the luma edges e and g
+		tC0h[1] = tC0h[2];
 	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
-		uint8_t *c = ctx->samples_mb[1] + iCbCr * stride;
-		ssize_t row = stride * 2;
+		uint8_t *c = ctx->samples_mb[1] + iCbCr * ctx->t.stride_Cr;
+		ssize_t row = ctx->t.stride[1];
 		for (int dir = 0; dir < 2; dir++) {
 			// p1, p0, q0 and q1 are at k = -2..1 steps of across from an edge sample
 			ssize_t across = dir ? row : 1;
 			ssize_t along = dir ? 1 : row;
-			for (int e = 0; e < (dir ? 4 : 2); e++) {
+			for (int e = 0; e < (dir ? h / 4 : 2); e++) {
 				int bS4 = 0, idx = 1 + iCbCr; // alpha and beta of the internal edges
 				if (e == 0) {
 					if (!(mb->filter_edges & (1 << dir)))
 						continue;
 					idx = (dir ? 13 : 9) + iCbCr; // those of the edges with B or A
-					bS4 = !((dir ? mbB : mbA)->mbIsInterFlag & mb->mbIsInterFlag);
+					// the horizontal edges of field pictures take bS 3 (8.7.2.1)
+					bS4 = !((dir ? mbB : mbA)->mbIsInterFlag & mb->mbIsInterFlag) && !(dir & ctx->t.field_pic_flag);
 				}
 				int alpha = ctx->alpha[idx];
 				int beta = ctx->beta[idx];
 				const int8_t *tC0 = dir ? tC0h[e] : tC0v[e];
 				uint8_t *s = c + (dir ? e * 4 * row : e * 4);
-				for (int k = 0; k < (dir ? 8 : 16); k++, s += along) {
-					int t = tC0[iCbCr * 4 + (dir ? k >> 1 : k >> 2)]; // one per 4 luma samples along the edge
+				for (int k = 0; k < (dir ? 8 : h); k++, s += along) {
+					int t = tC0[iCbCr * 4 + (dir ? k >> 1 : k / (h / 4))]; // one per 4 luma samples along the edge
 					if (!bS4 && t < 0)
 						continue;
 					int p1 = s[-2 * across], p0 = s[-across], q0 = s[0], q1 = s[across];
@@ -862,7 +867,7 @@ static void deblock_Y_8bit(Edge264MvcContext *ctx) {
 		i8x16 hx = *(i8x16 *)SADDR(p0, -3);
 		i8x16 hy = *(i8x16 *)SADDR(p0, -2);
 		i8x16 hz = *(i8x16 *)SADDR(p0, -1);
-		if (mbB->mbIsInterFlag & mb->mbIsInterFlag) {
+		if ((mbB->mbIsInterFlag & mb->mbIsInterFlag) || ctx->t.field_pic_flag) { // bS 3 in field pictures (8.7.2.1)
 			int tC0e = ctx->tC0_s[4];
 			if (tC0e != -1)
 				DEBLOCK_LUMA_SOFT(hx, hy, hz, h0, h1, h2, ctx->alpha[12], ctx->beta[12], tC0e);
@@ -945,8 +950,8 @@ static void deblock_Y_8bit(Edge264MvcContext *ctx) {
 	*(i8x16 *)SADDR(pE,  1) = hF;
 	
 	// jump to chroma deblocking filter
-	if (ctx->t.ChromaArrayType == 2)
-		deblock_CbCr_422(ctx);
+	if (ctx->t.ChromaArrayType == 2 || ctx->t.field_pic_flag)
+		deblock_CbCr_scalar(ctx);
 	else
 		deblock_CbCr_8bit(ctx);
 }
@@ -1026,9 +1031,11 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 		i8x16 tC01 = shuffle3(idx2tC0[0], Am4);
 		i8x16 tC02 = shuffle3(idx2tC0[1], Am4);
 		
-		// compute masks for bS!=1 based on equality of references and motion vectors
+		// compute masks for bS!=1 based on equality of references and motion vectors,
+		// whose vertical components differ by 4 quarter frame samples in frames, by
+		// 2 quarter field samples in fields (8.7.2.1)
 		i8x16 bS0aceg, bS0bdfh;
-		i8x16 c3 = set8(3);
+		i8x16 c3 = ctx->t.field_pic_flag ? (i8x16){3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1, 3, 1} : set8(3);
 		static const i8x16 shufVHAB = {0, 2, 1, 3, 0, 1, 2, 3, 9, 11, 0, 2, 14, 15, 0, 1};
 		if ((mb->refIdx_s[1] & mbA->refIdx_s[1] & mbB->refIdx_s[1]) == -1) { // P macroblocks
 			i16x8 mvsv0 = unziphi32(mbA->mvs_v[1], mbA->mvs_v[3]);
@@ -1199,6 +1206,16 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 			mb->filter_edges = 0; // prevent redundant deblocking with deblock_idc==2 and ASO
 			return;
 		}
+	}
+	
+	// The horizontal edge of a macroblock of a field picture next to an intra
+	// macroblock takes bS 3 rather than 4 (8.7.2.1), with the tC0 of its own
+	// qPav (the lanes of B in idx2tC0).
+	if (ctx->t.field_pic_flag && (mb->filter_edges & 2) && !(mbB->mbIsInterFlag & mb->mbIsInterFlag)) {
+		i8x16 tC03 = shuffle3(idx2tC0[2], Am4);
+		ctx->tC0_s[4] = (int32_t)((uint8_t)tC03[12] * 0x01010101u);
+		ctx->tC0_s[12] = (int32_t)((uint8_t)tC03[13] * 0x01010101u);
+		ctx->tC0_s[13] = (int32_t)((uint8_t)tC03[14] * 0x01010101u);
 	}
 	
 	// jump to luma deblocking filter

@@ -55,6 +55,35 @@ static always_inline void await_frame_progress(Edge264MvcContext *ctx, int pic, 
 		wait_frame_progress(ctx, pic, addr);
 }
 
+/**
+ * Wait until the macroblock rows up to mby of the current picture are final in
+ * the reference picture ref. In interlaced streams the field and frame
+ * pictures of a frame differ in rows: a field row spans two frame rows, and
+ * a frame read of a frame held as fields needs both of them (see FIELD_ID).
+ */
+static always_inline void await_reference(Edge264MvcContext *ctx, int ref, int mby) {
+	int width = ctx->t.pic_width_in_mbs;
+	if (!ctx->t.interlaced) {
+		await_frame_progress(ctx, ref, (mby + 1) * width);
+		return;
+	}
+	int slot = ref & (FIELD_ID - 1);
+	if (ctx->t.field_frames >> slot & 1) {
+		if (ctx->t.field_pic_flag) {
+			await_frame_progress(ctx, ref, (mby + 1) * width);
+		} else {
+			// a row final below the frontier of a field is so up to 4 rows before the
+			// end of its macroblock row, which frame row 16 * mby + 12 needs one field
+			// row further for odd mby
+			int32_t addr = min(((mby + 1) >> 1) + 1, ctx->t.pic_height_in_mbs >> 1) * width;
+			await_frame_progress(ctx, slot, addr);
+			await_frame_progress(ctx, slot + FIELD_ID, addr);
+		}
+	} else {
+		await_frame_progress(ctx, slot, min(((mby + 1) << ctx->t.field_pic_flag), ctx->t.pic_height_in_mbs << ctx->t.field_pic_flag) * width);
+	}
+}
+
 static always_inline i16x8 sixtapHV(i16x8 a, i16x8 b, i16x8 c, i16x8 d, i16x8 e, i16x8 f) {
 	i16x8 af = a + f;
 	i16x8 be = b + e;
@@ -1176,7 +1205,7 @@ static void blend_wide(uint8_t *dst, size_t dstride, const uint8_t *src, size_t 
 			dst[x] = clip3(0, 255, ((dst[x] * w0 + src[x] * w1 + (1 << logWD)) >> (logWD + 1)) + o);
 	}
 }
-static noinline void decode_inter_wide(Edge264MvcContext *ctx, int i4x4, int x, int y, int w, int h,
+static noinline void decode_inter_wide(Edge264MvcContext *ctx, int i4x4, int x, int y, int yC, int w, int h,
 	const uint8_t *src_Y, size_t sstride_Y, const uint8_t *src_C, size_t sstride_C, int refIdxX, int refIdx)
 {
 	// predict the second reference apart without weights (Cb and Cr rows
@@ -1184,17 +1213,15 @@ static noinline void decode_inter_wide(Edge264MvcContext *ctx, int i4x4, int x, 
 	static const i16x8 no_weight = {pack_w(0, 1), 0, 0, 0, pack_w(0, 1), pack_w(0, 1), 0, 0};
 	uint8_t pred[768] __attribute__((aligned(16))) = {}; // up to 16 rows of Cb and Cr, then 16 of luma
 	int c422 = ctx->t.ChromaArrayType == 2;
-	int yC = c422 ? y * 2 : y; // 4:2:2 has the vertical chroma precision of luma (8-232, 8-234)
 	int xFrac_C = x & 7;
 	int yFrac_C = yC & 7;
 	i32x4 ABCD = {little_endian32(((8 - xFrac_C) | xFrac_C << 8) * ((8 - yFrac_C) | yFrac_C << 16))};
 	decode_inter_chroma(BLEND_COPY, (x & 7) == 0 && yFrac_C == 0, w, h << c422, sstride_C, src_C, 16, pred, ABCD, no_weight);
 	decode_inter_luma((w << 1 & 48) + (y & 3) * 4 + (x & 3), BLEND_COPY, h, sstride_Y, src_Y, 16, pred + 512, no_weight);
-	size_t stride_C = ctx->t.stride[1] >> 1;
 	uint8_t *dst_C = ctx->samples_mb[1] + (y444[i4x4] >> !c422) * ctx->t.stride[1] + (x444[i4x4] >> 1);
 	uint8_t *dst_Y = ctx->samples_mb[0] + y444[i4x4] * ctx->t.stride[0] + x444[i4x4];
 	for (int c = 0; c < 3; c++) {
-		blend_wide(c ? dst_C + (c - 1) * stride_C : dst_Y, c ? stride_C * 2 : ctx->t.stride[0],
+		blend_wide(c ? dst_C + (c - 1) * ctx->t.stride_Cr : dst_Y, c ? ctx->t.stride[1] : ctx->t.stride[0],
 			c ? pred + (c - 1) * 16 : pred + 512, c ? 32 : 16, c ? w >> 1 : w, c ? h >> !c422 : h,
 			ctx->t.explicit_weights[c][refIdxX], ctx->t.explicit_weights[c][refIdx],
 			ctx->t.explicit_offsets[c][refIdxX] + ctx->t.explicit_offsets[c][refIdx],
@@ -1235,6 +1262,10 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	// as a vector of twice the height to the 4:2:0 interpolation
 	int c422 = ctx->t.ChromaArrayType == 2;
 	int yC = c422 ? y * 2 : y;
+	// in 4:2:0 fields, a reference field of the other parity has its chroma
+	// samples a quarter sample off vertically (Table 8-10)
+	if (ctx->t.field_pic_flag && !c422)
+		yC += (ctx->t.bottom_field_flag - (refPic >= FIELD_ID)) * 2;
 	int yInt_C = ctx->mby * ctx->t.mb_height_C + (y444[i4x4] >> !c422) + (yC >> 3);
 	
 	// wait until the reference rows we read are final, the bottom-most being
@@ -1243,13 +1274,13 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	// picture read past the end of that row (and ignore), plus the 3 rows that
 	// deblocking the macroblock row below may still modify
 	int mby_ref = min(max(yInt_Y + h + 6, 0) >> 4, ctx->t.pic_height_in_mbs - 1);
-	await_frame_progress(ctx, refPic, (mby_ref + 1) * ctx->t.pic_width_in_mbs);
+	await_reference(ctx, refPic, mby_ref);
 	if (ctx->t.px_shift) {
 		hbd_decode_inter(ctx, i, w, h);
 		return;
 	}
 	const uint8_t *src_Y = ref + xInt_Y + yInt_Y * ctx->t.stride[0];
-	const uint8_t *src_C = ref + xInt_C + yInt_C * ctx->t.stride[1] + ctx->t.plane_size_Y;
+	const uint8_t *src_C = ref + xInt_C + yInt_C * ctx->t.stride[1] + PLANE_C(&ctx->t, refPic);
 	size_t sstride_Y = ctx->t.stride[0];
 	size_t sstride_C = ctx->t.stride[1] >> 1;
 	// print_header(ctx->d, "<k></k><v>CurrMbAddr=%d, i=%d, w=%d, h=%d, x=%d, y=%d, idx=%d, pic=%d</v>\n", ctx->CurrMbAddr, i, w, h, x, y, mb->refIdx[i8x8], mb->refPic[i8x8]);
@@ -1342,10 +1373,14 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	// reason: compared signed, since the right bound goes negative on pictures
 	// narrower than a block plus the filter taps (16 pixels wide), where an
 	// unsigned comparison wrapped and skipped the edge propagation
+	// The vector loads of a block at the right edge read past the end of a row,
+	// into the next row of a frame, which in a field belongs to the other field,
+	// maybe being decoded meanwhile: there the rows are copied as for the edges.
 	int width_Y = ctx->t.pic_width_in_mbs * 16;
-	if (__builtin_expect(xInt_Y - xWide * 2 < 0 || xInt_Y + w + xWide * 3 > width_Y ||
-		yInt_Y - yWide * 2 < 0 || yInt_Y + h + yWide * 3 > ctx->t.pic_height_in_mbs * 16, 0))
-	{
+	int outside = xInt_Y - xWide * 2 < 0 || xInt_Y + w + xWide * 3 > width_Y ||
+		yInt_Y - yWide * 2 < 0 || yInt_Y + h + yWide * 3 > ctx->t.pic_height_in_mbs * 16 ||
+		(ctx->t.field_pic_flag && xInt_Y + 30 >= width_Y);
+	if (__builtin_expect(outside, 0)) {
 		i8x16 shuf0 = loadu128(shift_Y_8bit + 15 + clip3(-15, 0, xInt_Y - 2) + clip3(0, 15, xInt_Y + 14 - width_Y));
 		i8x16 shuf1 = loadu128(shift_Y_8bit + 15 + clip3(-15, 0, xInt_Y + 14) + clip3(0, 15, xInt_Y + 30 - width_Y));
 		const uint8_t *src0 = ref + clip3(0, width_Y - 16, xInt_Y - 2);
@@ -1358,15 +1393,20 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 		}
 		src_Y = ctx->edge_buf + 66;
 		sstride_Y = 32;
-		
-		// chroma may read (and ignore) 1 bottom row and 1 right col out of bounds
+	}
+	
+	// chroma may read (and ignore) 1 bottom row and 1 right col out of bounds;
+	// in field pictures, whose Cb and Cr rows do not alternate at a single
+	// stride, the rows are always copied into edge_buf as they are there
+	if (__builtin_expect(outside | ctx->t.field_pic_flag, 0)) {
 		int width_C = width_Y >> 1;
 		i8x16 shuf = loadu64(shift_C_8bit + 7 + clip3(-7, 0, xInt_C) + clip3(0, 7, xInt_C + 8 - width_C));
-		src0 = ref + clip3(0, width_C - 8, xInt_C);
-		src1 = ref + clip3(0, width_C - 1, xInt_C + 8);
+		const uint8_t *src0 = ref + clip3(0, width_C - 8, xInt_C);
+		const uint8_t *src1 = ref + clip3(0, width_C - 1, xInt_C + 8);
+		int row_C = ctx->t.stride[1];
 		for (int j = 0; j <= h >> !c422; j++, yInt_C++) {
-			int cb = ctx->t.plane_size_Y + clip3(0, ctx->t.plane_size_C - sstride_C * 2, yInt_C * sstride_C * 2);
-			int cr = sstride_C + cb;
+			int cb = PLANE_C(&ctx->t, refPic) + clip3(0, ctx->t.plane_size_C - row_C, yInt_C * row_C);
+			int cr = ctx->t.stride_Cr + cb;
 			// reads are split in 2 to support 8px-wide frames
 			ctx->edge_buf_l[j * 4 + 84] = ((i64x2)shuffle(loadu64(src0 + cb), shuf))[0];
 			ctx->edge_buf[j * 32 + 680] = *(src1 + cb);
@@ -1378,7 +1418,7 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	}
 	
 	if (__builtin_expect(wide, 0)) {
-		decode_inter_wide(ctx, i4x4, x, y, w, h, src_Y, sstride_Y, src_C, sstride_C, refIdxX, refIdx);
+		decode_inter_wide(ctx, i4x4, x, y, yC, w, h, src_Y, sstride_Y, src_C, sstride_C, refIdxX, refIdx);
 		return;
 	}
 	
@@ -1388,7 +1428,22 @@ static void noinline decode_inter(Edge264MvcContext *ctx, int i, int w, int h) {
 	int xFrac_C = x & 7;
 	int yFrac_C = yC & 7;
 	i32x4 ABCD = {little_endian32(((8 - xFrac_C) | xFrac_C << 8) * ((8 - yFrac_C) | yFrac_C << 16))};
-	decode_inter_chroma(kind, (x & 7) == 0 && yFrac_C == 0, w, h << c422, sstride_C, src_C, dstride_C, dst_C, ABCD, wod);
+	if (__builtin_expect(ctx->t.field_pic_flag, 0)) {
+		// in field pictures, predict into rows that alternate as in frames
+		uint8_t pred[256] __attribute__((aligned(16)));
+		int rows = h >> !c422, n = w >> 1;
+		for (int r = 0; r < rows; r++) {
+			memcpy(pred + r * 16, dst_C + r * ctx->t.stride[1], n);
+			memcpy(pred + r * 16 + 8, dst_C + ctx->t.stride_Cr + r * ctx->t.stride[1], n);
+		}
+		decode_inter_chroma(kind, (x & 7) == 0 && yFrac_C == 0, w, h << c422, sstride_C, src_C, 8, pred, ABCD, wod);
+		for (int r = 0; r < rows; r++) {
+			memcpy(dst_C + r * ctx->t.stride[1], pred + r * 16, n);
+			memcpy(dst_C + ctx->t.stride_Cr + r * ctx->t.stride[1], pred + r * 16 + 8, n);
+		}
+	} else {
+		decode_inter_chroma(kind, (x & 7) == 0 && yFrac_C == 0, w, h << c422, sstride_C, src_C, dstride_C, dst_C, ABCD, wod);
+	}
 	
 	// tail jump to luma prediction
 	int xFrac_Y = x & 3;

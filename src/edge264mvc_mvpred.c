@@ -451,6 +451,47 @@ static always_inline void decode_direct_spatial_mv_pred(Edge264MvcContext *ctx, 
 		decode_inter(ctx, 16, 16, 16);
 }
 
+/**
+ * Gathers the values that direct prediction reads of the colocated macroblock
+ * when the colocated picture is a frame for a field picture or a field for a
+ * frame picture (8.4.1.2.1, Table 8-8, with direct_8x8_inference_flag 1, as
+ * interlaced streams have): the corner 4x4 block of each 8x8 partition takes
+ * the block at (xCol, yM) of the macroblock mbAddrCol1 or mbAddrCol4. The
+ * references are those MapColToList0 looks for, the field of the colocated
+ * reference frame with the parity of the current picture (Frm_To_Fld), or the
+ * frame of the colocated reference field (Fld_To_Frm), and temporal direct
+ * prediction gets the vertical motion vectors scaled (8-193, 8-194).
+ */
+static noinline void colocated_cross(Edge264MvcContext *ctx) {
+	static const int8_t blk_fld[4] = {0, 5, 8, 13}; // (xCol, (2 * yCol) % 16) of the corners
+	static const int8_t blk_frm[2][4] = {{0, 5, 2, 7}, {8, 13, 10, 15}}; // (xCol, 8 * (mby % 2) + 4 * (yCol / 8))
+	Edge264MvcMacroblock *c = &ctx->mbCol_cross;
+	int width = ctx->t.pic_width_in_mbs;
+	int fld = ctx->t.col_structure == COL_FRM_TO_FLD;
+	const Edge264MvcMacroblock *base = ctx->t.mbCol_buffer + (fld ? 2 * ctx->mby : ctx->mby >> 1) * (width + 1) + ctx->mbx;
+	int temporal = !ctx->t.direct_spatial_mv_pred_flag;
+	*c = unavail_mb;
+	c->f.inter_eqs_s = 0;
+	for (int k = 0; k < 4; k++) {
+		const Edge264MvcMacroblock *s = fld && k >= 2 ? base + width + 1 : base; // mbAddrCol1 takes yCol / 8
+		int b = fld ? blk_fld[k] : blk_frm[ctx->mby & 1][k];
+		c->mbIsInterFlag |= s->mbIsInterFlag;
+		for (int lx = 0; lx < 2; lx++) {
+			int refIdx = s->refIdx[lx * 4 + (b >> 2)];
+			int refPic = s->refPic[lx * 4 + (b >> 2)];
+			c->refIdx[lx * 4 + k] = refIdx;
+			c->refPic[lx * 4 + k] = refPic < 0 ? refPic : fld ? refPic + ctx->t.bottom_field_flag * FIELD_ID : refPic & (FIELD_ID - 1);
+			int mvx = refIdx < 0 ? 0 : s->mvs[lx * 32 + b * 2];
+			int mvy = refIdx < 0 ? 0 : s->mvs[lx * 32 + b * 2 + 1];
+			if (temporal)
+				mvy = fld ? mvy / 2 : mvy * 2;
+			c->mvs[lx * 32 + k * 8 + k * 2] = mvx;
+			c->mvs[lx * 32 + k * 8 + k * 2 + 1] = mvy;
+		}
+	}
+	ctx->mbCol = c;
+}
+
 static always_inline void decode_direct_temporal_mv_pred(Edge264MvcContext *ctx, unsigned direct_flags)
 {
 	// load refPicCol and mvCol

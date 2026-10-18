@@ -269,19 +269,19 @@ static void hbd_intra16x16(uint8_t *p, size_t stride, int mode, int max) {
 
 /**
  * Intra chroma prediction (8.3.4) of both components, 8 wide and h high (8 for
- * 4:2:0, 16 for 4:2:2), with the rows of Cb and Cr alternating at stride.
+ * 4:2:0, 16 for 4:2:2), with the rows of a component at row and Cr at cr from Cb.
  */
-static void hbd_intraChroma(uint8_t *p, size_t stride, int mode, int max, int h) {
+static void hbd_intraChroma(uint8_t *p, size_t cr, size_t row, int mode, int max, int h) {
 	int availA = mode != IC8x8_DC_A_8 && mode != IC8x8_DC_AB_8;
 	int availB = mode != IC8x8_DC_B_8 && mode != IC8x8_DC_AB_8;
 	int yCF = h == 16 ? 4 : 0;
 	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
-		uint8_t *s = p + iCbCr * stride; // row y of the component at s + y * stride * 2
-		const uint16_t *top = HBD_ROW(s, stride * 2, -1);
-		#define LEFT(y) HBD_ROW(s, stride * 2, y)[-1]
+		uint8_t *s = p + iCbCr * cr; // row y of the component at s + y * row
+		const uint16_t *top = HBD_ROW(s, row, -1);
+		#define LEFT(y) HBD_ROW(s, row, y)[-1]
 		if (mode == IC8x8_H_8 || mode == IC8x8_V_8) {
 			for (int y = 0; y < h; y++) {
-				uint16_t *q = HBD_ROW(s, stride * 2, y);
+				uint16_t *q = HBD_ROW(s, row, y);
 				for (int x = 0; x < 8; x++)
 					q[x] = mode == IC8x8_V_8 ? top[x] : LEFT(y);
 			}
@@ -295,7 +295,7 @@ static void hbd_intraChroma(uint8_t *p, size_t stride, int mode, int max, int h)
 			int b = (34 * H + 32) >> 6;
 			int c = ((34 - 29 * (h == 16)) * V + 32) >> 6;
 			for (int y = 0; y < h; y++) {
-				uint16_t *q = HBD_ROW(s, stride * 2, y);
+				uint16_t *q = HBD_ROW(s, row, y);
 				for (int x = 0; x < 8; x++)
 					q[x] = clip3(0, max, (a + b * (x - 3) + c * (y - 3 - yCF) + 16) >> 5);
 			}
@@ -312,7 +312,7 @@ static void hbd_intraChroma(uint8_t *p, size_t stride, int mode, int max, int h)
 				else
 					dc = availA ? (sumL + 2) >> 2 : availB ? (sumT + 2) >> 2 : dc;
 				for (int y = yO; y < yO + 4; y++) {
-					uint16_t *q = HBD_ROW(s, stride * 2, y);
+					uint16_t *q = HBD_ROW(s, row, y);
 					for (int x = xO; x < xO + 4; x++)
 						q[x] = dc;
 				}
@@ -432,18 +432,21 @@ static noinline void hbd_decode_inter(Edge264MvcContext *ctx, int i, int w, int 
 	if (ctx->t.ChromaArrayType == 0)
 		return;
 	int maxC = ctx->t.samples_clip[1][0];
-	size_t sC = ctx->t.stride[1] >> 1; // from a Cb row to the Cr row of the same y
+	size_t sC = ctx->t.stride_Cr, row = ctx->t.stride[1]; // from a Cb row to the Cr row of the same y, and to the next row
 	int WC = W >> 1, HC = c422 ? Hgt : Hgt >> 1;
 	int wC = w >> 1, hC = c422 ? h : h >> 1;
+	// in 4:2:0 fields, a reference field of the other parity has its chroma
+	// samples a quarter sample off vertically (Table 8-10)
+	int mvCy = ctx->t.field_pic_flag && !c422 ? mvy + (ctx->t.bottom_field_flag - (mb->refPic[i8x8] >= FIELD_ID)) * 2 : mvy;
 	int xIntC = (xAL >> 1) + (mvx >> 3), xFracC = mvx & 7;
-	int yIntC = c422 ? yAL + (mvy >> 2) : (yAL >> 1) + (mvy >> 3);
-	int yFracC = c422 ? (mvy & 3) << 1 : mvy & 7;
-	const uint8_t *refC = ref + ctx->t.plane_size_Y;
+	int yIntC = c422 ? yAL + (mvy >> 2) : (yAL >> 1) + (mvCy >> 3);
+	int yFracC = c422 ? (mvy & 3) << 1 : mvCy & 7;
+	const uint8_t *refC = ref + PLANE_C(&ctx->t, mb->refPic[i8x8]);
 	uint8_t *dstC = ctx->samples_mb[1] + (y444[i4x4] >> !c422) * ctx->t.stride[1] + (x444[i4x4] >> 1 << 1);
 	for (int iCbCr = 0; iCbCr < 2; iCbCr++) {
-		#define REFC(x, y) HBD_ROW(refC + iCbCr * sC, sC * 2, clip3(0, HC - 1, y))[clip3(0, WC - 1, x)]
+		#define REFC(x, y) HBD_ROW(refC + iCbCr * sC, row, clip3(0, HC - 1, y))[clip3(0, WC - 1, x)]
 		for (int y = 0; y < hC; y++) {
-			uint16_t *q = HBD_ROW(dstC + iCbCr * sC, sC * 2, y);
+			uint16_t *q = HBD_ROW(dstC + iCbCr * sC, row, y);
 			for (int x = 0; x < wC; x++) {
 				int xI = xIntC + x, yI = yIntC + y;
 				int v = ((8 - xFracC) * (8 - yFracC) * REFC(xI, yI) + xFracC * (8 - yFracC) * REFC(xI + 1, yI) +
@@ -526,7 +529,8 @@ static noinline void hbd_deblock_mb(Edge264MvcContext *ctx) {
 					if (!(mb->filter_edges & (1 << dir)))
 						continue;
 					idx = (dir ? 12 : 8) + plane;
-					bS4 = !((dir ? mbB : mbA)->mbIsInterFlag & mb->mbIsInterFlag);
+					// the horizontal edges of field pictures take bS 3 (8.7.2.1)
+					bS4 = !((dir ? mbB : mbA)->mbIsInterFlag & mb->mbIsInterFlag) && !(dir & ctx->t.field_pic_flag);
 				} else if (!chroma && (e & 1) && mb->f.transform_size_8x8_flag) {
 					continue;
 				}

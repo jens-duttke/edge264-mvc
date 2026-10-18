@@ -73,3 +73,7 @@ Guards colZeroFlag for an inter-view reference at `RefPicList1[0]`. In a depende
     Bwd_NonAnchorRefs       0 0
 
 Keep `IntraPeriod` equal to `GOPSize`: with non-anchor pictures between anchors, JMVC 8.5 writes one reference list modification more than the list holds in the first dependent-view B picture after a base-view P picture, and its own decoder rejects the stream.
+
+## `mvcict1_fields.264`
+
+Guards MVC field pictures. Unlike the other streams here it is not encoded with JMVC: it is the first 18 base-view pictures of the ITU conformance stream MVCICT-1, cut by `tests/gen_stream_prefix.py` with the dependent-view pictures between them, so 9 frames of each view coded as fields. A dependent field predicts from the base field of its parity in the same access unit (H.8.2.1), and the fields of each view pair up as their slices interleave (base top, dependent top, base bottom, dependent bottom). Both views are anchored to the JMVC decoder's output for the whole vector, whose first 9 frames the prefix gives: JMVC itself leaves the last frames of the cut stream unwritten. 720x480, Stereo High, CABAC.

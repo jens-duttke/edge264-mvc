@@ -703,7 +703,7 @@ static cold noinline void decode_intra16x16(uint8_t * restrict p, size_t stride,
  */
 static cold noinline void decode_intraChroma(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
 	if (clip[0] > 255) {
-		hbd_intraChroma(p, stride, mode, clip[0], 8);
+		hbd_intraChroma(p, stride, stride * 2, mode, clip[0], 8);
 		return;
 	}
 	static const i8x16 shufDC = {0, 0, 0, 0, 4, 4, 4, 4, 8, 8, 8, 8, 12, 12, 12, 12};
@@ -794,7 +794,7 @@ static cold noinline void decode_intraChroma(uint8_t * restrict p, size_t stride
  */
 static cold noinline void decode_intraChroma422(uint8_t * restrict p, size_t stride, int mode, i16x8 clip) {
 	if (clip[0] > 255) {
-		hbd_intraChroma(p, stride, mode, clip[0], 16);
+		hbd_intraChroma(p, stride, stride * 2, mode, clip[0], 16);
 		return;
 	}
 	int availA = mode != IC8x8_DC_A_8 && mode != IC8x8_DC_AB_8;

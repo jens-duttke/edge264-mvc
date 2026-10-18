@@ -517,57 +517,34 @@ static void transform_dc2x2(Edge264MvcContext *ctx)
 		i16x8 lor = broadcastlo32(rr);
 		i16x8 hir = broadcasthi32(rr);
 		
-		// add to predicted samples
-		uint8_t *p = ctx->samples_mb[1];
-		size_t stride = ctx->t.stride[1] >> 1;
+		// add to predicted samples, with the rows of Cb and Cr apart at stride_Cr
+		// (which is not half the stride in field pictures)
+		uint8_t *cb = ctx->samples_mb[1], *cr = ctx->samples_mb[2];
+		size_t row = ctx->t.stride[1];
+		#define CB(y) (cb + (y) * row)
+		#define CR(y) (cr + (y) * row)
 		if (ctx->t.samples_clip[1][0] == 255) {
-			i16x8 b0 = addlou8s16(loada64(p             ), lob);
-			i16x8 r0 = addlou8s16(loada64(p + stride    ), lor);
-			i16x8 b1 = addlou8s16(loada64(p + stride * 2), lob);
-			i16x8 r1 = addlou8s16(loada64(p + stride * 3), lor);
-			i64x2 b8 = packus16(b0, b1);
-			i64x2 r8 = packus16(r0, r1);
-			*(int64_t *)(p             ) = b8[0];
-			*(int64_t *)(p + stride    ) = r8[0];
-			*(int64_t *)(p + stride * 2) = b8[1];
-			*(int64_t *)(p + stride * 3) = r8[1];
-			i16x8 b2 = addlou8s16(loada64(p += stride * 4), lob);
-			i16x8 r2 = addlou8s16(loada64(p + stride    ), lor);
-			i16x8 b3 = addlou8s16(loada64(p + stride * 2), lob);
-			i16x8 r3 = addlou8s16(loada64(p + stride * 3), lor);
-			i64x2 b9 = packus16(b2, b3);
-			i64x2 r9 = packus16(r2, r3);
-			*(int64_t *)(p             ) = b9[0];
-			*(int64_t *)(p + stride    ) = r9[0];
-			*(int64_t *)(p + stride * 2) = b9[1];
-			*(int64_t *)(p + stride * 3) = r9[1];
-			i16x8 b4 = addlou8s16(loada64(p += stride * 4), hib);
-			i16x8 r4 = addlou8s16(loada64(p + stride    ), hir);
-			i16x8 b5 = addlou8s16(loada64(p + stride * 2), hib);
-			i16x8 r5 = addlou8s16(loada64(p + stride * 3), hir);
-			i64x2 bA = packus16(b4, b5);
-			i64x2 rA = packus16(r4, r5);
-			*(int64_t *)(p             ) = bA[0];
-			*(int64_t *)(p + stride    ) = rA[0];
-			*(int64_t *)(p + stride * 2) = bA[1];
-			*(int64_t *)(p + stride * 3) = rA[1];
-			i16x8 b6 = addlou8s16(loada64(p += stride * 4), hib);
-			i16x8 r6 = addlou8s16(loada64(p + stride    ), hir);
-			i16x8 b7 = addlou8s16(loada64(p + stride * 2), hib);
-			i16x8 r7 = addlou8s16(loada64(p + stride * 3), hir);
-			i64x2 bB = packus16(b6, b7);
-			i64x2 rB = packus16(r6, r7);
-			*(int64_t *)(p             ) = bB[0];
-			*(int64_t *)(p + stride    ) = rB[0];
-			*(int64_t *)(p + stride * 2) = bB[1];
-			*(int64_t *)(p + stride * 3) = rB[1];
+			for (int y = 0; y < 8; y += 2) {
+				i16x8 lb = y < 4 ? lob : hib, lr = y < 4 ? lor : hir;
+				i16x8 b0 = addlou8s16(loada64(CB(y)), lb);
+				i16x8 r0 = addlou8s16(loada64(CR(y)), lr);
+				i16x8 b1 = addlou8s16(loada64(CB(y + 1)), lb);
+				i16x8 r1 = addlou8s16(loada64(CR(y + 1)), lr);
+				i64x2 b8 = packus16(b0, b1);
+				i64x2 r8 = packus16(r0, r1);
+				*(int64_t *)CB(y) = b8[0];
+				*(int64_t *)CR(y) = r8[0];
+				*(int64_t *)CB(y + 1) = b8[1];
+				*(int64_t *)CR(y + 1) = r8[1];
+			}
 		} else {
 			for (int i = 0; i < 4; i++) { // 4x4 blocks in raster order
-				uint8_t *q = p + (i >> 1) * 8 * stride + (i & 1) * 8;
-				hbd_add_dc4x4(q, stride * 2, (int16_t)rb[i], ctx->t.samples_clip[1][0]);
-				hbd_add_dc4x4(q + stride, stride * 2, (int16_t)rr[i], ctx->t.samples_clip[2][0]);
+				hbd_add_dc4x4(CB((i >> 1) * 4) + (i & 1) * 8, row, (int16_t)rb[i], ctx->t.samples_clip[1][0]);
+				hbd_add_dc4x4(CR((i >> 1) * 4) + (i & 1) * 8, row, (int16_t)rr[i], ctx->t.samples_clip[2][0]);
 			}
 		}
+		#undef CB
+		#undef CR
 	}
 }
 

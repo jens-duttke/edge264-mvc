@@ -17,9 +17,9 @@ project(edge264mvc VERSION 2.0 LANGUAGES C)
 set(EDGE264MVC_MAJOR 2)
 
 # Optional: forward a VARIANTS string to the Makefile
-# (e.g. -DEDGE264MVC_VARIANTS=x86-64-v2,x86-64-v3,logs).
+# (e.g. -DEDGE264MVC_VARIANTS=x86-64-v2,x86-64-v3,x86-64-v4,logs).
 set(EDGE264MVC_VARIANTS "" CACHE STRING
-    "Comma-separated edge264-mvc build variants (x86-64-v2, x86-64-v3, logs)")
+    "Comma-separated edge264-mvc build variants (x86-64-v2, x86-64-v3, x86-64-v4, logs)")
 
 include(ExternalProject)
 

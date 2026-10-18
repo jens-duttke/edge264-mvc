@@ -183,7 +183,7 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 	dec->parse_nal_unit[8] = ADD_VARIANT(parse_pic_parameter_set);
 	dec->parse_nal_unit[10] = parse_end_of_sequence;
 	dec->parse_nal_unit[14] = dec->parse_nal_unit[20] = ADD_VARIANT(parse_nal_unit_header_extension);
-	#if defined(HAS_X86_64_V2) || defined(HAS_X86_64_V3)
+	#if defined(HAS_X86_64_V2) || defined(HAS_X86_64_V3) || defined(HAS_X86_64_V4)
 		__builtin_cpu_init();
 	#endif
 	#ifdef HAS_X86_64_V2
@@ -213,6 +213,28 @@ static Edge264MvcDecoder *alloc_decoder(int n_threads, Edge264MvcLogCb log_cb, v
 			dec->parse_nal_unit[8] = parse_pic_parameter_set_v3;
 			dec->parse_nal_unit[10] = parse_end_of_sequence_v3;
 			dec->parse_nal_unit[14] = dec->parse_nal_unit[20] = parse_nal_unit_header_extension_v3;
+		}
+	#endif
+	#ifdef HAS_X86_64_V4
+		// x86-64-v4 being x86-64-v3 plus the AVX-512 subsets below, whose code
+		// mostly gains from the EVEX encoding of 128-bit vectors (32 registers,
+		// ternary logic, masked moves) rather than from wider vectors
+		if (__builtin_cpu_supports("avx") &&
+			__builtin_cpu_supports("avx2") &&
+			__builtin_cpu_supports("bmi") &&
+			__builtin_cpu_supports("bmi2") &&
+			__builtin_cpu_supports("fma") &&
+			__builtin_cpu_supports("avx512f") &&
+			__builtin_cpu_supports("avx512bw") &&
+			__builtin_cpu_supports("avx512cd") &&
+			__builtin_cpu_supports("avx512dq") &&
+			__builtin_cpu_supports("avx512vl")) {
+			dec->worker_loop = worker_loop_v4;
+			dec->parse_nal_unit[1] = dec->parse_nal_unit[5] = parse_slice_layer_without_partitioning_v4;
+			dec->parse_nal_unit[7] = dec->parse_nal_unit[15] = parse_seq_parameter_set_v4;
+			dec->parse_nal_unit[8] = parse_pic_parameter_set_v4;
+			dec->parse_nal_unit[10] = parse_end_of_sequence_v4;
+			dec->parse_nal_unit[14] = dec->parse_nal_unit[20] = parse_nal_unit_header_extension_v4;
 		}
 	#endif
 	#ifdef HAS_LOGS

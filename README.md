@@ -49,7 +49,7 @@ You can find lists of targets and options and what they do in the [Makefile](Mak
 The `VARIANTS` option allows shipping multiple builds inside a single library file. It is intended for distribution packages that must run efficiently across a wide range of x86 CPUs: the library detects the host ISA level at runtime and dispatches to the fastest available implementation. They are *not* needed for a native single-machine build, where `-march=native` already picks the best code path at compile time. For example:
 
 ```sh
-make CFLAGS="-march=x86-64" VARIANTS=x86-64-v2,x86-64-v3 BUILDTEST=no
+make CFLAGS="-march=x86-64" VARIANTS=x86-64-v2,x86-64-v3,x86-64-v4 BUILDTEST=no
 ```
 
 ### CMake integration

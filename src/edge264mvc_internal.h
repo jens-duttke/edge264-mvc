@@ -1890,6 +1890,7 @@ static noinline void parse_slice_data_cabac(Edge264MvcContext *ctx);
 void *worker_loop(void *d);
 void *worker_loop_v2(void *d);
 void *worker_loop_v3(void *d);
+void *worker_loop_v4(void *d);
 void *worker_loop_log(void *d);
 int ignore_NAL_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int unsup_NAL_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
@@ -1897,24 +1898,29 @@ int corrupt_NAL_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *un
 int parse_slice_layer_without_partitioning(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_slice_layer_without_partitioning_v2(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_slice_layer_without_partitioning_v3(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
+int parse_slice_layer_without_partitioning_v4(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_slice_layer_without_partitioning_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_access_unit_delimiter_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_sei_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_nal_unit_header_extension(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_nal_unit_header_extension_v2(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_nal_unit_header_extension_v3(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
+int parse_nal_unit_header_extension_v4(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_nal_unit_header_extension_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_pic_parameter_set(Edge264MvcDecoder *dec,  Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_pic_parameter_set_v2(Edge264MvcDecoder *dec,  Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_pic_parameter_set_v3(Edge264MvcDecoder *dec,  Edge264MvcUnrefCb unref_cb, void *unref_arg);
+int parse_pic_parameter_set_v4(Edge264MvcDecoder *dec,  Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_pic_parameter_set_log(Edge264MvcDecoder *dec,  Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_seq_parameter_set(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_seq_parameter_set_v2(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_seq_parameter_set_v3(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
+int parse_seq_parameter_set_v4(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_seq_parameter_set_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_end_of_sequence(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_end_of_sequence_v2(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_end_of_sequence_v3(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
+int parse_end_of_sequence_v4(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 int parse_end_of_sequence_log(Edge264MvcDecoder *dec, Edge264MvcUnrefCb unref_cb, void *unref_arg);
 
 #endif

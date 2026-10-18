@@ -23,8 +23,9 @@
 #                   x86-64-v2  → build an extra edge264mvc_headers object with
 #                                -march=x86-64-v2 for runtime dispatch (SSE4.1)
 #                   x86-64-v3  → same with -march=x86-64-v3 (AVX2)
+#                   x86-64-v4  → same with -march=x86-64-v4 (AVX-512)
 #                   logs       → build the debug/logging variant
-#                 x86-64-v2/v3 are intended for distribution packages that must
+#                 x86-64-v2/v3/v4 are intended for distribution packages that must
 #                 run efficiently across a wide range of x86 CPUs: the library
 #                 detects the host ISA level at runtime and dispatches to the
 #                 fastest available implementation.  They are NOT needed for a
@@ -131,14 +132,16 @@ endif
 # ---- VARIANTS parsing --------------------------------------------------------
 HAS_V2   := $(findstring x86-64-v2,$(VARIANTS))
 HAS_V3   := $(findstring x86-64-v3,$(VARIANTS))
+HAS_V4   := $(findstring x86-64-v4,$(VARIANTS))
 HAS_LOGS := $(findstring logs,$(VARIANTS))
 
 # x86 variants are meaningless on non-x86 targets
 ifneq (,$(findstring $(OS),wasm android ios))
-  ifneq ($(HAS_V2)$(HAS_V3),)
-    $(warning WARNING: x86-64-v2/v3 variants are ignored for OS=$(OS))
+  ifneq ($(HAS_V2)$(HAS_V3)$(HAS_V4),)
+    $(warning WARNING: x86-64-v2/v3/v4 variants are ignored for OS=$(OS))
     HAS_V2 :=
     HAS_V3 :=
+    HAS_V4 :=
   endif
 endif
 
@@ -146,6 +149,7 @@ endif
 OBJNAMES := edge264mvc.o \
   $(if $(HAS_V2),edge264mvc_headers_v2.o) \
   $(if $(HAS_V3),edge264mvc_headers_v3.o) \
+  $(if $(HAS_V4),edge264mvc_headers_v4.o) \
   $(if $(HAS_LOGS),edge264mvc_headers_log.o)
 
 # ---- Output filenames per target ---------------------------------------------
@@ -295,6 +299,7 @@ endif
 RUNTIME_TESTS := \
   $(if $(HAS_V2),-DHAS_X86_64_V2) \
   $(if $(HAS_V3),-DHAS_X86_64_V3) \
+  $(if $(HAS_V4),-DHAS_X86_64_V4) \
   $(if $(HAS_LOGS),-DHAS_LOGS)
 
 # ---- Test files --------------------------------------------------------------
@@ -345,6 +350,9 @@ edge264mvc_headers_v2.o: edge264mvc.h src/*
 
 edge264mvc_headers_v3.o: edge264mvc.h src/*
 	$(Q)$(CC) src/edge264mvc_headers.c -c $(CPPFLAGS) $(CFLAGS) $(OBJFLAGS) -march=x86-64-v3 "-DADD_VARIANT(f)=f##_v3" -o $@
+
+edge264mvc_headers_v4.o: edge264mvc.h src/*
+	$(Q)$(CC) src/edge264mvc_headers.c -c $(CPPFLAGS) $(CFLAGS) $(OBJFLAGS) -march=x86-64-v4 "-DADD_VARIANT(f)=f##_v4" -o $@
 
 edge264mvc_headers_log.o: edge264mvc.h src/*
 	$(Q)$(CC) src/edge264mvc_headers.c -c $(CPPFLAGS) $(CFLAGS) $(OBJFLAGS) -DLOGS "-DADD_VARIANT(f)=f##_log" -o $@
@@ -797,7 +805,7 @@ help:
 	@echo "Examples:"
 	@echo "  make"
 	@echo "  make V=yes"
-	@echo "  make VARIANTS=x86-64-v2,x86-64-v3,logs"
+	@echo "  make VARIANTS=x86-64-v2,x86-64-v3,x86-64-v4,logs"
 	@echo "  make SANITIZE=address,undefined"
 	@echo "  make STATIC=yes"
 	@echo "  make OS=wasm VARIANTS=logs BUILDTEST=no"

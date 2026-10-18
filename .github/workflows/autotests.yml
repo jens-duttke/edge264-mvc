@@ -8,7 +8,7 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v5
-      - run: make CFLAGS="-march=x86-64" VARIANTS=x86-64-v2,x86-64-v3,logs check
+      - run: make CFLAGS="-march=x86-64" VARIANTS=x86-64-v2,x86-64-v3,x86-64-v4,logs check
   arm64-apple-darwinXX:
     runs-on: macos-latest
     steps:
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - run: make CFLAGS="-march=x86-64" VARIANTS=x86-64-v2,x86-64-v3,logs check
+      - run: make CFLAGS="-march=x86-64" VARIANTS=x86-64-v2,x86-64-v3,x86-64-v4,logs check
       - run: make clean && cmake -S tests/cmake -B build-cmake && cmake --build build-cmake && ./build-cmake/consumer
       - run: make clean && make STATIC=yes BUILDTEST=no CFLAGS="-march=x86-64 -fPIC" && cc -shared -I. tests/static_plugin.c libedge264mvc.a -o static_plugin.so && ! nm -D --defined-only static_plugin.so | grep edge264mvc_
   arm64-linux-gnu:
@@ -49,7 +49,7 @@ jobs:
         with:
           msystem: MINGW64
           install: make mingw-w64-x86_64-gcc
-      - run: make OS=windows CFLAGS=-march=x86-64 CPPFLAGS=-DNDEBUG VARIANTS=x86-64-v2,x86-64-v3,logs BUILDTEST=no conformance_check.exe liveness_check.exe asan_check.exe api_check.exe
+      - run: make OS=windows CFLAGS=-march=x86-64 CPPFLAGS=-DNDEBUG VARIANTS=x86-64-v2,x86-64-v3,x86-64-v4,logs BUILDTEST=no conformance_check.exe liveness_check.exe asan_check.exe api_check.exe
       - run: ./conformance_check.exe run tests/conformance/manifest.txt tests/conformance
       - run: EDGE264MVC_THREADS=8 ./conformance_check.exe run tests/conformance/manifest.txt tests/conformance
       - run: EDGE264MVC_THREADS=8 ./liveness_check.exe run tests/liveness/manifest.txt tests/liveness

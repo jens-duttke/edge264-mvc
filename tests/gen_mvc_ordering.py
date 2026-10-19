@@ -12,8 +12,13 @@
 # picture data; every decoded sample is 128 by spec. Two IDR sequences exercise
 # the reorder across a POC reset. Usage:
 #   python3 tests/gen_mvc_ordering.py tests/conformance/mvc-synthetic/mvc_display_ordering.yaml
+# With the argument idr-leading, the second IDR picture is followed by two pictures
+# displayed before it (lower POCs, as Blu-ray and camcorder GOPs have), while the
+# dependent view of the picture before it still waits for output:
+#   python3 tests/gen_mvc_ordering.py tests/conformance/mvc-synthetic/mvc_idr_leading.yaml idr-leading
 import sys
 out = sys.argv[1] if len(sys.argv) > 1 else "tests/conformance/mvc-synthetic/mvc_display_ordering.yaml"
+variant = sys.argv[2] if len(sys.argv) > 2 else ""
 
 # (nal_unit_type, nal_ref_idc, frame_num, pic_order_cnt_lsb)
 # decode order 0, 2, 6, 4 -> display order 0, 2, 4, 6, twice (across an IDR reset).
@@ -21,6 +26,11 @@ FRAMES = [
     (5, 1, 0, 0), (1, 1, 1, 2), (1, 1, 2, 6), (1, 0, 3, 4),
     (5, 1, 0, 0), (1, 1, 1, 2), (1, 1, 2, 6), (1, 0, 3, 4),
 ]
+if variant == "idr-leading": # display order 0, 2, 4, then 0, 2 (leading), 4 (IDR), 6, 8
+    FRAMES = [
+        (5, 1, 0, 0), (1, 1, 1, 4), (1, 0, 2, 2),
+        (5, 1, 0, 4), (1, 0, 1, 0), (1, 0, 1, 2), (1, 1, 1, 8), (1, 0, 2, 6),
+    ]
 
 # An I_PCM macroblock carrying a single flat luma value, so each picture has a
 # distinct, content-addressable hash and a reordered emission is visible. I_PCM

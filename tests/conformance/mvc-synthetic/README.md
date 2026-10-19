@@ -143,6 +143,18 @@ decoder reproduces that hash. Run it from the repo root:
   decoder fails it on the base hash, and it matches FFmpeg's base-view order.
   `mvc_display_ordering.yaml` is produced by `tests/gen_mvc_ordering.py`.
 
+- **mvc_idr_leading** (8 frames) - a **fork regression guard** for the output order at an
+  IDR picture followed by pictures displayed before it, as GOPs of Blu-ray and camcorder
+  video have them: the second IDR picture (POC 4) is followed by two pictures with POCs 0
+  and 2, while the dependent view of the picture before it still waits for output, with
+  `max_num_reorder_frames = 1`. Counting that dependent view against the reorder limit of
+  the base view bumped the IDR picture as soon as it was parsed, so it came out before the
+  two pictures displayed ahead of it; the reorder limit now counts the pictures of one
+  view. Like `mvc_display_ordering` each picture carries a flat I_PCM luma per POC, so
+  the order shows in both hashes, which fail on the unfixed decoder, and the base view
+  order matches FFmpeg's. `mvc_idr_leading.yaml` is produced by
+  `tests/gen_mvc_ordering.py` with the argument `idr-leading`.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

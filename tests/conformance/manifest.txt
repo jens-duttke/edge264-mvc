@@ -259,6 +259,12 @@ mvc-synthetic/mvc_mmco5_pairing 3 1 696a95091c933d253656812f9555a4e4 696a95091c9
 mvc-synthetic/mvc_dependent_frame_num_gap 12 1 20fc95a352de8b25f2685fdbf0debce4 20fc95a352de8b25f2685fdbf0debce4 1
 mvc-synthetic/mvc_same_poc_pairing 320 1 304d38b6a717a325d5ef60a801e09ce4 304d38b6a717a325d5ef60a801e09ce4 1
 mvc-synthetic/mvc_display_ordering 8 1 0b51b61ff4711325ac6af977efce9ce4 95190a3f40631325987912b2f2731ce4
+# mvc_idr_leading (tests/gen_mvc_ordering.py idr-leading; see mvc-synthetic/README.md): an
+# IDR picture followed by two pictures displayed before it, while the dependent view of the
+# picture before it still waits for output. The base view order matches FFmpeg's; a decoder
+# counting both views against max_num_reorder_frames outputs the IDR picture first, so the
+# base and dependent hashes FAIL on the unfixed decoder.
+mvc-synthetic/mvc_idr_leading 8 1 58d6da9e905c1325f9beb79d14fc0ce4 619d8f9585e21325ac627ff6635d8ce4
 # MVC fixture encoded with JMVC 8.5 (ITU-T H.264.2), not an ITU vector; see
 # mvc-jmvc/README.md. Both views are anchored to the JMVC decoder's output
 # (check=OK dep_check=OK). Its dependent-view B slices put the base view at

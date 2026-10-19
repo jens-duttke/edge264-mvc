@@ -3183,7 +3183,11 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 			dec->DispOrder[dec->currPic] = dec->next_dispnum++;
 			dec->output_frames |= (FrameMask)1 << dec->currPic;
 			queue_push(dec, non_base_view, dec->currPic);
-		} else if (mask_popcount(dec->to_get_frames & ~dec->output_frames) > sps->max_num_reorder_frames) {
+		} else if (mask_popcount(dec->to_get_frames & ~dec->output_frames & same_views) > sps->max_num_reorder_frames) {
+			// reason: max_num_reorder_frames bounds the pictures of a view, and
+			// counting those of the other view still waiting from before an IDR
+			// picture output that IDR picture ahead of the leading pictures
+			// displayed before it
 			bump_frame(dec, non_base_view, 0);
 		}
 		#ifdef LOGS

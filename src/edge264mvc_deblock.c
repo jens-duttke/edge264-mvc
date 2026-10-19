@@ -1002,7 +1002,7 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 	
 	// compute all values of alpha and beta for each of the color planes first
 	mbA = (mb->filter_edges & 1) ? mb - 1 : mb;
-	mbB = (mb->filter_edges & 2) ? mb - 1 - ctx->t.pic_width_in_mbs : mb;
+	mbB = (mb->filter_edges & 2) ? mb - ctx->deblock_offB : mb;
 	i8x16 zero = {};
 	i8x16 qP = set32((int32_t)mb->QP_s & 0xffffff);
 	i32x4 qPAB = {(int32_t)mbA->QP_s & 0xffffff, (int32_t)mbB->QP_s & 0xffffff};
@@ -1223,4 +1223,272 @@ static noinline void deblock_mb(Edge264MvcContext *ctx)
 		hbd_deblock_mb(ctx);
 	else
 		deblock_Y_8bit(ctx);
+}
+
+
+
+/**
+ * Deblocking of MBAFF frames (8.7), once all their macroblocks are decoded.
+ * The edges between macroblock pairs of different kinds (mixedModeEdgeFlag)
+ * filter samples of other rows than the edges of a picture of a single kind,
+ * with a bS and thresholds that may change on every row, so this is done
+ * sample row by sample row, finding the macroblocks of the samples p0 and q0
+ * in the frame (6.4.1).
+ */
+typedef struct {
+	const Edge264MvcMacroblock *m;
+	int8_t blk; // luma4x4BlkIdx of the sample
+	int8_t field;
+	int16_t pair; // pair address, telling the pairs apart
+} MbaffSample;
+
+static always_inline MbaffSample mbaff_sample(Edge264MvcContext *ctx, int x, int y) {
+	int w = ctx->t.pic_width_in_mbs;
+	const Edge264MvcMacroblock *top = ctx->t.mb_buffer + (x >> 4) + (y >> 5) * 2 * (w + 1);
+	int field = top->f.mb_field_decoding_flag;
+	int bot = field ? y & 1 : (y >> 4) & 1;
+	int row = field ? (y & 31) >> 1 : y & 15, col = x & 15;
+	MbaffSample s = {top + bot * (w + 1), (row >> 3) * 8 + (col >> 3) * 4 + ((row & 7) >> 2) * 2 + ((col & 7) >> 2), field, (x >> 4) + (y >> 5) * w};
+	return s;
+}
+
+// 8.7.2.1, from the luma samples p0 and q0
+static int mbaff_bS(MbaffSample p, MbaffSample q, int vertical) {
+	int mixed = p.pair != q.pair && p.field != q.field;
+	int intra = !p.m->mbIsInterFlag || !q.m->mbIsInterFlag;
+	if (intra) {
+		if (p.m != q.m && ((!p.field && !q.field) || vertical))
+			return 4;
+		if (!mixed || !vertical)
+			return 3;
+	}
+	if (p.m->nC_Y[p.blk] || q.m->nC_Y[q.blk])
+		return 2;
+	if (mixed)
+		return 1;
+	int lim = p.field ? 2 : 4; // vertical difference of 4 quarter frame samples (NOTE 3)
+	int i8p = p.blk >> 2, i8q = q.blk >> 2;
+	int rp0 = p.m->refIdx[i8p] >= 0 ? p.m->refPic[i8p] : -1, rp1 = p.m->refIdx[4 + i8p] >= 0 ? p.m->refPic[4 + i8p] : -1;
+	int rq0 = q.m->refIdx[i8q] >= 0 ? q.m->refPic[i8q] : -1, rq1 = q.m->refIdx[4 + i8q] >= 0 ? q.m->refPic[4 + i8q] : -1;
+	const int16_t *mp0 = p.m->mvs + p.blk * 2, *mp1 = p.m->mvs + 32 + p.blk * 2;
+	const int16_t *mq0 = q.m->mvs + q.blk * 2, *mq1 = q.m->mvs + 32 + q.blk * 2;
+	#define MV_FAR(a, b) (abs((a)[0] - (b)[0]) >= 4 || abs((a)[1] - (b)[1]) >= lim)
+	int np = (rp0 >= 0) + (rp1 >= 0), nq = (rq0 >= 0) + (rq1 >= 0);
+	if (np != nq)
+		return 1;
+	if (np == 1) {
+		int refp = rp0 >= 0 ? rp0 : rp1, refq = rq0 >= 0 ? rq0 : rq1;
+		const int16_t *mvp = rp0 >= 0 ? mp0 : mp1, *mvq = rq0 >= 0 ? mq0 : mq1;
+		return refp != refq || MV_FAR(mvp, mvq);
+	}
+	if (np == 0)
+		return 0;
+	if (!((rp0 == rq0 && rp1 == rq1) || (rp0 == rq1 && rp1 == rq0)))
+		return 1;
+	if (rp0 != rp1) {
+		if (rp0 == rq0)
+			return MV_FAR(mp0, mq0) || MV_FAR(mp1, mq1);
+		return MV_FAR(mp0, mq1) || MV_FAR(mp1, mq0);
+	}
+	return (MV_FAR(mp0, mq0) || MV_FAR(mp1, mq1)) && (MV_FAR(mp0, mq1) || MV_FAR(mp1, mq0));
+	#undef MV_FAR
+}
+
+// 8.7.2.2 to 8.7.2.4 on one set of samples, at stride step from p0 to q0
+static void mbaff_filter(Edge264MvcContext *ctx, uint8_t *q0p, ssize_t step, int bS, int chroma, int iCbCr,
+	const Edge264MvcMacroblock *mp, const Edge264MvcMacroblock *mq)
+{
+	static const uint8_t alpha_t[52] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 5, 6, 7, 8, 9, 10, 12, 13,
+		15, 17, 20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 71, 80, 90, 101, 113, 127, 144, 162, 182, 203, 226, 255, 255};
+	static const uint8_t beta_t[52] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4,
+		6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18};
+	static const uint8_t tC0_t[3][52] = {
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 6, 6, 7, 8, 9, 10, 11, 13},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 7, 8, 8, 10, 11, 12, 13, 15, 17},
+		{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 6, 6, 7, 8, 9, 10, 11, 13, 14, 16, 18, 20, 23, 25},
+	};
+	if (bS == 0)
+		return;
+	int c = chroma ? 1 + iCbCr : 0;
+	int QpBdOffset = chroma ? ctx->t.QpBdOffset_C : ctx->t.QpBdOffset_Y;
+	int qPav = (mp->QP[c] - QpBdOffset + mq->QP[c] - QpBdOffset + 1) >> 1;
+	int FilterOffsetA = ((int8_t)(mq->QP[3] << 4) >> 4) * 2;
+	int FilterOffsetB = ((int8_t)mq->QP[3] >> 4) * 2;
+	int indexA = clip3(0, 51, qPav + FilterOffsetA);
+	int indexB = clip3(0, 51, qPav + FilterOffsetB);
+	int shift = ctx->t.px_shift ? __builtin_ctz(ctx->t.samples_clip[c][0] + 1) - 8 : 0;
+	int alpha = alpha_t[indexA] << shift, beta = beta_t[indexB] << shift, maxv = ctx->t.samples_clip[c][0];
+	int p[4], q[4], n = chroma ? 2 : 4;
+	for (int i = 0; i < n; i++) {
+		if (ctx->t.px_shift) {
+			p[i] = *(uint16_t *)(q0p - (i + 1) * step);
+			q[i] = *(uint16_t *)(q0p + i * step);
+		} else {
+			p[i] = q0p[-(i + 1) * step];
+			q[i] = q0p[i * step];
+		}
+	}
+	if (!(abs(p[0] - q[0]) < alpha && abs(p[1] - p[0]) < beta && abs(q[1] - q[0]) < beta))
+		return;
+	int pf[3] = {p[0], p[1], chroma ? 0 : p[2]}, qf[3] = {q[0], q[1], chroma ? 0 : q[2]};
+	int ap = chroma ? 0 : abs(p[2] - p[0]), aq = chroma ? 0 : abs(q[2] - q[0]);
+	if (bS < 4) {
+		int tC0 = tC0_t[bS - 1][indexA] << shift;
+		int tC = chroma ? tC0 + 1 : tC0 + (ap < beta) + (aq < beta);
+		int delta = clip3(-tC, tC, (((q[0] - p[0]) * 4) + (p[1] - q[1]) + 4) >> 3);
+		pf[0] = clip3(0, maxv, p[0] + delta);
+		qf[0] = clip3(0, maxv, q[0] - delta);
+		if (!chroma && ap < beta)
+			pf[1] = p[1] + clip3(-tC0, tC0, (p[2] + ((p[0] + q[0] + 1) >> 1) - (p[1] * 2)) >> 1);
+		if (!chroma && aq < beta)
+			qf[1] = q[1] + clip3(-tC0, tC0, (q[2] + ((p[0] + q[0] + 1) >> 1) - (q[1] * 2)) >> 1);
+	} else {
+		if (!chroma && ap < beta && abs(p[0] - q[0]) < ((alpha >> 2) + 2)) {
+			pf[0] = (p[2] + 2 * p[1] + 2 * p[0] + 2 * q[0] + q[1] + 4) >> 3;
+			pf[1] = (p[2] + p[1] + p[0] + q[0] + 2) >> 2;
+			pf[2] = (2 * p[3] + 3 * p[2] + p[1] + p[0] + q[0] + 4) >> 3;
+		} else {
+			pf[0] = (2 * p[1] + p[0] + q[1] + 2) >> 2;
+		}
+		if (!chroma && aq < beta && abs(p[0] - q[0]) < ((alpha >> 2) + 2)) {
+			qf[0] = (p[1] + 2 * p[0] + 2 * q[0] + 2 * q[1] + q[2] + 4) >> 3;
+			qf[1] = (p[0] + q[0] + q[1] + q[2] + 2) >> 2;
+			qf[2] = (2 * q[3] + 3 * q[2] + q[1] + q[0] + p[0] + 4) >> 3;
+		} else {
+			qf[0] = (2 * q[1] + q[0] + p[1] + 2) >> 2;
+		}
+	}
+	for (int i = 0; i < (chroma ? 2 : 3); i++) {
+		if (ctx->t.px_shift) {
+			*(uint16_t *)(q0p - (i + 1) * step) = pf[i];
+			*(uint16_t *)(q0p + i * step) = qf[i];
+		} else {
+			q0p[-(i + 1) * step] = pf[i];
+			q0p[i * step] = qf[i];
+		}
+	}
+}
+
+/**
+ * Filters a luma or chroma edge of a macroblock (8.7.1) at (xE, yE) from its
+ * top-left sample (xI, yI), dy being 2 in field mode.
+ */
+static void mbaff_edge(Edge264MvcContext *ctx, int currPic, int xI, int yI, int vertical, int chroma, int xE, int yE, int dy) {
+	int CAT = ctx->t.ChromaArrayType;
+	int subW = chroma ? 2 : 1, subH = chroma && CAT == 1 ? 2 : 1;
+	int xP = xI / subW, yP = (yI + subH - 1) / subH;
+	int nE = vertical ? (chroma ? ctx->t.mb_height_C : 16) : (chroma ? 8 : 16);
+	size_t strideY = ctx->t.stride[0], strideC = ctx->t.stride[1];
+	int px = ctx->t.px_shift;
+	for (int iCbCr = 0; iCbCr < (chroma ? 2 : 1); iCbCr++) {
+		uint8_t *base = ctx->t.samples_buffers[currPic] + (chroma ? PLANE_C(&ctx->t, currPic) + iCbCr * ctx->t.stride_Cr : 0);
+		size_t stride = chroma ? strideC : strideY;
+		MbaffSample lp = {}, lq = {};
+		int bS = 0;
+		for (int k = 0; k < nE; k++) {
+			int xq, yq, xp, yp; // sample q0 and p0 of the plane
+			if (vertical) {
+				xq = xP + xE, yq = yP + dy * k;
+				xp = xq - 1, yp = yq;
+			} else {
+				xq = xP + k, yq = yP + dy * yE - (yE & 1);
+				xp = xq, yp = yP + dy * (yE - 1) - (yE & 1);
+			}
+			// the luma samples p0 and q0 whose bS a chroma edge takes (8.7.2), in the
+			// same field, which also tell the macroblocks of the chroma samples
+			int lxq = xq, lyq = yq, lxp = xp, lyp = yp;
+			if (chroma) {
+				lxq = xq * 2;
+				lyq = subH == 2 ? (yq >> 1) * 4 + (yq & 1) : yq;
+				lxp = vertical ? lxq - 1 : lxq;
+				lyp = vertical ? lyq : lyq - dy;
+			}
+			// bS changes with the blocks of p0 and q0 only
+			MbaffSample p = mbaff_sample(ctx, lxp, lyp), q = mbaff_sample(ctx, lxq, lyq);
+			if (p.m != lp.m || p.blk != lp.blk || q.m != lq.m || q.blk != lq.blk)
+				bS = mbaff_bS(p, q, vertical), lp = p, lq = q;
+			uint8_t *q0p = base + (size_t)yq * stride + ((size_t)xq << px);
+			ssize_t step = vertical ? (1 << px) : (ssize_t)(dy * stride);
+			mbaff_filter(ctx, q0p, step, bS, chroma, iCbCr, p.m, q.m);
+		}
+	}
+}
+
+static noinline void deblock_mbaff_picture(Edge264MvcContext *ctx, int currPic) {
+	int w = ctx->t.pic_width_in_mbs, h = ctx->t.pic_height_in_mbs;
+	int CAT = ctx->t.ChromaArrayType;
+	size_t strideY = ctx->t.stride[0], strideC = ctx->t.stride[1];
+	for (int addr = 0; addr < w * h; addr++) {
+		int px = (addr >> 1) % w, py = (addr >> 1) / w, bot = addr & 1;
+		const Edge264MvcMacroblock *m = ctx->t.mb_buffer + px + (py * 2 + bot) * (w + 1);
+		if (!m->filter_edges)
+			continue;
+		int field = m->f.mb_field_decoding_flag, dy = 1 + field;
+		int xI = px * 16, yI = py * 32 + (field ? bot : bot * 16);
+		int t8 = m->f.transform_size_8x8_flag;
+		int left = m->filter_edges & 1, top = m->filter_edges >> 1 & 1;
+		// a top frame macroblock below a field pair filters its top edge twice in field mode
+		int fieldA = left ? (ctx->t.mb_buffer + px - 1 + py * 2 * (w + 1))->f.mb_field_decoding_flag : field;
+		int fieldB = top && (field || !bot) ? (ctx->t.mb_buffer + px + (py * 2 - 1) * (w + 1))->f.mb_field_decoding_flag : field;
+		int top_twice = top && !field && !bot && fieldB;
+		
+		// a macroblock without edges to pairs of the other kind deblocks as one of a
+		// frame or field picture (with the same rows of field macroblocks above
+		// and left of a field macroblock)
+		if (fieldA == field && fieldB == field) {
+			ctx->_mb = (Edge264MvcMacroblock *)m;
+			ctx->t.field_pic_flag = field;
+			ctx->t.bottom_field_flag = field & bot;
+			ctx->t.stride[0] = strideY << field;
+			ctx->t.stride[1] = ctx->t.stride[2] = strideC << field;
+			ctx->deblock_offB = (w + 1) << field;
+			int rowC = CAT == 2 ? yI : (yI + 1) >> 1; // 4:0:0 keeps a neutral plane of 4:2:0
+			ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + ((size_t)xI << ctx->t.px_shift) + (size_t)yI * strideY;
+			ctx->samples_mb[1] = ctx->t.samples_buffers[currPic] + PLANE_C(&ctx->t, currPic) + ((size_t)(xI >> 1) << ctx->t.px_shift) + (size_t)rowC * strideC;
+			ctx->samples_mb[2] = ctx->samples_mb[1] + ctx->t.stride_Cr;
+			deblock_mb(ctx);
+			continue;
+		}
+		ctx->t.field_pic_flag = 0;
+		ctx->t.bottom_field_flag = 0;
+		ctx->t.stride[0] = strideY;
+		ctx->t.stride[1] = ctx->t.stride[2] = strideC;
+		for (int chroma = 0; chroma < (CAT == 1 || CAT == 2 ? 2 : 1); chroma++) {
+			if (left)
+				mbaff_edge(ctx, currPic, xI, yI, 1, chroma, 0, 0, dy);
+			if (!chroma) {
+				if (!t8)
+					mbaff_edge(ctx, currPic, xI, yI, 1, 0, 4, 0, dy);
+				mbaff_edge(ctx, currPic, xI, yI, 1, 0, 8, 0, dy);
+				if (!t8)
+					mbaff_edge(ctx, currPic, xI, yI, 1, 0, 12, 0, dy);
+			} else {
+				mbaff_edge(ctx, currPic, xI, yI, 1, 1, 4, 0, dy);
+			}
+			if (top_twice) {
+				mbaff_edge(ctx, currPic, xI, yI, 0, chroma, 0, 0, 2);
+				mbaff_edge(ctx, currPic, xI, yI, 0, chroma, 0, 1, 2);
+			} else if (top) {
+				mbaff_edge(ctx, currPic, xI, yI, 0, chroma, 0, 0, dy);
+			}
+			if (!chroma) {
+				if (!t8)
+					mbaff_edge(ctx, currPic, xI, yI, 0, 0, 0, 4, dy);
+				mbaff_edge(ctx, currPic, xI, yI, 0, 0, 0, 8, dy);
+				if (!t8)
+					mbaff_edge(ctx, currPic, xI, yI, 0, 0, 0, 12, dy);
+			} else {
+				mbaff_edge(ctx, currPic, xI, yI, 0, 1, 0, 4, dy);
+				if (CAT == 2) {
+					mbaff_edge(ctx, currPic, xI, yI, 0, 1, 0, 8, dy);
+					mbaff_edge(ctx, currPic, xI, yI, 0, 1, 0, 12, dy);
+				}
+			}
+		}
+	}
+	ctx->t.field_pic_flag = 0;
+	ctx->t.bottom_field_flag = 0;
+	ctx->t.stride[0] = strideY;
+	ctx->t.stride[1] = ctx->t.stride[2] = strideC;
+	ctx->deblock_offB = w + 1;
 }

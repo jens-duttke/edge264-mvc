@@ -413,6 +413,8 @@ static void initialize_context(Edge264MvcContext *ctx, int currPic)
 	
 	union { int8_t q[MAX_FRAMES]; i8x16 v[MAX_FRAMES / 16]; } tb, td;
 	ctx->CurrMbAddr = ctx->t.first_mb_in_slice;
+	ctx->mbaff_skip = -1;
+	ctx->deblock_offB = ctx->t.pic_width_in_mbs + 1;
 	ctx->mby = (unsigned)ctx->t.first_mb_in_slice / (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->mbx = (unsigned)ctx->t.first_mb_in_slice % (unsigned)ctx->t.pic_width_in_mbs;
 	ctx->samples_mb[0] = ctx->t.samples_buffers[currPic] + ctx->mbx * ctx->t.mbw_Y + ctx->mby * ctx->t.stride[0] * 16;
@@ -807,8 +809,9 @@ enum { SLICE_ABANDONED, SLICE_TURN, SLICE_DEFERRED };
 static int slice_turn(Edge264MvcContext *c, int currPic, uint32_t seq, int keep_mb, int ret) {
 	Edge264MvcDecoder *dec = c->d;
 	// a picture with slice groups (FMO) is deblocked and published whole, once
-	// its last macroblock is decoded, as its slices interleave
-	if (c->t.fmo_map)
+	// its last macroblock is decoded, as its slices interleave, and so is an
+	// MBAFF frame, whose macroblock pairs deblock across both rows of a pair
+	if (c->t.fmo_map || c->t.MbaffFrameFlag)
 		return SLICE_ABANDONED;
 	int32_t first = c->t.first_mb_in_slice;
 	int32_t cur = __atomic_load_n(&dec->next_deblock_addr[currPic], __ATOMIC_ACQUIRE);
@@ -1025,17 +1028,23 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		// room for the copies at both ends and for the alignment of entries
 		int slot = c.thread_id + 1;
 		size_t ret = 0;
-		if (c.d->mbc_ring_sizes[slot] < c.t.pic_width_in_mbs + 2) {
+		// (MBAFF frames keep the values of both macroblocks of the pairs of two
+		// pair rows there instead, see parse_slice_data_mbaff)
+		int ring_entries = c.t.MbaffFrameFlag ? c.t.pic_width_in_mbs * 4 : c.t.pic_width_in_mbs + 2;
+		if (c.d->mbc_ring_sizes[slot] < ring_entries) {
 			free(c.d->mbc_ring_allocs[slot]);
-			c.d->mbc_ring_allocs[slot] = malloc((c.t.pic_width_in_mbs + 4) * sizeof(Edge264MvcMbCache) + 63);
-			c.d->mbc_ring_sizes[slot] = c.d->mbc_ring_allocs[slot] ? c.t.pic_width_in_mbs + 2 : 0;
+			c.d->mbc_ring_allocs[slot] = malloc((ring_entries + 2) * sizeof(Edge264MvcMbCache) + 63);
+			c.d->mbc_ring_sizes[slot] = c.d->mbc_ring_allocs[slot] ? ring_entries : 0;
 		}
 		if (c.d->mbc_ring_allocs[slot])
 			c.mbc_ring = (Edge264MvcMbCache *)(((uintptr_t)c.d->mbc_ring_allocs[slot] + 63) & -64) + 1;
 	decode_slice:;
-		int in_turn = cur_deblock_addr == c.t.first_mb_in_slice && !after_spec && !c.t.fmo_map;
+		// a picture with slice groups (FMO) or an MBAFF frame is deblocked whole
+		// once its last macroblock is decoded (see slice_turn)
+		int whole = c.t.fmo_map || c.t.MbaffFrameFlag;
+		int in_turn = cur_deblock_addr == c.t.first_mb_in_slice && !after_spec && !whole;
 		c.t.next_deblock_idc = in_turn ? currPic : -1;
-		c.t.next_deblock_addr = (in_turn || c.t.disable_deblocking_filter_idc == 2) && !c.t.fmo_map ? c.t.first_mb_in_slice : INT_MIN;
+		c.t.next_deblock_addr = (in_turn || c.t.disable_deblocking_filter_idc == 2) && !whole ? c.t.first_mb_in_slice : INT_MIN;
 		c.fmo_decoded = 0;
 		// A slice started before its bound is known decodes, deblocks and publishes
 		// as usual: should it go past the bound, the slice following it is the next
@@ -1058,7 +1067,10 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			ret = ENOMEM;
 		} else if (!c.t.pps.entropy_coding_mode_flag) {
 			c.mb_skip_run = -1;
-			parse_slice_data_cavlc(&c);
+			if (c.t.MbaffFrameFlag)
+				parse_slice_data_mbaff_cavlc(&c);
+			else
+				parse_slice_data_cavlc(&c);
 			if (!rbsp_end(&c.t.gb, 1))
 				ret = EBADMSG;
 		} else {
@@ -1068,7 +1080,10 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			} else {
 				cabac_init(&c);
 				c.mb_qp_delta_nz = 0;
-				parse_slice_data_cabac(&c);
+				if (c.t.MbaffFrameFlag)
+					parse_slice_data_mbaff_cabac(&c);
+				else
+					parse_slice_data_cabac(&c);
 				// rbsp_stop_one_bit was consumed in cabac_terminate, and the possibility of cabac_zero_word implies we cannot require reaching end.
 				// The cached reader also looks ahead past the slice's last byte, so a
 				// slice whose CABAC data fills its NAL leaves msb_cache holding bytes
@@ -1102,8 +1117,11 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			if (saved_rows)
 				spec_rows(&c, slot, 1);
 			int width = c.t.pic_width_in_mbs;
-			for (int addr = c.t.first_mb_in_slice; addr < c.CurrMbAddr; addr++)
-				__atomic_store_n(&c.t.mb_buffer[addr % width + addr / width * (width + 1)].recovery_bits, c.t.frame_flip_bit ^ 1, __ATOMIC_RELAXED);
+			for (int addr = c.t.first_mb_in_slice; addr < c.CurrMbAddr; addr++) {
+				int off = c.t.MbaffFrameFlag ? (addr >> 1) % width + ((addr >> 1) / width * 2 + (addr & 1)) * (width + 1) :
+					addr % width + addr / width * (width + 1);
+				__atomic_store_n(&c.t.mb_buffer[off].recovery_bits, c.t.frame_flip_bit ^ 1, __ATOMIC_RELAXED);
+			}
 			ack_mb_bound(c.d, task_id, currPic);
 			mb_bound = c.t.mb_bound;
 			c.t = c.d->tasks[task_id];
@@ -1135,7 +1153,7 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		
 		// on error, recover the other mbs and signal them as erroneous (those of a
 		// slice group are left to conceal_frame, as recover_slice takes them in a row)
-		if (__builtin_expect(ret != 0, 0) && !c.t.fmo_map)
+		if (__builtin_expect(ret != 0, 0) && !c.t.fmo_map && !c.t.MbaffFrameFlag)
 			recover_slice(&c, currPic, keep_mb);
 		
 		// update c.d->next_deblock_addr (atomic: read concurrently by other threads)
@@ -1150,7 +1168,10 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			c.t.fmo_map ? c.fmo_decoded : end_mb - (int)c.t.first_mb_in_slice, __ATOMIC_ACQ_REL);
 		if (remaining_mbs == 0) {
 			int total_mbs = c.t.pic_width_in_mbs * c.t.pic_height_in_mbs;
-			deblock_range(&c, currPic, __atomic_load_n(&c.d->next_deblock_addr[currPic], __ATOMIC_ACQUIRE), total_mbs);
+			if (c.t.MbaffFrameFlag)
+				deblock_mbaff_picture(&c, currPic);
+			else
+				deblock_range(&c, currPic, __atomic_load_n(&c.d->next_deblock_addr[currPic], __ATOMIC_ACQUIRE), total_mbs);
 			publish_frame_progress(c.d, currPic, INT_MAX); // signals the frame is complete
 		}
 		
@@ -2089,6 +2110,25 @@ static void initialize_task(Edge264MvcDecoder *dec, Edge264MvcSeqParameterSet *s
 			t->mbCol_buffer += (top >= bottom) * (sps->pic_height_in_mbs >> 1) * (sps->pic_width_in_mbs + 1);
 			t->col_structure = COL_FLD_TO_FRM;
 		}
+		if (t->MbaffFrameFlag) {
+			// MBAFF frames find the colocated macroblock themselves (colocated_mbaff),
+			// which needs the field of RefPicList1[0] closer to the current frame
+			int32_t poc = minw(dec->TopFieldOrderCnt, dec->BottomFieldOrderCnt);
+			int64_t top = llabs((int64_t)dec->FieldOrderCnt[0][slot] - poc);
+			int64_t bottom = llabs((int64_t)dec->FieldOrderCnt[1][slot] - poc);
+			t->mbCol_buffer = (Edge264MvcMacroblock *)dec->mb_buffers[slot];
+			t->col_structure = 0;
+			t->col_bottom = top >= bottom;
+			if (t->pps.weighted_bipred_idc == 2 || !t->direct_spatial_mv_pred_flag) {
+				for (int p = 0; p < 2; p++) {
+					unsigned cur = p ? dec->BottomFieldOrderCnt : dec->TopFieldOrderCnt;
+					for (int i = 0; i < FIELD_ID; i++) {
+						t->diff_poc_fld[p][i] = (int32_t)(cur - (unsigned)dec->FieldOrderCnt[0][i]);
+						t->diff_poc_fld[p][i + FIELD_ID] = (int32_t)(cur - (unsigned)dec->FieldOrderCnt[1][i]);
+					}
+				}
+			}
+		}
 		if (t->pps.weighted_bipred_idc == 2 || !t->direct_spatial_mv_pred_flag) {
 			// distances from the current picture, unclipped (see initialize_context),
 			// in fields to each field of the frames (see FIELD_ID)
@@ -2583,8 +2623,11 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	// damaged stream), whose interlacing would change the use of the slots
 	if (!sps->frame_mbs_only_flag != dec->interlaced)
 		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
-	if (t->first_mb_in_slice >= sps->pic_width_in_mbs * (sps->pic_height_in_mbs >> t->field_pic_flag))
+	if (t->first_mb_in_slice >= sps->pic_width_in_mbs * (sps->pic_height_in_mbs >> (t->field_pic_flag | t->MbaffFrameFlag)))
 		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
+	// in MBAFF frames first_mb_in_slice addresses a macroblock pair, whose top
+	// macroblock is 2 * first_mb_in_slice (7-37), the unit kept from here on
+	t->first_mb_in_slice <<= t->MbaffFrameFlag;
 	int currField = t->field_pic_flag + t->bottom_field_flag;
 	
 	// idr_pic_id is used to detect new frames in streams of IDRs
@@ -4029,13 +4072,10 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 		sps.pic_width_in_mbs,
 		sps.pic_height_in_mbs,
 		sps.frame_mbs_only_flag);
-	// field pictures are decoded (PAFF), macroblock pairs of frames are not (MBAFF)
 	if (sps.frame_mbs_only_flag == 0) {
 		sps.mb_adaptive_frame_field_flag = get_u1(&dec->gb);
-		if (sps.mb_adaptive_frame_field_flag)
-			ret = ENOTSUP;
-		log_dec(dec, "  mb_adaptive_frame_field_flag: %u%s\n",
-			sps.mb_adaptive_frame_field_flag, unsup_if(sps.mb_adaptive_frame_field_flag));
+		log_dec(dec, "  mb_adaptive_frame_field_flag: %u\n",
+			sps.mb_adaptive_frame_field_flag);
 	}
 	sps.direct_8x8_inference_flag = get_u1(&dec->gb);
 	log_dec(dec, "  direct_8x8_inference_flag: %u\n",

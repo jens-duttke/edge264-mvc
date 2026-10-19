@@ -447,6 +447,7 @@ typedef struct {
 	int8_t direct_spatial_mv_pred_flag; // 0..1
 	int8_t col_short_term; // 0..1, RefPicList1[0] is a short-term reference (B slices)
 	int8_t col_structure; // 0, or COL_FRM_TO_FLD / COL_FLD_TO_FRM when the colocated picture is a frame for a field or a field for a frame (Table 8-8)
+	int8_t col_bottom; // MBAFF: the bottom field of RefPicList1[0] is closer than the top one (8-175, 8-176, topAbsDiffPOC >= bottomAbsDiffPOC)
 	int8_t luma_log2_weight_denom; // 0..7
 	int8_t chroma_log2_weight_denom; // 0..7
 	int8_t disable_deblocking_filter_idc; // 0..2
@@ -488,6 +489,7 @@ typedef struct {
 	union { uint16_t samples_clip[3][8]; i16x8 samples_clip_v[3]; }; // [iYCbCr], maximum sample value
 	union { int8_t RefPicList[2][32]; int64_t RefPicList_l[8]; i8x16 RefPicList_v[4]; };
 	union { int32_t diff_poc[MAX_FRAMES]; i32x4 diff_poc_v[MAX_FRAMES / 4]; };
+	int32_t diff_poc_fld[2][MAX_FRAMES]; // MBAFF: distances from each field of the current frame to the fields (see FIELD_ID)
 	Edge264MvcPicParameterSet pps;
 	int16_t explicit_weights[3][64]; // [iYCbCr][LX][RefIdx]
 	int8_t explicit_offsets[3][64];
@@ -521,10 +523,35 @@ typedef struct Edge264MvcContext {
 	const Edge264MvcMacroblock * _mbD; // backup storage for macro mbD
 	const Edge264MvcMacroblock *mbCol;
 	Edge264MvcMacroblock mbCol_cross __attribute__((aligned(64))); // colocated values gathered from another picture structure (see colocated_cross)
+
+	// MBAFF frames (see parse_slice_data_mbaff): the macroblock is decoded in
+	// mbaff_nb[4] amid neighbours remapped to it (D, B, C, A, then the left
+	// neighbours of the D locations of its left column), and copied back
+	Edge264MvcMacroblock mbaff_nb[6] __attribute__((aligned(64)));
+	Edge264MvcMbCache mbaff_nbc[3] __attribute__((aligned(64))); // A, current, B
+	Edge264MvcMbCache *mbaff_cache; // [pair row & 1][pair x][bottom], in place of the ring
+	Edge264MvcMacroblock *mbaff_mb; // the macroblock in the frame
+	int8_t mb_field; // field decoding flag of the current pair
+	int8_t mbaff_avail; // availability of the pairs A/B/C/D (bits 0-3)
+	int8_t mbaff_skip; // mb_skip_flag of a CABAC macroblock parsed ahead, or -1
+	int8_t mbaff_bot_skip; // that of the bottom macroblock, parsed with a skipped top one
+	int8_t mbaff_refIdxA[4]; // refIdx of A at the 4x4 block rows 1 and 3 (L0 then L1), which a field macroblock may take from other 8x8 blocks than rows 0 and 2
+	int16_t mbaff_px, mbaff_py; // pair position
+	uint16_t mbaff_stride[2]; // frame strides of luma and chroma
+	int16_t mbaff_height; // pic_height_in_mbs of the frame
+	union { int8_t mbaff_lists[3][2][32]; i8x16 mbaff_lists_v[3][4]; }; // RefPicList of frame, top and bottom field macroblocks
+	int8_t mbaff_tables; // which of the three the tables below were last loaded for (see mbaff_state)
+	int16_t mbaff_DSF[3][32]; // DistScaleFactor, MapPicToList0 and implicit_weights of the three
+	int8_t mbaff_map[3][MAX_FRAMES];
+	uint8_t mbaff_iw[3][32][32];
+	int16_t mbaff_ew[2][3][64]; // explicit_weights and explicit_offsets of frame and field macroblocks (8.4.2.3, refIdx >> 1)
+	int8_t mbaff_eo[2][3][64];
 	Edge264MvcDecoder *d;
 	Edge264MvcMbFlags inc; // increments for CABAC indices of macroblock syntax elements
 	union { int8_t unavail4x4[48]; i8x16 unavail4x4_v[3]; }; // unavailability of neighbouring A/B/C/D blocks
 	union { int8_t unavail_intra[16]; i8x16 unavail_intra_v; }; // unavail4x4 for intra prediction, where constrained_intra_pred_flag counts Inter neighbours as unavailable
+	int8_t unavail_intra16x16; // its A/B/D bits for Intra16x16 and chroma prediction, which read all the samples left of the macroblock
+	int8_t mbaff_left_halves; // MBAFF with constrained_intra_pred_flag: the upper and lower halves of the chroma samples left of the macroblock are not available (bits 0-1)
 	int8_t unavail16x16; // unavailability of the neighbouring A/B/C/D macroblocks (bits 0-3)
 	union { int8_t nC_inc[3][16]; i8x16 nC_inc_v[3]; }; // stores the intra/inter default increment from unavailable neighbours (9.3.3.1.1.9)
 	union { uint8_t cabac[1024]; i8x16 cabac_v[64]; };
@@ -564,6 +591,7 @@ typedef struct Edge264MvcContext {
 	int32_t fmo_decoded; // macroblocks a slice with slice groups decoded, as they are not consecutive
 	
 	// Deblocking context
+	int32_t deblock_offB; // from a macroblock to its neighbour B in the macroblock array, pic_width_in_mbs + 1 but twice that for a field macroblock of an MBAFF frame
 	union { uint8_t alpha[16]; int32_t alpha_s[4]; i8x16 alpha_v; }; // {internal_Y,internal_Cb,internal_Cr,0,0,0,0,0,left_Y,left_Cb,left_Cr,0,top_Y,top_Cb,top_Cr,0}
 	union { uint8_t beta[16]; int32_t beta_s[4]; i8x16 beta_v; };
 	union { int32_t tC0_s[16]; int64_t tC0_l[8]; i8x16 tC0_v[4]; i8x32 tC0_V[2]; }; // 4 bytes per edge in deblocking order -> 8 luma edges then 8 alternating Cb/Cr edges

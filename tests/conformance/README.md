@@ -23,9 +23,9 @@ compares from the committed `.264` alone.
   `frames` = output frame count, `stereo` = 1 for MVC, hashes are
   128-bit FNV-1a (32 hex chars) over the cropped planes in display order.
 
-Only streams edge264-mvc fully decodes are included; MBAFF streams and
-those of 4:4:4 chroma or more than 10 bits, which the decoder does not
-support, are deliberately absent.
+Only streams edge264-mvc fully decodes are included; those of 4:4:4
+chroma or more than 10 bits, which the decoder does not support, are
+deliberately absent.
 
 ## Provenance
 

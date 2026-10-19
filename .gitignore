@@ -64,6 +64,7 @@
 !tests/gen_stream_prefix.py
 !tests/gen_unpaired_fields.py
 !tests/gen_field_frame_order.py
+!tests/gen_explicit_weights.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

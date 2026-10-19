@@ -81,3 +81,7 @@ Guards MVC field pictures. Unlike the other streams here it is not encoded with 
 ## `mvcict1_frame_order.264`
 
 Guards the order of the field pictures that a transport stream of interlaced 3D video gives when its packets hold whole frames of each view and are sent one after the other: the base top and bottom fields, then the dependent ones, rather than the order of the access units (base top, dependent top, base bottom, dependent bottom). It is `mvcict1_fields.264` reordered by `tests/gen_field_frame_order.py`, each picture with the NAL units before it, so its output is the same and its manifest line carries the same hashes. The dependent second field then follows the first one directly, with the same `frame_num`; a decoder that takes it for a damaged slice continuing the first field rejects it and conceals the missing fields, and both hashes fail.
+
+## `mvcict2_mbaff.264`
+
+Guards MVC with MBAFF frames (macroblock-adaptive frame/field coding) in both views. It is the first 9 frames of the ITU conformance stream MVCICT-2, cut by `tests/gen_stream_prefix.py` with N = 9 and the dependent-view pictures between them. Both views are anchored to the JMVC decoder's output for the whole vector, whose first 9 frames the prefix gives. 720x480, Stereo High, CABAC.

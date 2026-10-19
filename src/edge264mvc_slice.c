@@ -887,6 +887,93 @@ static noinline void decode_intraChroma_field(Edge264MvcContext *ctx, int mode) 
 
 
 
+#if !CABAC
+enum { MBAFF_A, MBAFF_B, MBAFF_C, MBAFF_D, MBAFF_CUR };
+static int mbaff_locate(Edge264MvcContext *ctx, int nb, int yN, int maxH, int *bottom, int *yM);
+static always_inline const Edge264MvcMacroblock *mbaff_located_mb(Edge264MvcContext *ctx, int pair, int bottom);
+
+/**
+ * With constrained_intra_pred_flag, the samples left of a macroblock of an
+ * MBAFF frame may come from both macroblocks of the left pair, an Intra and
+ * an Inter one, so their availability is set per row of samples: for the 4x4
+ * or 8x8 blocks of the left column (A, and D from the row above them), and
+ * for Intra16x16 and chroma prediction, which need them all.
+ */
+static noinline void mbaff_constrained_intra(Edge264MvcContext *ctx, int transform_size_8x8_flag) {
+	static const int8_t blk4x4[4] = {0, 2, 8, 10}, blk8x8[2] = {0, 10};
+	int inter[17] = {}, bot, yM, pair; // rows -1..15 left of the macroblock
+	for (int y = -1; y < 16; y++) {
+		if ((pair = mbaff_locate(ctx, y < 0 ? MBAFF_D : MBAFF_A, y, 16, &bot, &yM)) >= 0)
+			inter[y + 1] = mbaff_located_mb(ctx, pair, bot)->mbIsInterFlag;
+	}
+	int inter16x16 = 0;
+	for (int y = 1; y <= 16; y++)
+		inter16x16 |= inter[y];
+	int hC = ctx->t.mb_height_C, halves = 0;
+	for (int y = 0; y < hC; y++) {
+		if ((pair = mbaff_locate(ctx, MBAFF_A, y, hC, &bot, &yM)) >= 0)
+			halves |= mbaff_located_mb(ctx, pair, bot)->mbIsInterFlag << (y >= hC / 2);
+	}
+	ctx->mbaff_left_halves = halves;
+	int interBCD = mbB->mbIsInterFlag << 1 | mbC->mbIsInterFlag << 2 | mbD->mbIsInterFlag << 3;
+	ctx->unavail_intra_v = block_unavailability[ctx->unavail16x16 | interBCD];
+	ctx->unavail_intra16x16 = ctx->unavail_intra[0] | inter16x16;
+	int n = transform_size_8x8_flag ? 2 : 4, rows = 16 / n;
+	for (int i = 0; i < n; i++) {
+		int b = transform_size_8x8_flag ? blk8x8[i] : blk4x4[i], a = 0;
+		for (int y = 0; y < rows; y++)
+			a |= inter[1 + i * rows + y];
+		ctx->unavail_intra[b] |= a | inter[i * rows] << 3;
+	}
+}
+
+/**
+ * Chroma DC prediction (8.3.4.1 to 8.3.4.3) when only one half of the samples
+ * left of the macroblock is available (see mbaff_constrained_intra), each
+ * 4x4 block taking those of its rows.
+ */
+static noinline void mbaff_chroma_dc(Edge264MvcContext *ctx) {
+	int hC = ctx->t.mb_height_C, px = ctx->t.px_shift;
+	int availB = !(ctx->unavail_intra16x16 & 2);
+	int availA[2] = {!(ctx->unavail16x16 & 1) && !(ctx->mbaff_left_halves & 1), !(ctx->unavail16x16 & 1) && !(ctx->mbaff_left_halves & 2)};
+	ssize_t stride = ctx->t.stride[1];
+	for (int c = 1; c < 3; c++) {
+		uint8_t *s = ctx->samples_mb[c];
+		#define SAMPLE(x, y) (px ? ((uint16_t *)(s + (y) * stride))[x] : s[(y) * stride + (x)])
+		int dc[4][2];
+		for (int yO = 0; yO < hC; yO += 4) {
+			for (int xO = 0; xO < 8; xO += 4) {
+				int sumT = 0, sumL = 0, a = availA[yO >= hC / 2];
+				for (int i = 0; i < 4; i++) {
+					sumT += availB ? SAMPLE(xO + i, -1) : 0;
+					sumL += a ? SAMPLE(-1, yO + i) : 0;
+				}
+				int v = 1 << (ctz(ctx->t.samples_clip[c][0] + 1) - 1);
+				if ((xO == 0) == (yO == 0)) {
+					v = a && availB ? (sumT + sumL + 4) >> 3 : a ? (sumL + 2) >> 2 : availB ? (sumT + 2) >> 2 : v;
+				} else if (yO == 0) {
+					v = availB ? (sumT + 2) >> 2 : a ? (sumL + 2) >> 2 : v;
+				} else {
+					v = a ? (sumL + 2) >> 2 : availB ? (sumT + 2) >> 2 : v;
+				}
+				dc[yO >> 2][xO >> 2] = v;
+			}
+		}
+		for (int y = 0; y < hC; y++) {
+			for (int x = 0; x < 8; x++) {
+				if (px)
+					((uint16_t *)(s + y * stride))[x] = dc[y >> 2][x >> 2];
+				else
+					s[y * stride + x] = dc[y >> 2][x >> 2];
+			}
+		}
+		#undef SAMPLE
+	}
+}
+#endif
+
+
+
 /**
  * Parses intra_chroma_pred_mode (9.3.2.2 and 9.3.3.1.1.8).
  */
@@ -915,8 +1002,11 @@ static inline void CAFUNC(parse_intra_chroma_pred_mode)
 			mb->f.intra_chroma_pred_mode_non_zero = (mode > 0);
 		#endif
 		log_mb(ctx, "%sintra_chroma_pred_mode: %u\n", ctx->log_indent, mode);
-		int ic_mode = IntraChromaModes[mode][(ctx->unavail_intra[0] & 3) | (ctx->unavail_intra[0] >> 1 & 4)];
-		if (__builtin_expect(ctx->t.field_pic_flag, 0))
+		int ic_mode = IntraChromaModes[mode][(ctx->unavail_intra16x16 & 3) | (ctx->unavail_intra16x16 >> 1 & 4)];
+		if (__builtin_expect(ctx->t.MbaffFrameFlag & ctx->t.pps.constrained_intra_pred_flag, 0) && mode == 0 &&
+			!(ctx->unavail16x16 & 1) && ctx->mbaff_left_halves && ctx->mbaff_left_halves != 3)
+			mbaff_chroma_dc(ctx);
+		else if (__builtin_expect(ctx->t.field_pic_flag, 0))
 			decode_intraChroma_field(ctx, ic_mode);
 		else if (type == 1)
 			decode_intraChroma(ctx->samples_mb[1], ctx->t.stride[1] >> 1, ic_mode, ctx->t.samples_clip_v[1]);
@@ -951,6 +1041,9 @@ static inline int CAFUNC(parse_intraNxN_pred_mode, int luma4x4BlkIdx)
 	log_mb(ctx, luma4x4BlkIdx ? ",%d" : "%d", rem_intra_pred_mode);
 	return mode;
 }
+
+
+
 
 
 
@@ -997,6 +1090,7 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 		int inter = mbA->mbIsInterFlag | mbB->mbIsInterFlag << 1 | mbC->mbIsInterFlag << 2 | mbD->mbIsInterFlag << 3;
 		ctx->unavail_intra_v = block_unavailability[ctx->unavail16x16 | inter];
 	}
+	ctx->unavail_intra16x16 = ctx->unavail_intra[0];
 	mb->refIdx_l = -1;
 	mb->refPic_l = -1;
 	mb->mvs_v[0] = mb->mvs_v[1] = mb->mvs_v[2] = mb->mvs_v[3] = mb->mvs_v[4] = mb->mvs_v[5] = mb->mvs_v[6] = mb->mvs_v[7] = (i16x8){};
@@ -1017,6 +1111,8 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 			log_mb(ctx, "%stransform_size_8x8_flag: %u\n", ctx->log_indent, transform_size_8x8_flag);
 		}
 		
+		if (__builtin_expect(ctx->t.MbaffFrameFlag & ctx->t.pps.constrained_intra_pred_flag, 0))
+			mbaff_constrained_intra(ctx, transform_size_8x8_flag);
 		mbc->Intra4x4PredMode_v = (i8x16){-2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2, -2}; // default values when A/B is unavailable
 		if (transform_size_8x8_flag) {
 			mb->f.transform_size_8x8_flag = transform_size_8x8_flag;
@@ -1080,7 +1176,9 @@ static noinline void CAFUNC(parse_I_mb, int mb_type_or_ctxIdx)
 			{I16x16_P_8 , I16x16_DC_A_8, I16x16_DC_B_8, I16x16_DC_AB_8, I16x16_DC_8, I16x16_DC_A_8, I16x16_DC_B_8, I16x16_DC_AB_8},
 		};
 		mbc->Intra4x4PredMode_v = (i8x16){2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
-		decode_intra16x16(ctx->samples_mb[0], ctx->t.stride[0], Intra16x16Modes[mode][(ctx->unavail_intra[0] & 3) | (ctx->unavail_intra[0] >> 1 & 4)], ctx->t.samples_clip_v[0]); // FIXME 4:4:4
+		if (__builtin_expect(ctx->t.MbaffFrameFlag & ctx->t.pps.constrained_intra_pred_flag, 0))
+			mbaff_constrained_intra(ctx, 0);
+		decode_intra16x16(ctx->samples_mb[0], ctx->t.stride[0], Intra16x16Modes[mode][(ctx->unavail_intra16x16 & 3) | (ctx->unavail_intra16x16 >> 1 & 4)], ctx->t.samples_clip_v[0]); // FIXME 4:4:4
 		CACALL(parse_intra_chroma_pred_mode);
 		CAJUMP(parse_Intra16x16_residual);
 		
@@ -1417,6 +1515,13 @@ static void CAFUNC(parse_B_sub_mb) {
 	i8x16 D1 = shuffle(BCAr1, ((i8x16){-1, 2, 9, 12, 2, 3, 12, 13, 9, 12, 11, 14, 12, 13, 14, 15}));
 	D0[0] = mbD->refIdx[3];
 	D1[0] = mbD->refIdx[7];
+	if (__builtin_expect(ctx->t.MbaffFrameFlag, 0)) { // the D locations of the left column (see mbaff_neighbours)
+		const Edge264MvcMacroblock *AD = &ctx->mbaff_nb[5];
+		D0[2] = AD->refIdx[0], D0[8] = AD->refIdx[1], D0[10] = AD->refIdx[2];
+		D1[2] = AD->refIdx[4], D1[8] = AD->refIdx[5], D1[10] = AD->refIdx[6];
+		A0[2] = ctx->mbaff_refIdxA[0], A0[10] = ctx->mbaff_refIdxA[1];
+		A1[2] = ctx->mbaff_refIdxA[2], A1[10] = ctx->mbaff_refIdxA[3];
+	}
 	
 	// combine them into a vector of 4-bit equality masks
 	union { int8_t q[32]; i8x16 v[2]; } refIdx4x4_eq;
@@ -1520,7 +1625,8 @@ static void CAFUNC(parse_B_mb)
 		}
 		int mb_skip_flag = ctx->mb_skip_run-- > 0;
 	#else
-		int mb_skip_flag = get_ae(ctx, 26 - ctx->inc.mb_skip_flag);
+		// (an MBAFF frame may have parsed it ahead, see parse_slice_data_mbaff)
+		int mb_skip_flag = ctx->mbaff_skip >= 0 ? ctx->mbaff_skip : get_ae(ctx, 26 - ctx->inc.mb_skip_flag);
 		log_mb(ctx, "%smb_skip_flag: %u\n", ctx->log_indent, mb_skip_flag);
 	#endif
 	
@@ -1696,6 +1802,11 @@ static void CAFUNC(parse_P_sub_mb, unsigned ref_idx_flags)
 	i8x16 C0 = shuffle(BCAr0, ctx->refIdx4x4_C_v);
 	i8x16 D0 = shuffle(BCAr0, ((i8x16){-1, 2, 9, 12, 2, 3, 12, 13, 9, 12, 11, 14, 12, 13, 14, 15}));
 	D0[0] = mbD->refIdx[3];
+	if (__builtin_expect(ctx->t.MbaffFrameFlag, 0)) { // the D locations of the left column (see mbaff_neighbours)
+		const Edge264MvcMacroblock *AD = &ctx->mbaff_nb[5];
+		D0[2] = AD->refIdx[0], D0[8] = AD->refIdx[1], D0[10] = AD->refIdx[2];
+		A0[2] = ctx->mbaff_refIdxA[0], A0[10] = ctx->mbaff_refIdxA[1];
+	}
 	
 	// combine them into a vector of 4-bit equality masks
 	union { int8_t q[16]; i8x16 v; } refIdx4x4_eq;
@@ -1790,7 +1901,8 @@ static void CAFUNC(parse_P_mb)
 		}
 		int mb_skip_flag = ctx->mb_skip_run-- > 0;
 	#else
-		int mb_skip_flag = get_ae(ctx, 13 - ctx->inc.mb_skip_flag);
+		// (an MBAFF frame may have parsed it ahead, see parse_slice_data_mbaff)
+		int mb_skip_flag = ctx->mbaff_skip >= 0 ? ctx->mbaff_skip : get_ae(ctx, 13 - ctx->inc.mb_skip_flag);
 		log_mb(ctx, "%smb_skip_flag: %u\n", ctx->log_indent, mb_skip_flag);
 	#endif
 	
@@ -2252,5 +2364,711 @@ static noinline void CAFUNC(parse_slice_data)
 		}
 	} while (CACOND(ctx->mb_skip_run > 0 || !rbsp_end(&ctx->t.gb, 1), !end_of_slice_flag));
 }
+
+/**
+ * MBAFF frames (MbaffFrameFlag 1) code macroblocks in pairs, each pair being
+ * two frame macroblocks (rows 0-15 and 16-31) or two field macroblocks (the
+ * even and odd rows) as told by mb_field_decoding_flag (7.3.4). The
+ * macroblocks keep their place in the macroblock array of the frame (the top
+ * one in the row 2 * the pair row, the bottom one below it), and a field
+ * macroblock decodes as one of a field picture, with the strides doubled and
+ * the references of field macroblocks (see mbaff_state).
+ *
+ * The neighbours of a macroblock (6.4.12.2, Table 6-4) are no longer at fixed
+ * offsets in the array, and their motion vectors and reference indices are
+ * scaled between frame and field units (8-217 to 8-220, 9.3.3.1.1.6 and
+ * 9.3.3.1.1.7). So each macroblock is decoded in ctx->mbaff_nb[4], among
+ * copies of its neighbours remapped and scaled as the current macroblock sees
+ * them, at the offsets a picture of width 2 has (D, B, C on the row above, A
+ * left of it), and copied back once decoded. The neighbouring samples need no
+ * remapping, Table 6-4 giving the samples next to the macroblock in its own
+ * frame or field rows.
+ */
+#if !CABAC
+
+static always_inline Edge264MvcMacroblock *mbaff_pair_mb(Edge264MvcContext *ctx, int px, int py, int bottom) {
+	return ctx->t.mb_buffer + px + (py * 2 + bottom) * (ctx->t.pic_width_in_mbs + 1);
+}
+static always_inline Edge264MvcMbCache *mbaff_pair_mbc(Edge264MvcContext *ctx, int px, int py, int bottom) {
+	return ctx->mbaff_cache + ((py & 1) * ctx->t.pic_width_in_mbs + px) * 2 + bottom;
+}
+static always_inline int mbaff_pair_field(Edge264MvcContext *ctx, int pair) {
+	static const int8_t dx[5] = {-1, 0, 1, -1, 0}, dy[5] = {0, -1, -1, -1, 0};
+	return mbaff_pair_mb(ctx, ctx->mbaff_px + dx[pair], ctx->mbaff_py + dy[pair], 0)->f.mb_field_decoding_flag;
+}
+
+/**
+ * Table 6-4: finds the macroblock containing the neighbouring location of the
+ * current macroblock at row yN (of maxH rows), left of it (A, D) or above it
+ * (B, C, D). Returns its pair (MBAFF_A..MBAFF_CUR) or -1 if not available, and
+ * sets bottom to its position in the pair and yM to the row in it.
+ */
+static int mbaff_locate(Edge264MvcContext *ctx, int nb, int yN, int maxH, int *bottom, int *yM) {
+	int frame = !ctx->mb_field, top = !(ctx->CurrMbAddr & 1);
+	int pair = nb, bot = 1, y = yN;
+	switch (nb) {
+	case MBAFF_A:
+		if (!(ctx->mbaff_avail & 1))
+			return -1;
+		if (frame) {
+			if (!mbaff_pair_field(ctx, MBAFF_A))
+				bot = !top;
+			else
+				bot = yN & 1, y = top ? yN >> 1 : (yN + maxH) >> 1;
+		} else if (!mbaff_pair_field(ctx, MBAFF_A)) {
+			bot = yN >= maxH / 2;
+			y = (yN << 1) + !top - bot * maxH;
+		} else {
+			bot = !top;
+		}
+		break;
+	case MBAFF_D:
+		if (frame && !top) { // the D location of a bottom frame macroblock is in pair A
+			if (!(ctx->mbaff_avail & 1))
+				return -1;
+			pair = MBAFF_A;
+			if (!mbaff_pair_field(ctx, MBAFF_A))
+				bot = 0;
+			else
+				y = (yN + maxH) >> 1;
+			break;
+		} // fallthrough
+	case MBAFF_B:
+	case MBAFF_C:
+		if (frame && !top) {
+			if (nb == MBAFF_C)
+				return -1;
+			pair = MBAFF_CUR, bot = 0;
+			break;
+		}
+		if (!(ctx->mbaff_avail & 1 << nb))
+			return -1;
+		if (!frame && top) {
+			if (!mbaff_pair_field(ctx, nb))
+				y = yN * 2;
+			else
+				bot = 0;
+		}
+		break;
+	}
+	*bottom = bot;
+	*yM = (y + maxH) % maxH;
+	return pair;
+}
+
+
+static always_inline const Edge264MvcMacroblock *mbaff_located_mb(Edge264MvcContext *ctx, int pair, int bottom) {
+	static const int8_t dx[5] = {-1, 0, 1, -1, 0}, dy[5] = {0, -1, -1, -1, 0};
+	return mbaff_pair_mb(ctx, ctx->mbaff_px + dx[pair], ctx->mbaff_py + dy[pair], bottom);
+}
+static always_inline const Edge264MvcMbCache *mbaff_located_mbc(Edge264MvcContext *ctx, int pair, int bottom) {
+	static const int8_t dx[5] = {-1, 0, 1, -1, 0}, dy[5] = {0, -1, -1, -1, 0};
+	return mbaff_pair_mbc(ctx, ctx->mbaff_px + dx[pair], ctx->mbaff_py + dy[pair], bottom);
+}
+
+/**
+ * Copies a neighbouring macroblock with its motion vectors and reference
+ * indices in the units of the current macroblock (8-217 to 8-220), and the
+ * flags of ref_idx greater than 0 as a frame macroblock sees those of a field
+ * macroblock, refIdx > 1 (9.3.3.1.1.6).
+ */
+static void mbaff_copy_mb(Edge264MvcMacroblock *d, const Edge264MvcMacroblock *s, int field) {
+	*d = *s;
+	if (s->f.mb_field_decoding_flag == field)
+		return;
+	for (int i = 1; i < 64; i += 2)
+		d->mvs[i] = field ? s->mvs[i] / 2 : s->mvs[i] * 2;
+	for (int i = 0; i < 8; i++) {
+		if (s->refIdx[i] >= 0)
+			d->refIdx[i] = field ? s->refIdx[i] * 2 : s->refIdx[i] >> 1;
+		if (!field && d->refIdx[i] <= 0)
+			d->bits[0] &= ~(1u << bit8x8[4 + i]);
+	}
+}
+static void mbaff_copy_mbc(Edge264MvcMbCache *d, const Edge264MvcMbCache *s, int scale) {
+	*d = *s;
+	if (scale > 0) { // field neighbour of a frame macroblock
+		for (int i = 1; i < 64; i += 2)
+			d->absMvd[i] = min(s->absMvd[i] * 2, 255);
+	} else if (scale < 0) {
+		for (int i = 1; i < 64; i += 2)
+			d->absMvd[i] = s->absMvd[i] >> 1;
+	}
+}
+
+/**
+ * Fills the neighbours of the current macroblock in ctx->mbaff_nb and
+ * ctx->mbaff_nbc (see above), as unavailable macroblocks where they are not
+ * available. The values of A are gathered per row of 4x4 blocks (and of 8x8
+ * blocks), which may come from both macroblocks of the left pair, and the
+ * D locations of the blocks of the left column (read for motion vector
+ * prediction) are in mbaff_nb[5]: those of blocks 2, 8 and 10 in blocks 5, 7
+ * and 13, and their refIdx in refIdx[lx * 4 + 0..2].
+ */
+static noinline void mbaff_neighbours(Edge264MvcContext *ctx) {
+	static const int8_t right4x4[4] = {5, 7, 13, 15};
+	Edge264MvcMacroblock *n = ctx->mbaff_nb;
+	Edge264MvcMbCache *nc = ctx->mbaff_nbc;
+	int field = ctx->mb_field, bot, yM, pair;
+	
+	// B and C, whole macroblocks
+	if ((pair = mbaff_locate(ctx, MBAFF_B, -1, 16, &bot, &yM)) >= 0) {
+		const Edge264MvcMacroblock *s = mbaff_located_mb(ctx, pair, bot);
+		mbaff_copy_mb(&n[1], s, field);
+		mbaff_copy_mbc(&nc[2], mbaff_located_mbc(ctx, pair, bot), s->f.mb_field_decoding_flag - field);
+	} else {
+		n[1] = unavail_mb;
+		nc[2] = unavail_mbc;
+	}
+	if ((pair = mbaff_locate(ctx, MBAFF_C, -1, 16, &bot, &yM)) >= 0)
+		mbaff_copy_mb(&n[2], mbaff_located_mb(ctx, pair, bot), field);
+	else
+		n[2] = unavail_mb;
+	
+	// D, whose bottom-right 4x4 block takes the one at row yM
+	if ((pair = mbaff_locate(ctx, MBAFF_D, -1, 16, &bot, &yM)) >= 0) {
+		mbaff_copy_mb(&n[0], mbaff_located_mb(ctx, pair, bot), field);
+		for (int lx = 0; lx < 2; lx++) {
+			n[0].mvs_s[lx * 16 + 15] = n[0].mvs_s[lx * 16 + right4x4[yM >> 2]];
+			n[0].refIdx[lx * 4 + 3] = n[0].refIdx[lx * 4 + 1 + (yM >> 3) * 2];
+		}
+	} else {
+		n[0] = unavail_mb;
+	}
+	
+	// A, gathered from both macroblocks of the left pair
+	if (!(ctx->mbaff_avail & 1)) {
+		n[3] = n[5] = unavail_mb;
+		nc[0] = unavail_mbc;
+		ctx->mbaff_refIdxA[0] = ctx->mbaff_refIdxA[1] = ctx->mbaff_refIdxA[2] = ctx->mbaff_refIdxA[3] = -1;
+		return;
+	}
+	Edge264MvcMacroblock src[2] __attribute__((aligned(64)));
+	Edge264MvcMbCache srcc[2] __attribute__((aligned(64)));
+	int fA = mbaff_pair_field(ctx, MBAFF_A);
+	for (int b = 0; b < 2; b++) {
+		mbaff_copy_mb(&src[b], mbaff_located_mb(ctx, MBAFF_A, b), field);
+		mbaff_copy_mbc(&srcc[b], mbaff_located_mbc(ctx, MBAFF_A, b), fA - field);
+	}
+	mbaff_locate(ctx, MBAFF_A, 0, 16, &bot, &yM);
+	n[3] = src[bot]; // the macroblock A of 6.4.11.1, at (-1, 0)
+	nc[0] = srcc[bot];
+	for (int r = 0; r < 4; r++) {
+		mbaff_locate(ctx, MBAFF_A, r * 4, 16, &bot, &yM);
+		int d = right4x4[r], s = right4x4[yM >> 2];
+		for (int lx = 0; lx < 2; lx++) {
+			n[3].mvs_s[lx * 16 + d] = src[bot].mvs_s[lx * 16 + s];
+			nc[0].absMvd[lx * 32 + d * 2] = srcc[bot].absMvd[lx * 32 + s * 2];
+			nc[0].absMvd[lx * 32 + d * 2 + 1] = srcc[bot].absMvd[lx * 32 + s * 2 + 1];
+		}
+		nc[0].nC[d] = srcc[bot].nC[s];
+		nc[0].Intra4x4PredMode[d] = srcc[bot].Intra4x4PredMode[s];
+		n[3].nC_Y[d] = src[bot].nC_Y[s];
+		for (int lx = 0; lx < 2 && (r & 1); lx++)
+			ctx->mbaff_refIdxA[lx * 2 + (r >> 1)] = src[bot].refIdx[lx * 4 + 1 + (yM >> 3) * 2];
+		if (!(r & 1)) { // 8x8 blocks
+			int d8 = 1 + r, s8 = 1 + (yM >> 3) * 2;
+			for (int lx = 0; lx < 2; lx++) {
+				n[3].refIdx[lx * 4 + d8] = src[bot].refIdx[lx * 4 + s8];
+				n[3].refPic[lx * 4 + d8] = src[bot].refPic[lx * 4 + s8];
+			}
+			int db = bit8x8[d8], sb = bit8x8[s8];
+			for (int k = 0; k < 2; k++) {
+				uint32_t m = 0x01010101u << db;
+				n[3].bits[k] = (n[3].bits[k] & ~m) | ((src[bot].bits[k] >> sb & 0x01010101u) << db);
+			}
+		}
+	}
+	// chroma 4x4 blocks, in rows of 4 chroma samples
+	if (ctx->t.ChromaArrayType == 1 || ctx->t.ChromaArrayType == 2) {
+		int hC = ctx->t.mb_height_C, nCb = hC >> 1; // 4x4 blocks per component
+		for (int r = 0; r < hC >> 2; r++) {
+			mbaff_locate(ctx, MBAFF_A, r * 4, hC, &bot, &yM);
+			int d = r * 2 + 1, s = (yM >> 2) * 2 + 1;
+			nc[0].nC[16 + d] = srcc[bot].nC[16 + s];
+			nc[0].nC[16 + nCb + d] = srcc[bot].nC[16 + nCb + s];
+		}
+	}
+	// the D locations of the left column
+	n[5] = unavail_mb;
+	for (int r = 1; r < 4; r++) {
+		mbaff_locate(ctx, MBAFF_A, r * 4 - 1, 16, &bot, &yM);
+		for (int lx = 0; lx < 2; lx++) {
+			n[5].mvs_s[lx * 16 + right4x4[r - 1]] = src[bot].mvs_s[lx * 16 + right4x4[yM >> 2]];
+			n[5].refIdx[lx * 4 + r - 1] = src[bot].refIdx[lx * 4 + 1 + (yM >> 3) * 2];
+		}
+	}
+}
+
+/**
+ * The ctxIdxInc of mb_skip_flag for a pair whose mb_field_decoding_flag is not
+ * decoded yet, from the field decoding flag inferred for it (9.3.3.1.1.1): the
+ * number of neighbours A and B that are skipped or not available. The top
+ * macroblock of the pair is known to be skipped when the bottom one is parsed.
+ */
+static int mbaff_skip_inc(Edge264MvcContext *ctx, int bottom) {
+	int saved = ctx->CurrMbAddr, bot, yM, pair, inc = 0;
+	ctx->CurrMbAddr = (saved & ~1) | bottom;
+	pair = mbaff_locate(ctx, MBAFF_A, 0, 16, &bot, &yM);
+	inc += pair < 0 || mbaff_located_mb(ctx, pair, bot)->f.mb_skip_flag;
+	pair = mbaff_locate(ctx, MBAFF_B, -1, 16, &bot, &yM);
+	inc += pair < 0 || pair == MBAFF_CUR || mbaff_located_mb(ctx, pair, bot)->f.mb_skip_flag;
+	ctx->CurrMbAddr = saved;
+	return inc;
+}
+
+/**
+ * Sets the context to decode the current macroblock as a frame or field
+ * macroblock, the latter as in a field picture of its parity: strides,
+ * position, height and reference lists (8.4.2.1: refIdx >> 1 of the frame
+ * list, of the same parity if refIdx is even).
+ */
+static void mbaff_state(Edge264MvcContext *ctx, int field, int bottom) {
+	int px = ctx->mbaff_px, py = ctx->mbaff_py;
+	ctx->t.field_pic_flag = field;
+	ctx->t.bottom_field_flag = field & bottom;
+	ctx->t.stride[0] = ctx->mbaff_stride[0] << field;
+	ctx->t.stride[1] = ctx->t.stride[2] = ctx->mbaff_stride[1] << field;
+	ctx->t.pic_height_in_mbs = ctx->mbaff_height >> field;
+	ctx->mbx = px;
+	ctx->mby = field ? py : py * 2 + bottom;
+	int rowY = py * 32 + (field ? bottom : bottom * 16);
+	int rowC = py * 2 * ctx->t.mb_height_C + (field ? bottom : bottom * ctx->t.mb_height_C);
+	uint8_t *base = ctx->t.samples_buffers[ctx->currPic];
+	ctx->samples_mb[0] = base + px * ctx->t.mbw_Y + rowY * ctx->mbaff_stride[0];
+	ctx->samples_mb[1] = base + PLANE_C(&ctx->t, ctx->currPic) + px * ctx->t.mbw_C + rowC * ctx->mbaff_stride[1];
+	ctx->samples_mb[2] = ctx->samples_mb[1] + ctx->t.stride_Cr;
+	int l = field ? 1 + bottom : 0;
+	for (int i = 0; i < 4; i++)
+		ctx->t.RefPicList_v[i] = ctx->mbaff_lists_v[l][i];
+	if (l != ctx->mbaff_tables) {
+		if (ctx->t.slice_type == 1 && (ctx->t.pps.weighted_bipred_idc == 2 || !ctx->t.direct_spatial_mv_pred_flag)) {
+			memcpy(ctx->DistScaleFactor, ctx->mbaff_DSF[l], sizeof(ctx->DistScaleFactor));
+			memcpy(ctx->MapPicToList0, ctx->mbaff_map[l], sizeof(ctx->MapPicToList0));
+			if (ctx->t.pps.weighted_bipred_idc == 2)
+				memcpy(ctx->implicit_weights, ctx->mbaff_iw[l], sizeof(ctx->implicit_weights));
+		}
+		if (ctx->t.pps.weighted_bipred_idc == 1 && (l == 0) != (ctx->mbaff_tables == 0)) {
+			memcpy(ctx->t.explicit_weights, ctx->mbaff_ew[field], sizeof(ctx->t.explicit_weights));
+			memcpy(ctx->t.explicit_offsets, ctx->mbaff_eo[field], sizeof(ctx->t.explicit_offsets));
+		}
+		ctx->mbaff_tables = l;
+	}
+	if (ctx->t.slice_type < 2) {
+		int n0 = ctx->t.pps.num_ref_idx_active[0] << field;
+		int n1 = ctx->t.pps.num_ref_idx_active[1] << field;
+		ctx->num_ref_idx_mask = (n0 > 1) * 0x0f + (n1 > 1) * 0xf0;
+		int max0 = n0 - 1;
+		int max1 = ctx->t.slice_type == 0 ? -1 : n1 - 1;
+		ctx->clip_ref_idx_v = (i8x8){max0, max0, max0, max0, max1, max1, max1, max1};
+	}
+}
+
+/**
+ * Initializes the context of an MBAFF slice after initialize_context: its
+ * first pair, the frame values that mbaff_state changes, and the reference
+ * lists of field macroblocks.
+ */
+static void initialize_mbaff(Edge264MvcContext *ctx) {
+	int w = ctx->t.pic_width_in_mbs, pair = ctx->t.first_mb_in_slice >> 1;
+	ctx->mbaff_px = pair % w;
+	ctx->mbaff_py = pair / w;
+	ctx->mbaff_stride[0] = ctx->t.stride[0];
+	ctx->mbaff_stride[1] = ctx->t.stride[1];
+	ctx->mbaff_height = ctx->t.pic_height_in_mbs;
+	ctx->mbaff_cache = ctx->mbc_ring;
+	for (int i = 0; i < 4; i++)
+		ctx->mbaff_lists_v[0][i] = ctx->t.RefPicList_v[i];
+	
+	// the neighbouring offsets of available neighbours (as parse_slice_data sets
+	// them) in ctx->mbaff_nb, laid out as a picture of width 2, and in
+	// ctx->mbaff_nbc, with the D locations of the left column in mbaff_nb[5]
+	int mb4 = (int)(sizeof(Edge264MvcMacroblock) >> 2), mbc1 = (int)sizeof(Edge264MvcMbCache);
+	int offB_int8 = -mbc1, offB_int32 = 3 * mb4;
+	ctx->A4x4_int8[0] = 5 - mbc1;
+	ctx->A4x4_int8[2] = 7 - mbc1;
+	ctx->A4x4_int8[8] = 13 - mbc1;
+	ctx->A4x4_int8[10] = 15 - mbc1;
+	ctx->B4x4_int8[0] = 10 - offB_int8;
+	ctx->B4x4_int8[1] = 11 - offB_int8;
+	ctx->B4x4_int8[4] = 14 - offB_int8;
+	ctx->B4x4_int8[5] = 15 - offB_int8;
+	if (ctx->t.ChromaArrayType == 1) {
+		ctx->ACbCr_int8[0] = 1 - mbc1;
+		ctx->ACbCr_int8[2] = 3 - mbc1;
+		ctx->ACbCr_int8[4] = 5 - mbc1;
+		ctx->ACbCr_int8[6] = 7 - mbc1;
+		ctx->BCbCr_int8[0] = 2 - offB_int8;
+		ctx->BCbCr_int8[1] = 3 - offB_int8;
+		ctx->BCbCr_int8[4] = 6 - offB_int8;
+		ctx->BCbCr_int8[5] = 7 - offB_int8;
+	} else if (ctx->t.ChromaArrayType == 2) {
+		for (int i = 0; i < 16; i += 2)
+			ctx->ACbCr_int8[i] = i + 1 - mbc1;
+		ctx->BCbCr_int8[0] = 6 - offB_int8;
+		ctx->BCbCr_int8[1] = 7 - offB_int8;
+		ctx->BCbCr_int8[8] = 14 - offB_int8;
+		ctx->BCbCr_int8[9] = 15 - offB_int8;
+	}
+	if (ctx->t.slice_type < 2) {
+		ctx->absMvd_A[0] = 10 - mbc1;
+		ctx->absMvd_A[2] = 14 - mbc1;
+		ctx->absMvd_A[8] = 26 - mbc1;
+		ctx->absMvd_A[10] = 30 - mbc1;
+		ctx->absMvd_B[0] = 20 - offB_int8;
+		ctx->absMvd_B[1] = 22 - offB_int8;
+		ctx->absMvd_B[4] = 28 - offB_int8;
+		ctx->absMvd_B[5] = 30 - offB_int8;
+		ctx->mvs_A[0] = 5 - mb4;
+		ctx->mvs_A[2] = 7 - mb4;
+		ctx->mvs_A[8] = 13 - mb4;
+		ctx->mvs_A[10] = 15 - mb4;
+		ctx->mvs_B[0] = 10 - offB_int32;
+		ctx->mvs_B[1] = 11 - offB_int32;
+		ctx->mvs_B[4] = 14 - offB_int32;
+		ctx->mvs_B[5] = 15 - offB_int32;
+		ctx->mvs_C[0] = 11 - offB_int32;
+		ctx->mvs_C[1] = 14 - offB_int32;
+		ctx->mvs_C[4] = 15 - offB_int32;
+		ctx->mvs_C[5] = 10 - 2 * mb4;
+		ctx->mvs_D[0] = 15 - 4 * mb4;
+		ctx->mvs_D[1] = 10 - offB_int32;
+		ctx->mvs_D[4] = 11 - offB_int32;
+		ctx->mvs_D[5] = 14 - offB_int32;
+		ctx->mvs_D[2] = 5 + mb4;
+		ctx->mvs_D[8] = 7 + mb4;
+		ctx->mvs_D[10] = 13 + mb4;
+	}
+	for (int p = 0; p < 2; p++) {
+		for (int lx = 0; lx < 2; lx++) {
+			for (int i = 0; i < 32; i++) {
+				int f = ctx->t.RefPicList[lx][i >> 1];
+				ctx->mbaff_lists[1 + p][lx][i] = f < 0 ? f : f + ((p ^ (i & 1)) ? FIELD_ID : 0);
+			}
+		}
+	}
+	
+	// the weights of field macroblocks (8.4.2.3), explicit ones with refIdx >> 1
+	// and implicit ones from the fields of the same parity as the macroblock
+	// (8.4.2.3.1), likewise for temporal direct prediction (8.4.1.2.3)
+	ctx->mbaff_tables = 0;
+	if (ctx->t.pps.weighted_bipred_idc == 1) {
+		memcpy(ctx->mbaff_ew[0], ctx->t.explicit_weights, sizeof(ctx->t.explicit_weights));
+		memcpy(ctx->mbaff_eo[0], ctx->t.explicit_offsets, sizeof(ctx->t.explicit_offsets));
+		for (int c = 0; c < 3; c++) {
+			for (int i = 0; i < 64; i++) {
+				ctx->mbaff_ew[1][c][i] = ctx->t.explicit_weights[c][(i & 32) + (i & 31) / 2];
+				ctx->mbaff_eo[1][c][i] = ctx->t.explicit_offsets[c][(i & 32) + (i & 31) / 2];
+			}
+		}
+	}
+	if (ctx->t.slice_type == 1 && (ctx->t.pps.weighted_bipred_idc == 2 || !ctx->t.direct_spatial_mv_pred_flag)) {
+		memcpy(ctx->mbaff_DSF[0], ctx->DistScaleFactor, sizeof(ctx->DistScaleFactor));
+		memcpy(ctx->mbaff_map[0], ctx->MapPicToList0, sizeof(ctx->MapPicToList0));
+		memcpy(ctx->mbaff_iw[0], ctx->implicit_weights, sizeof(ctx->implicit_weights));
+		int n0 = ctx->t.pps.num_ref_idx_active[0] * 2;
+		int n1 = ctx->t.pps.weighted_bipred_idc == 2 ? ctx->t.pps.num_ref_idx_active[1] * 2 : 1;
+		for (int p = 0; p < 2; p++) {
+			const int32_t *diff = ctx->t.diff_poc_fld[p];
+			memset(ctx->mbaff_map[1 + p], 0, sizeof(ctx->mbaff_map[1 + p]));
+			for (int refIdxL0 = n0; refIdxL0-- > 0; ) {
+				int pic0 = ctx->mbaff_lists[1 + p][0][refIdxL0];
+				if (pic0 < 0)
+					continue;
+				ctx->mbaff_map[1 + p][pic0] = refIdxL0;
+				int long0 = ctx->t.prev_long_term_frames >> (pic0 & (FIELD_ID - 1)) & 1;
+				int tb = clip3(-128, 127, diff[pic0]), DistScaleFactor = 256;
+				for (int refIdxL1 = n1; refIdxL1-- > 0; ) {
+					int pic1 = ctx->mbaff_lists[1 + p][1][refIdxL1];
+					int td = pic1 < 0 ? 0 : clip3(-128, 127, (int32_t)((unsigned)diff[pic0] - (unsigned)diff[pic1]));
+					int implicit_weight = 32;
+					if (td != 0 && !long0) {
+						int tx = (16384 + abs(td / 2)) / td;
+						DistScaleFactor = min(max((tb * tx + 32) >> 6, -1024), 1023);
+						if (!(ctx->t.prev_long_term_frames >> (pic1 & (FIELD_ID - 1)) & 1) && DistScaleFactor >= -256 && DistScaleFactor <= 515)
+							implicit_weight = DistScaleFactor >> 2;
+					} else {
+						DistScaleFactor = 256;
+					}
+					ctx->mbaff_iw[1 + p][refIdxL0][refIdxL1] = implicit_weight + 64;
+				}
+				ctx->mbaff_DSF[1 + p][refIdxL0] = DistScaleFactor;
+			}
+		}
+	}
+}
+
+/**
+ * Restores the frame values of the context when the slice ends.
+ */
+static void finish_mbaff(Edge264MvcContext *ctx) {
+	ctx->t.field_pic_flag = 0;
+	ctx->t.bottom_field_flag = 0;
+	ctx->t.stride[0] = ctx->mbaff_stride[0];
+	ctx->t.stride[1] = ctx->t.stride[2] = ctx->mbaff_stride[1];
+	ctx->t.pic_height_in_mbs = ctx->mbaff_height;
+	for (int i = 0; i < 4; i++)
+		ctx->t.RefPicList_v[i] = ctx->mbaff_lists_v[0][i];
+	if (ctx->mbaff_tables != 0) {
+		if (ctx->t.slice_type == 1 && (ctx->t.pps.weighted_bipred_idc == 2 || !ctx->t.direct_spatial_mv_pred_flag)) {
+			memcpy(ctx->DistScaleFactor, ctx->mbaff_DSF[0], sizeof(ctx->DistScaleFactor));
+			memcpy(ctx->MapPicToList0, ctx->mbaff_map[0], sizeof(ctx->MapPicToList0));
+			memcpy(ctx->implicit_weights, ctx->mbaff_iw[0], sizeof(ctx->implicit_weights));
+		}
+		if (ctx->t.pps.weighted_bipred_idc == 1) {
+			memcpy(ctx->t.explicit_weights, ctx->mbaff_ew[0], sizeof(ctx->t.explicit_weights));
+			memcpy(ctx->t.explicit_offsets, ctx->mbaff_eo[0], sizeof(ctx->t.explicit_offsets));
+		}
+		ctx->mbaff_tables = 0;
+	}
+}
+
+/**
+ * Gathers the values that direct prediction reads of the colocated macroblock
+ * in an MBAFF frame (8.4.1.2.1, Tables 8-6 and 8-8 for AFRM, with
+ * direct_8x8_inference_flag 1, as in colocated_cross): the corner 4x4 block
+ * of each 8x8 partition takes the block at (xCol, yM) of mbAddrCol, in the
+ * field of RefPicList1[0] (of the parity of a field macroblock, else the
+ * closer one) if it was decoded as fields, else in the frame, of which a
+ * field macroblock takes the frame macroblock at yCol / 8, and a frame
+ * macroblock takes the field macroblock of the closer field. The references
+ * are those MapColToList0 looks for, the field of the parity of a field
+ * macroblock or the frame of a frame macroblock, and temporal direct
+ * prediction gets the vertical motion vectors scaled (8-193, 8-194).
+ */
+static noinline void colocated_mbaff(Edge264MvcContext *ctx) {
+	static const int8_t xCol[4] = {0, 12, 0, 12}, yCol[4] = {0, 0, 12, 12};
+	Edge264MvcMacroblock *c = &ctx->mbCol_cross;
+	int w = ctx->t.pic_width_in_mbs, px = ctx->mbaff_px, py = ctx->mbaff_py;
+	int bot = ctx->CurrMbAddr & 1, field = ctx->mb_field;
+	int slot = ctx->mbaff_lists[0][1][0];
+	int temporal = !ctx->t.direct_spatial_mv_pred_flag;
+	const Edge264MvcMacroblock *frame = ctx->t.mbCol_buffer;
+	int field_col = (ctx->t.field_frames >> slot & 1);
+	*c = unavail_mb;
+	c->f.inter_eqs_s = 0;
+	for (int k = 0; k < 4; k++) {
+		const Edge264MvcMacroblock *s;
+		int yM, scale = 0, src_field; // scale: 1 = Frm_To_Fld, -1 = Fld_To_Frm
+		if (field_col) { // colPic is a field (FLD), mbAddrCol5
+			int p = field ? bot : ctx->t.col_bottom;
+			s = frame + (p * (ctx->mbaff_height >> 1) + py) * (w + 1) + px;
+			yM = field ? yCol[k] : 8 * bot + 4 * (yCol[k] >> 3);
+			scale = field ? 0 : -1;
+			src_field = 1;
+		} else { // colPic is the frame (AFRM)
+			const Edge264MvcMacroblock *X = frame + (py * 2 + bot) * (w + 1) + px;
+			src_field = X->f.mb_field_decoding_flag;
+			if (field == src_field) {
+				s = X, yM = yCol[k];
+			} else if (!field) { // mbAddrCol6
+				s = frame + (py * 2 + ctx->t.col_bottom) * (w + 1) + px;
+				yM = 8 * bot + 4 * (yCol[k] >> 3);
+				scale = -1;
+			} else { // mbAddrCol7
+				s = frame + (py * 2 + (yCol[k] >> 3)) * (w + 1) + px;
+				yM = (2 * yCol[k]) & 15;
+				scale = 1;
+			}
+		}
+		int b = (yM >> 3) * 8 + (xCol[k] >> 3) * 4 + ((yM & 7) >> 2) * 2 + ((xCol[k] & 7) >> 2);
+		c->mbIsInterFlag |= s->mbIsInterFlag;
+		for (int lx = 0; lx < 2; lx++) {
+			int refIdx = s->refIdx[lx * 4 + (b >> 2)];
+			int refPic = s->refPic[lx * 4 + (b >> 2)];
+			c->refIdx[lx * 4 + k] = refIdx;
+			if (refPic >= 0)
+				refPic = field ? (src_field ? refPic : refPic + bot * FIELD_ID) : refPic & (FIELD_ID - 1);
+			c->refPic[lx * 4 + k] = refPic;
+			int mvx = refIdx < 0 ? 0 : s->mvs[lx * 32 + b * 2];
+			int mvy = refIdx < 0 ? 0 : s->mvs[lx * 32 + b * 2 + 1];
+			if (temporal && scale)
+				mvy = scale > 0 ? mvy / 2 : mvy * 2;
+			c->mvs[lx * 32 + k * 8 + k * 2] = mvx;
+			c->mvs[lx * 32 + k * 8 + k * 2 + 1] = mvy;
+		}
+	}
+	ctx->mbCol = c;
+}
+#endif
+
+
+
+/**
+ * The macroblock loop of MBAFF slices (7.3.4), see above.
+ */
+static noinline void CAFUNC(parse_slice_data_mbaff_loop)
+{
+	int end_of_slice_flag = 0;
+	int w = ctx->t.pic_width_in_mbs;
+	do {
+		#ifdef LOGS
+			if (ctx->thread_id < 0) {
+				log_mb(ctx, "  - mbAddr: %u\n", ctx->CurrMbAddr);
+			} else {
+				log_mb(ctx, "\n- thread_id: %d\n"
+					"  FrameId: %u\n"
+					"  mbAddr: %u\n",
+					ctx->thread_id, ctx->t.FrameId, ctx->CurrMbAddr);
+			}
+		#endif
+		if (__builtin_expect(ctx->t.mb_bound == BOUND_UNKNOWN, 0)) {
+			int32_t bound = __atomic_load_n(&ctx->d->task_bounds[ctx->task_id], __ATOMIC_ACQUIRE);
+			if (bound != BOUND_UNKNOWN)
+				known_mb_bound(ctx, bound, 0);
+		}
+		if (ctx->CurrMbAddr >= ctx->t.mb_bound)
+			return;
+		int bottom = ctx->CurrMbAddr & 1;
+		int px = ctx->mbaff_px, py = ctx->mbaff_py;
+		Edge264MvcMacroblock *real = mbaff_pair_mb(ctx, px, py, bottom);
+		ctx->_mb = ctx->mbaff_mb = real;
+		int prev_recovery_bits = __atomic_exchange_n(&real->recovery_bits, ctx->t.frame_flip_bit, __ATOMIC_ACQ_REL);
+		if (prev_recovery_bits == ctx->t.frame_flip_bit && !claim_after_older_slices(ctx))
+			return;
+		
+		// availability of the neighbouring pairs, and mb_field_decoding_flag with
+		// the skip flags it may follow (7.3.4, 7.4.4)
+		if (!bottom) {
+			int pair = ctx->CurrMbAddr >> 1, first = ctx->t.first_mb_in_slice >> 1;
+			int availA = px > 0 && pair - 1 >= first;
+			int availB = py > 0 && pair - w >= first;
+			int availC = py > 0 && px < w - 1 && pair - w + 1 >= first;
+			int availD = px > 0 && py > 0 && pair - w - 1 >= first;
+			ctx->mbaff_avail = availA | availB << 1 | availC << 2 | availD << 3;
+			int inferred = availA ? mbaff_pair_field(ctx, MBAFF_A) : availB ? mbaff_pair_field(ctx, MBAFF_B) : 0;
+			ctx->mb_field = inferred;
+			int read_flag = 1;
+			ctx->mbaff_skip = -1;
+			if (ctx->t.slice_type != 2) {
+				#if !CABAC
+					if (ctx->mb_skip_run < 0) {
+						ctx->mb_skip_run = get_ue32(&ctx->t.gb, 139264);
+						log_mb(ctx, "%smb_skip_run: %u\n", ctx->log_indent, ctx->mb_skip_run);
+					}
+					// a skipped top macroblock followed by a skipped bottom one
+					read_flag = ctx->mb_skip_run < 2 && !(ctx->mb_skip_run == 1 && rbsp_end(&ctx->t.gb, 1));
+				#else
+					int base = ctx->t.slice_type == 0 ? 13 : 26;
+					ctx->mbaff_skip = get_ae(ctx, base - mbaff_skip_inc(ctx, 0)); // logged by parse_P/B_mb
+					if (ctx->mbaff_skip) {
+						ctx->mbaff_bot_skip = get_ae(ctx, base - mbaff_skip_inc(ctx, 1));
+						log_mb(ctx, "%smb_skip_flag_of_bottom: %u\n", ctx->log_indent, ctx->mbaff_bot_skip);
+						read_flag = !ctx->mbaff_bot_skip;
+					}
+				#endif
+			}
+			if (read_flag) {
+				#if !CABAC
+					ctx->mb_field = get_u1(&ctx->t.gb);
+				#else
+					int inc = (availA && mbaff_pair_field(ctx, MBAFF_A)) + (availB && mbaff_pair_field(ctx, MBAFF_B));
+					ctx->mb_field = get_ae(ctx, 70 + inc);
+				#endif
+				log_mb(ctx, "%smb_field_decoding_flag: %u\n", ctx->log_indent, ctx->mb_field);
+			}
+		} else {
+			#if CABAC
+				// the bottom skip flag was parsed ahead if the top macroblock was skipped
+				ctx->mbaff_skip = ctx->mbaff_skip > 0 ? ctx->mbaff_bot_skip : -1;
+			#endif
+		}
+		
+		// decode the macroblock amid its remapped neighbours
+		mbaff_state(ctx, ctx->mb_field, bottom);
+		mbaff_neighbours(ctx);
+		ctx->mbaff_nb[4] = *real;
+		ctx->_mb = &ctx->mbaff_nb[4];
+		ctx->_mbc = &ctx->mbaff_nbc[1];
+		mbA = &ctx->mbaff_nb[3];
+		mbB = &ctx->mbaff_nb[1];
+		mbC = &ctx->mbaff_nb[2];
+		mbD = &ctx->mbaff_nb[0];
+		ctx->mbCol = real;
+		
+		// availability of the neighbouring macroblocks A/B/C/D (6.4.12.2), and of
+		// the edges to deblock, whose top edge in a frame pair is always there for
+		// the bottom macroblock
+		int a = ctx->mbaff_avail, frame_bot = !ctx->mb_field && bottom;
+		int unavail16x16 = (~a & 1) | (frame_bot ? 4 : (~a & 2) | (~a & 4)) | (frame_bot ? (~a & 1) << 3 : ~a & 8);
+		int filter_edges = 4 | (px > 0 && (ctx->t.disable_deblocking_filter_idc != 2 || (a & 1))) |
+			(frame_bot || (py > 0 && (ctx->t.disable_deblocking_filter_idc != 2 || (a & 2)))) << 1;
+		
+		// initialize common macroblock values (as parse_slice_data)
+		ctx->unavail4x4_v[0] = block_unavailability[unavail16x16];
+		ctx->unavail16x16 = unavail16x16;
+		ctx->inc.v = mbA->f.v + mbB->f.v + (mbB->f.v & flags_twice.v);
+		mb->f.v = (i8x16){};
+		mb->f.mb_field_decoding_flag = ctx->mb_field;
+		mb->filter_edges = (ctx->t.disable_deblocking_filter_idc != 1) ? filter_edges : 0;
+		mb->QP_s = ctx->t.QP_s;
+		if (ctx->t.ChromaArrayType == 1)
+			ctx->unavail4x4_v[1] = shuffle(ctx->unavail4x4_v[0], (i8x16){0, 4, 8, 12, 0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1});
+		else if (ctx->t.ChromaArrayType == 2)
+			ctx->unavail4x4_v[1] = shuffle(ctx->unavail4x4_v[0], (i8x16){0, 4, 2, 6, 8, 12, 10, 14, 0, 4, 2, 6, 8, 12, 10, 14});
+		if (ctx->t.ChromaArrayType < 3)
+			mb->bits_l = (mbA->bits_l >> 3 & 0x11111100111111) | (mbB->bits_l >> 1 & 0x42424200424242);
+		mbc->nC_v[0] = mbc->nC_v[1] = mbc->nC_v[2] = (i8x16){};
+		#if CABAC
+			for (int i = 1; i < 4; i++) {
+				ctx->sig_inc_v[i] = sig_inc_8x8[ctx->mb_field][i];
+				ctx->scan_v[i] = scan_8x8_cabac[ctx->mb_field][i];
+			}
+		#endif
+		
+		if (ctx->t.slice_type == 0) {
+			CACALL(parse_P_mb);
+		} else if (ctx->t.slice_type == 1) {
+			await_reference(ctx, ctx->t.RefPicList[1][0], ctx->mby);
+			colocated_mbaff(ctx);
+			CACALL(parse_B_mb);
+		} else {
+			int mb_type_or_ctxIdx = CACOND(get_ue16(&ctx->t.gb, 25), 5 - ctx->inc.mb_type_I_NxN);
+			#if !CABAC
+				log_mb(ctx, "%smb_type: %u\n", ctx->log_indent, mb_type_or_ctxIdx);
+			#endif
+			CACALL(parse_I_mb, mb_type_or_ctxIdx);
+		}
+		#if CABAC
+			if (bottom) {
+				end_of_slice_flag = cabac_terminate(ctx);
+				log_mb(ctx, "%send_of_slice_flag: %u\n", ctx->log_indent, end_of_slice_flag);
+			}
+		#endif
+		print_mb(ctx);
+		mb->nC_Y_v = mbc->nC_v[0];
+		#if !CABAC
+			if (mb->f.transform_size_8x8_flag)
+				mb->nC_Y_v = (i8x16)((i32x4)mb->nC_Y_v == 0) - -1;
+		#endif
+		mb->f.mb_field_decoding_flag = ctx->mb_field;
+		
+		// copy the macroblock back, except recovery_bits that it claimed above
+		memcpy(real, mb, 1);
+		memcpy((char *)real + 2, (char *)mb + 2, sizeof(*mb) - 2);
+		*mbaff_pair_mbc(ctx, px, py, bottom) = *mbc;
+		ctx->_mb = real;
+		
+		ctx->CurrMbAddr++;
+		if (bottom) {
+			ctx->mbaff_px = ++px;
+			if (px >= w) {
+				ctx->mbaff_px = 0;
+				ctx->mbaff_py = ++py;
+				if (py * 2 >= ctx->mbaff_height)
+					return;
+			}
+		}
+	} while (CACOND(ctx->mb_skip_run > 0 || !rbsp_end(&ctx->t.gb, 1), !end_of_slice_flag));
+}
+
+static noinline void CAFUNC(parse_slice_data_mbaff)
+{
+	initialize_mbaff(ctx);
+	CACALL(parse_slice_data_mbaff_loop);
+	finish_mbaff(ctx);
+}
+
+
 
 #undef CABAC

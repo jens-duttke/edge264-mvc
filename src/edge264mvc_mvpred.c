@@ -261,17 +261,19 @@ static inline void decode_inter_16x8_bottom(Edge264MvcContext *ctx, i16x8 mvd, i
 	if (refIdx == refIdxA) {
 		mvp = (i32x4){mbA->mvs_s[lx * 16 + 13]};
 	} else {
+		// C is not available, so D at (-1, 7), which MBAFF frames remap apart from A
+		const Edge264MvcMacroblock *mbAD = __builtin_expect(ctx->t.MbaffFrameFlag, 0) ? &ctx->mbaff_nb[5] : mbA;
 		int refIdxB = mb->refIdx[lx * 4];
-		int refIdxC = mbA->refIdx[lx * 4 + 1];
+		int refIdxC = mbAD->refIdx[lx * 4 + 1];
 		if (refIdx == refIdxB) {
 			mvp = (i32x4){mb->mvs_s[lx * 16]};
 			if (refIdx == refIdxC) {
 				i16x8 mvA = (i32x4){mbA->mvs_s[lx * 16 + 13]};
-				i16x8 mvC = (i32x4){mbA->mvs_s[lx * 16 + 7]};
+				i16x8 mvC = (i32x4){mbAD->mvs_s[lx * 16 + 7]};
 				mvp = median16(mvA, mvp, mvC);
 			}
 		} else {
-			mvp = (i32x4){mbA->mvs_s[lx * 16 + 7]};
+			mvp = (i32x4){mbAD->mvs_s[lx * 16 + 7]};
 			if (refIdx != refIdxC) {
 				i16x8 mvA = (i32x4){mbA->mvs_s[lx * 16 + 13]};
 				i16x8 mvB = (i32x4){mb->mvs_s[lx * 16]};
@@ -472,18 +474,21 @@ static noinline void colocated_cross(Edge264MvcContext *ctx) {
 	int temporal = !ctx->t.direct_spatial_mv_pred_flag;
 	*c = unavail_mb;
 	c->f.inter_eqs_s = 0;
+	// a field pair of an MBAFF frame gives the macroblock of the parity of the
+	// current field (mbAddrCol3) at the same position, like a field picture
+	int pair_field = fld && base->f.mb_field_decoding_flag;
 	for (int k = 0; k < 4; k++) {
-		const Edge264MvcMacroblock *s = fld && k >= 2 ? base + width + 1 : base; // mbAddrCol1 takes yCol / 8
-		int b = fld ? blk_fld[k] : blk_frm[ctx->mby & 1][k];
+		const Edge264MvcMacroblock *s = fld && (pair_field ? ctx->t.bottom_field_flag : k >= 2) ? base + width + 1 : base; // mbAddrCol1 takes yCol / 8
+		int b = pair_field ? k * 5 : fld ? blk_fld[k] : blk_frm[ctx->mby & 1][k];
 		c->mbIsInterFlag |= s->mbIsInterFlag;
 		for (int lx = 0; lx < 2; lx++) {
 			int refIdx = s->refIdx[lx * 4 + (b >> 2)];
 			int refPic = s->refPic[lx * 4 + (b >> 2)];
 			c->refIdx[lx * 4 + k] = refIdx;
-			c->refPic[lx * 4 + k] = refPic < 0 ? refPic : fld ? refPic + ctx->t.bottom_field_flag * FIELD_ID : refPic & (FIELD_ID - 1);
+			c->refPic[lx * 4 + k] = refPic < 0 || pair_field ? refPic : fld ? refPic + ctx->t.bottom_field_flag * FIELD_ID : refPic & (FIELD_ID - 1);
 			int mvx = refIdx < 0 ? 0 : s->mvs[lx * 32 + b * 2];
 			int mvy = refIdx < 0 ? 0 : s->mvs[lx * 32 + b * 2 + 1];
-			if (temporal)
+			if (temporal && !pair_field)
 				mvy = fld ? mvy / 2 : mvy * 2;
 			c->mvs[lx * 32 + k * 8 + k * 2] = mvx;
 			c->mvs[lx * 32 + k * 8 + k * 2 + 1] = mvy;

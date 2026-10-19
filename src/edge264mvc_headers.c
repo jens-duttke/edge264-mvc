@@ -2622,6 +2622,14 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		(dec->non_base_frames >> dec->currPic & 1)) {
 		int prev = dec->currPic_marked ? dec->FrameNums[dec->currPic] : dec->PrevRefFrameNum[non_base_view];
 		dep_corrupt = ((frame_num - prev - 1) & FrameNumMask) > 0;
+		// The second field of an open dependent field picture shares its frame_num.
+		// It follows the first field directly when the views are sent a frame at a
+		// time (base top and bottom fields, then the dependent ones), as the
+		// packets of the two views in a transport stream of interlaced 3D video
+		// hold whole frames.
+		if (t->field_pic_flag && dec->currField == 2 - t->bottom_field_flag && !dec->IdrPicFlag &&
+			frame_num == (dec->FrameNum & FrameNumMask) && dec->field_slot[non_base_view] == dec->currPic)
+			dep_corrupt = 0;
 	}
 
 	// dep_corrupt keys on frame_num, so it only sees damage that frame_num itself

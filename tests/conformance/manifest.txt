@@ -276,3 +276,8 @@ mvc-jmvc/interview_colocated 9 1 15e7b2bf2bd163e6011cedc71f42cf7b ebbe590d783b36
 # fields; cut by tests/gen_stream_prefix.py; see mvc-jmvc/README.md), both views anchored to
 # the JMVC decoder's output for the whole vector, of which the prefix gives the first 9 frames.
 mvc-jmvc/mvcict1_fields 9 1 6bcc23be8aba3716357754c231200e7b 1ca9dd4e8f4ad1bbf0bfa2012fbe2f76
+# mvcict1_frame_order: mvcict1_fields with the field pictures of each frame in the order of
+# the frames of each view (base top and bottom fields, then the dependent ones; reordered by
+# tests/gen_field_frame_order.py), which must decode to the same output. A decoder that takes
+# the dependent second field right after the first for a damaged slice conceals it.
+mvc-jmvc/mvcict1_frame_order 9 1 6bcc23be8aba3716357754c231200e7b 1ca9dd4e8f4ad1bbf0bfa2012fbe2f76

@@ -63,6 +63,7 @@
 !tests/gen_aux_picture.py
 !tests/gen_stream_prefix.py
 !tests/gen_unpaired_fields.py
+!tests/gen_field_frame_order.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

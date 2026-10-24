@@ -1,0 +1,72 @@
+name: macOS release build
+
+# The library as Oku3D ships it on macOS - Apple Silicon, macOS 14 as the
+# oldest system, the armv8-a baseline with NEON, assertions compiled out -
+# checked by the same harnesses as the Windows build and attached to the
+# release it was built from. A published release builds it; a manual run
+# names the tag, for a release published before this workflow existed.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and attach to'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  arm64-apple-darwin:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+      - name: Build
+        run: |
+          make -j3 CFLAGS="-march=armv8-a" CPPFLAGS=-DNDEBUG VARIANTS=logs BUILDTEST=no \
+            libedge264mvc.2.dylib conformance_check liveness_check asan_check api_check
+      - name: Decode the conformance, liveness and robustness suites
+        run: |
+          ./conformance_check run tests/conformance/manifest.txt tests/conformance
+          EDGE264MVC_THREADS=8 ./conformance_check run tests/conformance/manifest.txt tests/conformance
+          EDGE264MVC_THREADS=8 ./liveness_check run tests/liveness/manifest.txt tests/liveness
+          ./asan_check run tests/asan/manifest.txt tests/asan
+          EDGE264MVC_THREADS=4 ./asan_check run tests/asan/manifest.txt tests/asan
+          ./api_check tests/conformance/mvc/MVCDS-5.264 tests/conformance/2d-synthetic/crop_top_left.264 tests/crop-margin.264 tests/conformance/2d/CABA3_Sony_C.264
+      - name: Check what the library is
+        run: |
+          set -e
+          lib=libedge264mvc.2.dylib
+          [[ "$(lipo -archs $lib)" == arm64 ]]
+          [[ "$(otool -D $lib | tail -1)" == "@rpath/$lib" ]]
+          # Nothing but the system library, or the player's bundle would
+          # need something no Mac carries.
+          ! otool -L $lib | tail -n +2 | grep -v -e "@rpath/$lib" -e /usr/lib/libSystem
+          minos="$(otool -l $lib | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+          [[ "$minos" == 14.0 ]]
+          # Only the API leaves the library.
+          ! nm -gU $lib | awk '{print $3}' | grep -v '^_edge264mvc_'
+          for symbol in api_version default_settings open close send_nal send_end receive_frame release_frame flush; do
+            nm -gU $lib | grep -q " _edge264mvc_$symbol\$"
+          done
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          name="libedge264mvc-$TAG-macos-arm64"
+          mkdir -p "$name/lib" "$name/include"
+          cp libedge264mvc.2.dylib "$name/lib/"
+          cp edge264mvc.h "$name/include/"
+          cp LICENSE_BSD.txt "$name/"
+          tar -cJf "$name.tar.xz" "$name"
+          shasum -a 256 "$name.tar.xz" | tee "$name.tar.xz.sha256"
+          gh release upload "$TAG" "$name.tar.xz" "$name.tar.xz.sha256" --clobber

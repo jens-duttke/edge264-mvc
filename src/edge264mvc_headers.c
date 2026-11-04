@@ -3513,7 +3513,11 @@ int ADD_VARIANT(parse_pic_parameter_set)(Edge264MvcDecoder *dec,  Edge264MvcUnre
 	pps.num_ref_idx_active[0] = get_ue16(&dec->gb, 31) + 1;
 	pps.num_ref_idx_active[1] = get_ue16(&dec->gb, 31) + 1;
 	pps.weighted_pred_flag = get_u1(&dec->gb);
-	pps.weighted_bipred_idc = get_uv(&dec->gb, 2);
+	// reason: 3 is reserved (7.4.2.2) and derives no weights, so a B slice blended
+	// with implicit weights never computed for it (stale worker stack, differing
+	// between threads); read as the default average, as FFmpeg predicts it
+	int weighted_bipred_idc = get_uv(&dec->gb, 2);
+	pps.weighted_bipred_idc = weighted_bipred_idc == 3 ? 0 : weighted_bipred_idc;
 	pps.QPprime_Y = get_se16(&dec->gb, -26 - 12, 25) + 26; // 26 + pic_init_qp_minus26, down to -QpBdOffsetY of 10 bits
 	pps.QSprime_Y = get_se16(&dec->gb, -26, 25) + 26;
 	pps.second_chroma_qp_index_offset = pps.chroma_qp_index_offset = get_se16(&dec->gb, -12, 12);

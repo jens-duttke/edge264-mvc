@@ -65,6 +65,7 @@
 !tests/gen_unpaired_fields.py
 !tests/gen_field_frame_order.py
 !tests/gen_explicit_weights.py
+!tests/gen_weighted_bipred_reserved.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

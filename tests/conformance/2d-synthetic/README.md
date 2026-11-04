@@ -266,3 +266,9 @@ Guards MBAFF frames of monochrome (4:0:0) video, whose pictures come out with ne
 
     ffmpeg -f lavfi -i testsrc2=size=352x288 -frames:v 6 -pix_fmt gray -c:v libx264 -profile:v high \
       -x264-params interlaced=1:keyint=3:bframes=0 mbaff_monochrome.264
+
+## `weighted_bipred_reserved.264`
+
+Guards the reserved value 3 of `weighted_bipred_idc`, which 7.4.2.2 does not allow. A 32x32 Main profile stream whose PPS carries it: an IDR picture at POC 0 and a P picture at POC 8, both of I_PCM macroblocks with distinct samples, then a B picture of skipped macroblocks at POC 2, so that every macroblock blends both references (`tests/gen_weighted_bipred_reserved.py`). No weights are derived for the value 3, yet the blend took it for implicit weighted prediction and read implicit weights never computed for the slice, left over on the stack of the decoding thread, so the B picture came out wrong and differed between single- and multithreaded decoding. The value is now read as 0, the default average. The JM reference decoder leaves the weights of this case undefined; the hash is anchored to FFmpeg, which predicts it with the default average.
+
+Without the fix this line FAILs.

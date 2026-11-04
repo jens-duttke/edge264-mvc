@@ -245,6 +245,16 @@ EDGE264MVC_API void edge264mvc_flush(Edge264MvcDecoder *decoder);
  */
 EDGE264MVC_API size_t edge264mvc_find_start_code(const uint8_t *buf, size_t size);
 
+/**
+ * Returns timing information for the current frame.
+ * 
+ * @param dec the decoder.
+ * @param time_scale scaling factor for timestamps.
+ * @param num_units_in_tick timestamp.
+ * @return int success status.
+ */
+EDGE264MVC_API int edge264mvc_get_timing(const Edge264MvcDecoder *dec, uint32_t *time_scale, uint32_t *num_units_in_tick);
+
 #ifdef __cplusplus
 }
 #endif

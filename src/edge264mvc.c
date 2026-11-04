@@ -1154,6 +1154,18 @@ size_t edge264mvc_find_start_code(const uint8_t *buf, size_t size) {
 	return size;
 }
 
+int edge264mvc_get_timing(const Edge264MvcDecoder *dec, uint32_t *time_scale, uint32_t *num_units_in_tick)
+{
+    if (dec == NULL ||
+        time_scale == NULL ||
+        num_units_in_tick == NULL)
+        return EINVAL;
+
+    *time_scale = dec->sps.time_scale;
+    *num_units_in_tick = dec->sps.num_units_in_tick;
+
+    return 0;
+}
 
 
 const int8_t cabac_context_init[4][1024][2] __attribute__((aligned(16))) = {{

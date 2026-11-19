@@ -719,13 +719,15 @@ struct Edge264MvcDecoder {
 	int32_t prevPicOrderCnt[2]; // one per view
 	int32_t TopFieldOrderCnt; // value for the current incomplete frame, unaffected by mmco5
 	int32_t BottomFieldOrderCnt;
-	Edge264MvcSeqParameterSet sps;
-	Edge264MvcSeqParameterSet ssps;
-	// from OutputPocBase to HavePrevOutputPoc: kept across an end of sequence (see clear_decoder)
+	Edge264MvcSeqParameterSet sps; // the active SPS, with the limits of the MVC streams (see parse_seq_parameter_set)
+	Edge264MvcSeqParameterSet ssps; // the active subset SPS, whose presence makes the sequence an MVC one
+	// from stored_sps to HavePrevOutputPoc: kept across an end of sequence (see clear_decoder)
+	Edge264MvcSeqParameterSet stored_sps; // the last SPS as received
+	Edge264MvcSeqParameterSet stored_ssps; // the last subset SPS as received, activated by the next dependent view
+	Edge264MvcPicParameterSet PPS[256]; // every pic_parameter_set_id (7.4.2.2)
 	int64_t OutputPocBase[2];
 	int64_t PrevOutputUnwrapped[2]; // previous exported DisplayPoc per view, kept strictly increasing (see edge264mvc_unwrap_output_poc)
 	int8_t HavePrevOutputPoc[2];
-	Edge264MvcPicParameterSet PPS[256]; // every pic_parameter_set_id (7.4.2.2)
 	
 	// frame buffer as a Structure Of Arrays
 	FrameMask short_term_frames; // bitfield for indices of short-term or non-existing frame/view references for current view

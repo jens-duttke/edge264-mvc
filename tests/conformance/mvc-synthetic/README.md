@@ -165,6 +165,16 @@ decoder reproduces that hash. Run it from the repo root:
   view component is one I_PCM macroblock of a single value, so `ground_truth.py` derives
   both hashes. Produced by `tests/gen_mvc_end_of_sequence.py` with the argument `resend`.
 
+- **mvc_eos_parameter_sets** (4 frames) - a **fork regression guard** for the parameter
+  sets across an end of sequence: the same two sequences as `mvc_eos_display_order`, with
+  the SPS, the subset SPS and both PPSs sent only before the first one. An end of sequence
+  specifies no decoding process (7.4.2.5), and a parameter set stays stored until one with
+  the same id replaces it (7.4.1.2.1), so the second sequence decodes with them, as FFmpeg
+  does for the base view. The decoder discarded the parameter sets at the end of sequence
+  and rejected the second sequence as corrupt, so only 2 of the 4 frames came out. Same
+  content as `mvc_eos_display_order`, hence the same hashes. Produced by
+  `tests/gen_mvc_end_of_sequence.py` with the argument `stored`.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

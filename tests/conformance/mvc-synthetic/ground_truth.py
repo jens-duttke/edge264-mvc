@@ -87,6 +87,8 @@ EXPECTED_NONFLAT = {
     # mvc_eos_display_order - two sequences of two access units, each view component an
     # I_PCM macroblock of one value (tests/gen_mvc_end_of_sequence.py), output in order.
     "mvc-synthetic/mvc_eos_display_order": ([40, 80, 120, 160], [60, 100, 140, 180]),
+    # mvc_eos_parameter_sets - the same content with the parameter sets sent only once
+    "mvc-synthetic/mvc_eos_parameter_sets": ([40, 80, 120, 160], [60, 100, 140, 180]),
 }
 
 def main():

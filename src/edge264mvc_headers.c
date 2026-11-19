@@ -345,18 +345,44 @@ static int alloc_frame(Edge264MvcDecoder *dec, int id) {
 	}
 }
 
+// fix frame limits when MVC is detected
+static void set_mvc_limits(Edge264MvcDecoder *dec) {
+	if (dec->ssps.BitDepth_Y > 0) {
+		dec->sps.max_num_ref_frames = min(dec->sps.max_num_ref_frames, 8);
+		dec->sps.max_dec_frame_buffering = dec->ssps.max_dec_frame_buffering =
+			max(dec->ssps.max_dec_frame_buffering, dec->sps.max_num_ref_frames + dec->ssps.max_num_ref_frames);
+		dec->sps.max_num_reorder_frames = dec->ssps.max_num_reorder_frames;
+	}
+}
+
+// After an end of sequence, a dependent view activates the subset SPS received
+// before it (H.7.4.1.2.1), as if it was sent again.
+static void activate_stored_ssps(Edge264MvcDecoder *dec) {
+	if (dec->ssps.BitDepth_Y == 0 && dec->stored_ssps.BitDepth_Y > 0) {
+		dec->ssps = dec->stored_ssps;
+		set_mvc_limits(dec);
+	}
+}
+
 // end_of_sequence keeps what outlives a coded video sequence (the fields from
-// OutputPocBase to HavePrevOutputPoc): the display order of the output keeps
-// increasing across an end of sequence, as it does across an IDR picture.
+// stored_sps to HavePrevOutputPoc): the parameter sets as received, since an end
+// of sequence specifies no decoding process (7.4.2.5) and a parameter set stays
+// stored until one with the same id replaces it (7.4.1.2.1), so the next
+// sequence may refer to them without sending them again; and the display order
+// of the output, which keeps increasing across an end of sequence as it does
+// across an IDR picture. The SPS becomes active again as received, the subset
+// SPS once a dependent view refers to it (see activate_stored_ssps), so a
+// sequence of the base view alone decodes as one without a subset SPS does.
 static void clear_decoder(Edge264MvcDecoder *dec, int end_of_sequence) {
 	// frames received but not released yet keep their slots until released
 	FrameMask held = dec->output_frames & ~dec->to_get_frames;
 	size_t from = offsetof(Edge264MvcDecoder, nal_ref_idc);
 	if (end_of_sequence) {
-		memset((void *)dec + from, 0, offsetof(Edge264MvcDecoder, OutputPocBase) - from);
+		memset((void *)dec + from, 0, offsetof(Edge264MvcDecoder, stored_sps) - from);
 		from = offsetof(Edge264MvcDecoder, HavePrevOutputPoc) + sizeof(dec->HavePrevOutputPoc);
 	}
 	memset((void *)dec + from, 0, offsetof(Edge264MvcDecoder, log_base_us) - from);
+	dec->sps = dec->stored_sps;
 	dec->output_frames = held;
 	dec->currPic = dec->basePic = -1;
 	dec->held_task = -1;
@@ -3362,6 +3388,7 @@ int ADD_VARIANT(parse_nal_unit_header_extension)(Edge264MvcDecoder *dec, Edge264
 			u >> 2 & 1,
 			u >> 1 & 1);
 		if (dec->nal_unit_type == 20) {
+			activate_stored_ssps(dec);
 			// the views beyond VOIdx 1 are not decoded (see parse_seq_parameter_set_mvc_extension);
 			// a stream of two views has no other one, whatever view_id its slices carry
 			if (dec->ssps.num_views > 2 && (u >> 6 & 0x3ff) != dec->ssps.dependent_view_id) {
@@ -4241,14 +4268,8 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 			}
 		}
 		*((dec->nal_unit_type == 7) ? &dec->sps : &dec->ssps) = sps;
-		
-		// fix frame limits when MVC is detected
-		if (dec->ssps.BitDepth_Y > 0) {
-			dec->sps.max_num_ref_frames = min(dec->sps.max_num_ref_frames, 8);
-			dec->sps.max_dec_frame_buffering = dec->ssps.max_dec_frame_buffering =
-				max(dec->ssps.max_dec_frame_buffering, dec->sps.max_num_ref_frames + dec->ssps.max_num_ref_frames);
-			dec->sps.max_num_reorder_frames = dec->ssps.max_num_reorder_frames;
-		}
+		*((dec->nal_unit_type == 7) ? &dec->stored_sps : &dec->stored_ssps) = sps;
+		set_mvc_limits(dec);
 	}
 	return print_dec(dec, "  decode_NAL_result: %s\n", ret);
 }

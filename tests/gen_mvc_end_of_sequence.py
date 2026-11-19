@@ -8,13 +8,17 @@
 # display order of the output keeps increasing across the end of sequence.
 #   mvc_eos_display_order: the parameter sets (SPS, subset SPS and the PPS of each
 #     view) are sent again before the second sequence.
+#   mvc_eos_parameter_sets: the parameter sets come only before the first sequence. An
+#     end of sequence specifies no decoding process (7.4.2.5) and leaves the stored
+#     parameter sets in place (7.4.1.2.1), so the second sequence decodes with them.
 # Usage:
 #   python3 tests/gen_mvc_end_of_sequence.py tests/conformance/mvc-synthetic/mvc_eos_display_order.264 resend
+#   python3 tests/gen_mvc_end_of_sequence.py tests/conformance/mvc-synthetic/mvc_eos_parameter_sets.264 stored
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen_avc
 out = sys.argv[1]
-resend = sys.argv[2] == "resend" # send the parameter sets before each sequence
+resend = sys.argv[2] == "resend" # send the parameter sets before each sequence, rather than once ("stored")
 
 # (base value, dependent value) of each access unit, in decoding and display order
 SEQUENCES = [[(40, 60), (80, 100)], [(120, 140), (160, 180)]]

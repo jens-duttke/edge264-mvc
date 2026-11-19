@@ -2211,10 +2211,10 @@ static int conceal_frame(Edge264MvcDecoder *dec, int id) {
 	// access unit: the two eyes differ only by disparity, so the viewer sees one
 	// flat frame instead of a green flash, and the pictures predicted from it
 	// inherit a plausible reference rather than neutral samples. Identify that
-	// base on (FrameNum, POC), the same key the pairing in bump_frame uses - a
+	// base with same_access_unit, which the pairing in bump_frame uses - a
 	// POC-only match collides across short IDR sequences, where pictures of
-	// different sequences share a full POC while carrying different frame_num
-	// (tests/gen_same_poc_stream.py), and would fill the damaged eye from another
+	// different sequences share a full POC (tests/gen_same_poc_stream.py), and
+	// would fill the damaged eye from another
 	// access unit: a stale picture presented as the other eye, worse than the
 	// neutral samples it replaces. Only a base decoded before the picture can
 	// be its own: a later picture with the same key (a damaged stream) may not
@@ -2231,8 +2231,7 @@ static int conceal_frame(Edge264MvcDecoder *dec, int id) {
 			~dec->non_base_frames;
 		for (FrameMask b = live; b; b &= b - 1) {
 			int i = mask_ctz(b);
-			if (dec->samples_buffers[i] && dec->FrameNums[i] == dec->FrameNums[slot] &&
-				dec->FieldOrderCnt[0][i] == dec->FieldOrderCnt[0][slot] &&
+			if (dec->samples_buffers[i] && same_access_unit(dec, i, slot) &&
 				dec->FrameIds[i] < dec->FrameIds[slot] &&
 				(base < 0 || dec->FrameIds[i] > dec->FrameIds[base]))
 				base = i;

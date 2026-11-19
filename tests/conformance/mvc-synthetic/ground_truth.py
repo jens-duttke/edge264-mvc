@@ -38,6 +38,15 @@ def gt(n_views_frames):
     # digest over n frames of a single view, every sample == 0x80
     return fnv128(b"\x80" * (BYTES_PER_VIEW_FRAME * n_views_frames))
 
+def gt_row_frames(frames):
+    # digest over frames of one macroblock row, each a list of per-macroblock 8-bit values
+    # that its luma and chroma samples all carry
+    data = b""
+    for mbs in frames:
+        data += b"".join(bytes([v]) * 16 for v in mbs) * 16 # Y, 16 rows
+        data += b"".join(bytes([v]) * 8 for v in mbs) * 16 # Cb then Cr, 8 rows each
+    return fnv128(data)
+
 def gt_frames(values):
     # digest over frames, each a uniform 384-byte plane-set of the given 8-bit value
     return fnv128(b"".join(bytes([v]) * BYTES_PER_VIEW_FRAME for v in values))
@@ -97,6 +106,16 @@ EXPECTED_NONFLAT = {
     "mvc-synthetic/mvc_dependent_gap": ([20, 40, 60, 80], [30, 50, 70, 90]),
 }
 
+# Fixtures of more than one macroblock per picture, as (base frames, dependent frames), each
+# frame a list of the values of its macroblocks:
+#   mvc_nonref_dependent_lost_slice - tests/gen_mvc_view_frame_num.py; the second slice of
+#     the dependent view of the third access unit is missing, so its macroblock takes the
+#     samples of the base view of that access unit (60), which conceal_frame copies.
+EXPECTED_ROWS = {
+    "mvc-synthetic/mvc_nonref_dependent_lost_slice": (
+        [[20, 20], [40, 40], [60, 60], [80, 80]], [[30, 30], [50, 50], [70, 60], [90, 90]]),
+}
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     manifest = os.path.join(here, "..", "manifest.txt")
@@ -126,6 +145,19 @@ def main():
 
     for name, (base_vals, dep_vals) in EXPECTED_NONFLAT.items():
         exp_base, exp_dep = gt_frames(base_vals), gt_frames(dep_vals)
+        if name not in committed:
+            print(f"MISSING in manifest: {name}"); fails += 1; continue
+        got_base, got_dep = committed[name]
+        ok_b = got_base == exp_base
+        ok_d = got_dep == exp_dep
+        print(f"{name}: base {'OK' if ok_b else 'MISMATCH'} dep {'OK' if ok_d else 'MISMATCH'}")
+        if not ok_b:
+            print(f"    base expected {exp_base}  committed {got_base}"); fails += 1
+        if not ok_d:
+            print(f"    dep  expected {exp_dep}  committed {got_dep}"); fails += 1
+
+    for name, (base_frames, dep_frames) in EXPECTED_ROWS.items():
+        exp_base, exp_dep = gt_row_frames(base_frames), gt_row_frames(dep_frames)
         if name not in committed:
             print(f"MISSING in manifest: {name}"); fails += 1; continue
         got_base, got_dep = committed[name]

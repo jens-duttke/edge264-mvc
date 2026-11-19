@@ -12,17 +12,22 @@
 #     picture, so its frame_num stays 1 while that of the base view goes on.
 #   mvc_dependent_gap: the dependent view skips a frame_num value (gaps allowed in its
 #     subset SPS only), the base view does not.
+#   mvc_nonref_dependent_lost_slice: mvc_nonref_dependent with pictures of two
+#     macroblocks coded as two slices each, of which the second slice of the dependent
+#     view of the third access unit is missing (a damaged stream). That macroblock is
+#     concealed from the base view of its access unit (ground_truth.py, EXPECTED_ROWS).
 # Usage:
 #   python3 tests/gen_mvc_view_frame_num.py tests/conformance/mvc-synthetic/<name>.264 <name>
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen_avc
 out, variant = sys.argv[1], sys.argv[2]
+width = 2 if variant == "mvc_nonref_dependent_lost_slice" else 1 # macroblocks, one slice each
 
 sps = dict(nal_ref_idc=3, nal_unit_type=7, profile_idc=100, constraint_set_flags=[0, 0, 0, 0, 0, 0],
 	level_idc=3.0, chroma_format_idc=1, bit_depth={"luma": 8, "chroma": 8}, qpprime_y_zero_transform_bypass_flag=0,
 	log2_max_frame_num=4, pic_order_cnt_type=0, log2_max_pic_order_cnt_lsb=6, max_num_ref_frames=2,
-	gaps_in_frame_num_value_allowed_flag=0, pic_size_in_mbs={"width": 1, "height": 1},
+	gaps_in_frame_num_value_allowed_flag=0, pic_size_in_mbs={"width": width, "height": 1},
 	frame_mbs_only_flag=1, direct_8x8_inference_flag=1)
 ssps = dict(sps, nal_unit_type=15, profile_idc=128, view_ids=[0, 1], num_anchor_refs={"l0": 0, "l1": 0},
 	num_non_anchor_refs={"l0": 0, "l1": 0},
@@ -41,20 +46,21 @@ def pcm(v, p_slice):
 		mb["mb_skip_run"] = 0
 	return mb
 
-def view_component(view, idr_id, frame_num, poc, v, ref=True):
+def view_component(view, idr_id, frame_num, poc, v, ref=True, slices=width):
 	idr = idr_id is not None
-	d = dict(nal_ref_idc=3 if ref else 0, first_mb_in_slice=0, slice_type=7 if idr else 5, pic_parameter_set_id=view,
-		frame_num={"bits": 4, "absolute": frame_num}, pic_order_cnt={"type": 0, "bits": 6, "absolute": poc},
-		slice_qp_delta=0, disable_deblocking_filter_idc=1, macroblocks_cavlc=[pcm(v, not idr)])
-	if idr:
-		d.update(idr_pic_id=idr_id, no_output_of_prior_pics_flag=0, long_term_reference_flag=0)
-	else:
-		d.update(num_ref_idx_active={"override_flag": 0, "l0": 1})
 	mvc = dict(non_idr_flag=0 if idr else 1, priority_id=0, view_id=view, temporal_id=0,
 		anchor_pic_flag=1 if idr else 0, inter_view_flag=0)
-	if view == 0: # prefix NAL unit, then the base view slice
-		return [dict(mvc, nal_ref_idc=3 if ref else 0, nal_unit_type=14), dict(d, nal_unit_type=5 if idr else 1)]
-	return [dict(d, **mvc, nal_unit_type=20)]
+	nals = [dict(mvc, nal_ref_idc=3 if ref else 0, nal_unit_type=14)] if view == 0 else [] # prefix NAL unit
+	for first_mb in range(slices):
+		d = dict(nal_ref_idc=3 if ref else 0, first_mb_in_slice=first_mb, slice_type=7 if idr else 5, pic_parameter_set_id=view,
+			frame_num={"bits": 4, "absolute": frame_num}, pic_order_cnt={"type": 0, "bits": 6, "absolute": poc},
+			slice_qp_delta=0, disable_deblocking_filter_idc=1, macroblocks_cavlc=[pcm(v, not idr)])
+		if idr:
+			d.update(idr_pic_id=idr_id, no_output_of_prior_pics_flag=0, long_term_reference_flag=0)
+		else:
+			d.update(num_ref_idx_active={"override_flag": 0, "l0": 1})
+		nals.append(dict(d, nal_unit_type=5 if idr else 1) if view == 0 else dict(d, **mvc, nal_unit_type=20))
+	return nals
 
 nals = [sps, ssps, pps(0), pps(1)]
 if variant == "mvc_2d_then_3d":
@@ -63,11 +69,12 @@ if variant == "mvc_2d_then_3d":
 	for fn, (b, d) in enumerate(((80, 90), (100, 110), (120, 130))): # stereo, from an IDR access unit
 		idr_id = 1 if fn == 0 else None
 		nals += view_component(0, idr_id, fn, 2 * fn, b) + view_component(1, idr_id, fn, 2 * fn, d)
-elif variant == "mvc_nonref_dependent":
+elif variant in ("mvc_nonref_dependent", "mvc_nonref_dependent_lost_slice"):
 	for fn, (b, d) in enumerate(((20, 30), (40, 50), (60, 70), (80, 90))):
 		idr_id = 0 if fn == 0 else None
 		# the dependent view refers to its IDR picture alone, so its frame_num stays 1
-		nals += view_component(0, idr_id, fn, 2 * fn, b) + view_component(1, idr_id, min(fn, 1), 2 * fn, d, ref=fn == 0)
+		lost = variant == "mvc_nonref_dependent_lost_slice" and fn == 2
+		nals += view_component(0, idr_id, fn, 2 * fn, b) + view_component(1, idr_id, min(fn, 1), 2 * fn, d, ref=fn == 0, slices=width - lost)
 elif variant == "mvc_dependent_gap":
 	for fn, (b, d) in enumerate(((20, 30), (40, 50), (60, 70), (80, 90))):
 		idr_id = 0 if fn == 0 else None

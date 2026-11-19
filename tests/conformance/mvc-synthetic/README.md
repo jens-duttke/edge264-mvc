@@ -192,6 +192,17 @@ decoder reproduces that hash. Run it from the repo root:
   derives both hashes. Produced by `tests/gen_mvc_view_frame_num.py` with the
   fixture name as argument.
 
+- **mvc_nonref_dependent_lost_slice** (4 stereo) - a **fork regression guard** for
+  the concealment of a damaged dependent view from the base view of its access unit,
+  when the two views carry different `frame_num` values: `mvc_nonref_dependent` with
+  pictures of two macroblocks coded as two slices each, the second slice of the
+  dependent view of the third access unit missing. The concealment looked for the
+  base view with an equal `frame_num`, found none, and filled the macroblock with
+  zero samples; it now takes the base view `same_access_unit` pairs with, so the
+  macroblock carries the samples of the base view. `ground_truth.py` derives both
+  hashes from the per-macroblock values. Produced by `tests/gen_mvc_view_frame_num.py`
+  with the fixture name as argument.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

@@ -268,7 +268,7 @@ Thanks to Thibault Raffaillac (tvlabs) for edge264, to [@intrepidsilence](https:
 
 ### Switching from edge264
 
-Code written for edge264 moves over mostly by renaming. In return it gets multithreaded decoding on all cores, 3D Blu-ray and 4K video, concealment of damaged streams, and timestamps that travel with their pictures.
+Code written for edge264 moves over mostly by renaming. In return it gets multithreaded decoding on all cores, 3D Blu-ray and 4K video, and timestamps that travel with their pictures.
 
 | edge264 | edge264-mvc |
 |---|---|
@@ -277,6 +277,8 @@ Code written for edge264 moves over mostly by renaming. In return it gets multit
 | `edge264_decode_NAL` with `buf >= end` | `edge264mvc_send_end` |
 | `edge264_get_frame(dec, out, borrow)` | `edge264mvc_receive_frame(dec, frame)`; every frame is borrowed |
 | `Edge264Frame`: `samples[3]`, `samples_mvc[3]` | `Edge264MvcFrame`: `views[0].planes[3]`, `views[1].planes[3]` |
+| `Edge264Frame`: `display_poc` | `views[v].display_order`, strictly increasing per view until `edge264mvc_flush`, and `views[v].poc`, the picture order count of the view |
+| `Edge264Frame`: `FrameId`, `FrameId_mvc` | `views[0].decode_order`, `views[1].decode_order` |
 | `edge264_return_frame` | `edge264mvc_release_frame` |
 | `edge264_flush` | `edge264mvc_flush` |
 | `edge264_free` | `edge264mvc_close` |

@@ -325,6 +325,13 @@ mvc-synthetic/mvc_dependent_gap 4 1 b2afdd1bde3ec32550ee11a17eeb28e4 8b5797bde5a
 # a dependent view with a missing slice in an access unit whose views carry different frame_num
 # values, concealed from the base view of that access unit; hashes derived by ground_truth.py.
 mvc-synthetic/mvc_nonref_dependent_lost_slice 4 1 01abb6fab27b63257dc691e1908bb4e4 3d2feadcfaee6d2571181b54972fdde4
+# mvc_2d_then_3d_long, mvc_2d_then_3d_poc1, mvc_2d_then_3d_poc2 (tests/gen_mvc_view_frame_num.py;
+# see mvc-synthetic/README.md): a stereo sequence after one of the base view alone, whose
+# picture order counts restart at the IDR access unit (8.2.1) with pic_order_cnt_type 0, 1
+# and 2; tests/api_check.c also checks that the IDR pictures report poc 0.
+mvc-synthetic/mvc_2d_then_3d_long 23 1 6b5104565b3c5f253db8c3bb789482e4 8e2353fe5de25d2560e1e4e32587abe4
+mvc-synthetic/mvc_2d_then_3d_poc1 6 1 141acd7f5d646525fb2e2f07088b0ee4 8e2353fe5de25d2560e1e4e32587abe4
+mvc-synthetic/mvc_2d_then_3d_poc2 6 1 141acd7f5d646525fb2e2f07088b0ee4 8e2353fe5de25d2560e1e4e32587abe4
 # MVC fixture encoded with JMVC 8.5 (ITU-T H.264.2), not an ITU vector; see
 # mvc-jmvc/README.md. Both views are anchored to the JMVC decoder's output
 # (check=OK dep_check=OK). Its dependent-view B slices put the base view at

@@ -203,6 +203,21 @@ decoder reproduces that hash. Run it from the repo root:
   hashes from the per-macroblock values. Produced by `tests/gen_mvc_view_frame_num.py`
   with the fixture name as argument.
 
+- **mvc_2d_then_3d_long** (23 frames, 3 stereo), **mvc_2d_then_3d_poc1** and
+  **mvc_2d_then_3d_poc2** (6 frames, 3 stereo) - **fork regression guards** for the
+  picture order count of an IDR picture, which restarts the count (8.2.1): with
+  `pic_order_cnt_type` 0, prevPicOrderCntMsb and prevPicOrderCntLsb are 0 (8.2.1.1),
+  with types 1 and 2 FrameNumOffset is 0 (8.2.1.2, 8.2.1.3). Each is `mvc_2d_then_3d`
+  with a first sequence of 20 pictures ending at POC 38, more than half of
+  MaxPicOrderCntLsb (64) away from 0, or with `pic_order_cnt_type` 1 (an expected
+  count growing by 2, 4 and 8 in a cycle of three reference pictures) or 2. The
+  decoder carried the count of the base view on from the first sequence, so its IDR
+  picture got POC 64, 6 or 32 where the dependent view, which starts there, got 0:
+  the views did not pair and the dependent views were never output, and the poc of
+  the IDR picture reported to the caller was not 0, which `tests/api_check.c` checks
+  on these three. `ground_truth.py` derives both hashes. Produced by
+  `tests/gen_mvc_view_frame_num.py` with the fixture name as argument.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

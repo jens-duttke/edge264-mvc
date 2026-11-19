@@ -552,7 +552,7 @@ TIMEOUT := $(if $(shell command -v timeout 2>/dev/null),timeout 90)
 # worker threads.
 .PHONY: check-api
 check-api: api_check$(EXE)
-	$(Q)$(TIMEOUT) ./api_check$(EXE) tests/conformance/mvc/MVCDS-5.264 tests/conformance/2d-synthetic/crop_top_left.264 tests/crop-margin.264 tests/conformance/2d/CABA3_Sony_C.264 --seek tests/conformance/mvc/MVCDS-5.264 tests/conformance/mvc-jmvc/interview_colocated.264
+	$(Q)$(TIMEOUT) ./api_check$(EXE) tests/conformance/mvc/MVCDS-5.264 tests/conformance/mvc-synthetic/mvc_2d_then_3d_long.264 tests/conformance/mvc-synthetic/mvc_2d_then_3d_poc1.264 tests/conformance/mvc-synthetic/mvc_2d_then_3d_poc2.264 tests/conformance/2d-synthetic/crop_top_left.264 tests/crop-margin.264 tests/conformance/2d/CABA3_Sony_C.264 --seek tests/conformance/mvc/MVCDS-5.264 tests/conformance/mvc-jmvc/interview_colocated.264
 
 api_check$(EXE): tests/api_check.c edge264mvc.h $(LIBNAME)
 	$(Q)$(CCLD) -I. tests/api_check.c $(CPPFLAGS) $(CFLAGS) $(EXEFLAGS) -o $@

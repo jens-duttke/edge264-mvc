@@ -16,6 +16,12 @@
 #     macroblocks coded as two slices each, of which the second slice of the dependent
 #     view of the third access unit is missing (a damaged stream). That macroblock is
 #     concealed from the base view of its access unit (ground_truth.py, EXPECTED_ROWS).
+#   mvc_2d_then_3d_long: mvc_2d_then_3d with 20 pictures in the first sequence, whose
+#     last picture order count (38) lies more than half of MaxPicOrderCntLsb (64) away
+#     from that of the IDR access unit (0), which restarts the count (8.2.1.1).
+#   mvc_2d_then_3d_poc1, mvc_2d_then_3d_poc2: mvc_2d_then_3d with pic_order_cnt_type 1
+#     (an expected count that grows by 2, 4 and 8 in a cycle of three reference
+#     pictures) and 2, which count FrameNumOffset + frame_num from the IDR picture.
 # Usage:
 #   python3 tests/gen_mvc_view_frame_num.py tests/conformance/mvc-synthetic/<name>.264 <name>
 import os, sys
@@ -23,12 +29,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen_avc
 out, variant = sys.argv[1], sys.argv[2]
 width = 2 if variant == "mvc_nonref_dependent_lost_slice" else 1 # macroblocks, one slice each
+poc_type = 1 if variant.endswith("_poc1") else 2 if variant.endswith("_poc2") else 0
 
 sps = dict(nal_ref_idc=3, nal_unit_type=7, profile_idc=100, constraint_set_flags=[0, 0, 0, 0, 0, 0],
 	level_idc=3.0, chroma_format_idc=1, bit_depth={"luma": 8, "chroma": 8}, qpprime_y_zero_transform_bypass_flag=0,
-	log2_max_frame_num=4, pic_order_cnt_type=0, log2_max_pic_order_cnt_lsb=6, max_num_ref_frames=2,
+	log2_max_frame_num=4, pic_order_cnt_type=poc_type, max_num_ref_frames=2,
 	gaps_in_frame_num_value_allowed_flag=0, pic_size_in_mbs={"width": width, "height": 1},
 	frame_mbs_only_flag=1, direct_8x8_inference_flag=1)
+if poc_type == 0:
+	sps["log2_max_pic_order_cnt_lsb"] = 6
+elif poc_type == 1:
+	sps.update(delta_pic_order_always_zero_flag=1, offset_for_non_ref_pic=-1, offset_for_top_to_bottom_field=0,
+		offsets_for_ref_frames=[2, 4, 8])
 ssps = dict(sps, nal_unit_type=15, profile_idc=128, view_ids=[0, 1], num_anchor_refs={"l0": 0, "l1": 0},
 	num_non_anchor_refs={"l0": 0, "l1": 0},
 	gaps_in_frame_num_value_allowed_flag=1 if variant == "mvc_dependent_gap" else 0,
@@ -53,7 +65,8 @@ def view_component(view, idr_id, frame_num, poc, v, ref=True, slices=width):
 	nals = [dict(mvc, nal_ref_idc=3 if ref else 0, nal_unit_type=14)] if view == 0 else [] # prefix NAL unit
 	for first_mb in range(slices):
 		d = dict(nal_ref_idc=3 if ref else 0, first_mb_in_slice=first_mb, slice_type=7 if idr else 5, pic_parameter_set_id=view,
-			frame_num={"bits": 4, "absolute": frame_num}, pic_order_cnt={"type": 0, "bits": 6, "absolute": poc},
+			frame_num={"bits": 4, "absolute": frame_num},
+			pic_order_cnt={"type": 0, "bits": 6, "absolute": poc} if poc_type == 0 else {"type": poc_type},
 			slice_qp_delta=0, disable_deblocking_filter_idc=1, macroblocks_cavlc=[pcm(v, not idr)])
 		if idr:
 			d.update(idr_pic_id=idr_id, no_output_of_prior_pics_flag=0, long_term_reference_flag=0)
@@ -63,9 +76,10 @@ def view_component(view, idr_id, frame_num, poc, v, ref=True, slices=width):
 	return nals
 
 nals = [sps, ssps, pps(0), pps(1)]
-if variant == "mvc_2d_then_3d":
-	for fn, v in enumerate((20, 40, 60)): # base view alone
-		nals += view_component(0, 0 if fn == 0 else None, fn, 2 * fn, v)
+if variant.startswith("mvc_2d_then_3d"):
+	values = [20 + 2 * i for i in range(20)] if variant == "mvc_2d_then_3d_long" else (20, 40, 60)
+	for i, v in enumerate(values): # base view alone
+		nals += view_component(0, 0 if i == 0 else None, i % 16, 2 * i, v)
 	for fn, (b, d) in enumerate(((80, 90), (100, 110), (120, 130))): # stereo, from an IDR access unit
 		idr_id = 1 if fn == 0 else None
 		nals += view_component(0, idr_id, fn, 2 * fn, b) + view_component(1, idr_id, fn, 2 * fn, d)

@@ -721,6 +721,7 @@ struct Edge264MvcDecoder {
 	int32_t delta_pic_order_cnt0; // value for the last slice, used for detecting new frames
 	int32_t delta_pic_order_cnt1; // value for the last slice (0 when absent), used for detecting new frames
 	int32_t prevPicOrderCnt[2]; // one per view
+	int32_t IdrFrameNum[2]; // per view, FrameNum of the IDR picture the order counts of types 1 and 2 count from, 0 after mmco=5
 	int32_t TopFieldOrderCnt; // value for the current incomplete frame, unaffected by mmco5
 	int32_t BottomFieldOrderCnt;
 	Edge264MvcSeqParameterSet sps; // the active SPS, with the limits of the MVC streams (see parse_seq_parameter_set)

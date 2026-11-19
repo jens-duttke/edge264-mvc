@@ -1310,9 +1310,10 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
  * Returns FrameNum, the frame_num of the current picture counted on past its
  * wraparound, from the frame_num of the previous reference picture of the
  * same view. It never starts again, not even at an IDR picture (frame_num 0,
- * so the next multiple of MaxFrameNum): the picture order counts of types 1
- * and 2 derived from it keep growing across IDR pictures, as those of type 0
- * do, which the output order of the pictures before an IDR picture relies on.
+ * so the next multiple of MaxFrameNum). The picture order counts of types 1
+ * and 2 count it from the IDR picture (IdrFrameNum), where 8.2.1.2 and 8.2.1.3
+ * restart FrameNumOffset, as those of type 0 restart from 0 (8.2.1.1); the
+ * pictures before an IDR picture are all queued for output first (C.4.4).
  */
 static int derive_FrameNum(const Edge264MvcDecoder *dec, int frame_num, int FrameNumMask, int non_base_view, int field) {
 	int PrevRefFrameNum = dec->PrevRefFrameNum[non_base_view];
@@ -1414,6 +1415,7 @@ static void parse_dec_ref_pic_marking_field(Edge264MvcDecoder *dec, Edge264MvcSe
 				for (int k = 0; k < 2; k++)
 					dec->short_term_fields[k] = dec->long_term_fields[k] = 0;
 				dec->FrameNums[cur] = 0;
+				dec->IdrFrameNum[dec->non_base_frames >> cur & 1] = 0; // the FrameNum of the next pictures restarts too
 				for (FrameMask r = same_views; r; r &= r - 1)
 					dec->LongTermFrameIdx[mask_ctz(r)] = 0;
 				dec->FieldOrderCnt[p][cur] = 0;
@@ -1545,6 +1547,7 @@ static void parse_dec_ref_pic_marking(Edge264MvcDecoder *dec, Edge264MvcSeqParam
 			if (memory_management_control_operation == 5) { // dereference all frames
 				dec->short_term_frames = dec->long_term_frames = 0;
 				dec->FrameNums[dec->currPic] = 0;
+				dec->IdrFrameNum[dec->non_base_frames >> dec->currPic & 1] = 0; // the FrameNum of the next pictures restarts too
 				// Reset only the current view's long-term indices. The short/long-term
 				// bitmaps above are view-masked working copies (merged per-view in
 				// unset_currPic), but LongTermFrameIdx is seeded and written back
@@ -2798,7 +2801,8 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		dec->delta_pic_order_cnt_bottom = delta_pic_order_cnt_bottom;
 		// unset_currPic must happen before prevPicOrderCnt to get an up-to-date value
 		dec->FrameNum = derive_FrameNum(dec, frame_num, FrameNumMask, non_base_view, t->field_pic_flag);
-		int prevPicOrderCnt = dec->prevPicOrderCnt[non_base_view];
+		// an IDR picture counts from prevPicOrderCntMsb = prevPicOrderCntLsb = 0 (8.2.1.1)
+		int prevPicOrderCnt = dec->IdrPicFlag ? 0 : dec->prevPicOrderCnt[non_base_view];
 		// the lsb difference, taken in (-MaxPicOrderCntLsb/2, MaxPicOrderCntLsb/2]:
 		// equation 8-3 counts a step of exactly half the range as forward in both
 		// directions, so the sign extension runs on the difference minus one
@@ -2835,7 +2839,10 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		dec->delta_pic_order_cnt1 = delta_pic_order_cnt1;
 		// unset_currPic must happen before PrevRefFrameNum to get a definitive value
 		dec->FrameNum = derive_FrameNum(dec, frame_num, FrameNumMask, non_base_view, t->field_pic_flag);
-		int absFrameNum = (sps->num_ref_frames_in_pic_order_cnt_cycle > 0) ? dec->FrameNum : 0;
+		if (dec->IdrPicFlag)
+			dec->IdrFrameNum[non_base_view] = dec->FrameNum;
+		// FrameNumOffset + frame_num (8-6 to 8-8): FrameNum counted from the IDR picture
+		int absFrameNum = (sps->num_ref_frames_in_pic_order_cnt_cycle > 0) ? dec->FrameNum - dec->IdrFrameNum[non_base_view] : 0;
 		absFrameNum -= (dec->nal_ref_idc == 0 && absFrameNum > 0);
 		// added modulo 2^32 like the type 0 counts above
 		unsigned top = (unsigned)delta_pic_order_cnt0 + (dec->nal_ref_idc ? 0 : sps->offset_for_non_ref_pic);
@@ -2855,7 +2862,10 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 			TopFieldOrderCnt, BottomFieldOrderCnt);
 	} else {
 		dec->FrameNum = derive_FrameNum(dec, frame_num, FrameNumMask, non_base_view, t->field_pic_flag);
-		TopFieldOrderCnt = BottomFieldOrderCnt = (int)((unsigned)dec->FrameNum * 2 + (dec->nal_ref_idc != 0) - 1);
+		if (dec->IdrPicFlag)
+			dec->IdrFrameNum[non_base_view] = dec->FrameNum;
+		// 2 * (FrameNumOffset + frame_num) (8-11), FrameNum counted from the IDR picture
+		TopFieldOrderCnt = BottomFieldOrderCnt = (int)((unsigned)(dec->FrameNum - dec->IdrFrameNum[non_base_view]) * 2 + (dec->nal_ref_idc != 0) - 1);
 		log_dec(dec, "  pic_order_cnt: {type: 2, absolute: %d}\n", TopFieldOrderCnt);
 	}
 	
@@ -2973,18 +2983,19 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 			dec->FrameNums[i] = dec->PrevRefFrameNum[non_base_view] = FrameNum;
 			dec->FrameIds[i] = ++dec->prevFrameId;
 			int PicOrderCnt = 0;
+			unsigned absFrameNum = FrameNum - dec->IdrFrameNum[non_base_view]; // counted from the IDR picture, as above
 			if (sps->pic_order_cnt_type == 2) {
-				PicOrderCnt = (int)(FrameNum * 2);
-			} else if (sps->num_ref_frames_in_pic_order_cnt_cycle > 0 && FrameNum > 0) {
+				PicOrderCnt = (int)(absFrameNum * 2);
+			} else if (sps->num_ref_frames_in_pic_order_cnt_cycle > 0 && absFrameNum > 0) {
 				// Mirror the correct main-path derivation (8.2.1.2): absFrameNum
 				// equals FrameNum for these inferred-reference gap frames, so the
 				// cycle multiplier is PicOrderCntDeltas[cycle-1] (the full-cycle
 				// sum, the only element written) and both the quotient and the
 				// remainder use FrameNum-1. Indexing [cycle] read one past the
 				// int16_t[255] array (cycle up to 255) into the next SPS field.
-				PicOrderCnt = (int)((FrameNum - 1) / sps->num_ref_frames_in_pic_order_cnt_cycle *
+				PicOrderCnt = (int)((absFrameNum - 1) / sps->num_ref_frames_in_pic_order_cnt_cycle *
 					sps->PicOrderCntDeltas[sps->num_ref_frames_in_pic_order_cnt_cycle - 1] +
-					sps->PicOrderCntDeltas[(FrameNum - 1) % sps->num_ref_frames_in_pic_order_cnt_cycle]);
+					sps->PicOrderCntDeltas[(absFrameNum - 1) % sps->num_ref_frames_in_pic_order_cnt_cycle]);
 			}
 			dec->FieldOrderCnt[0][i] = dec->FieldOrderCnt[1][i] = PicOrderCnt;
 			// copy the samples once no task writes them (concealing an abandoned

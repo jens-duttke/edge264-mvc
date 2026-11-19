@@ -104,6 +104,10 @@ EXPECTED_NONFLAT = {
     "mvc-synthetic/mvc_2d_then_3d": ([20, 40, 60, 80, 100, 120], [90, 110, 130]),
     "mvc-synthetic/mvc_nonref_dependent": ([20, 40, 60, 80], [30, 50, 70, 90]),
     "mvc-synthetic/mvc_dependent_gap": ([20, 40, 60, 80], [30, 50, 70, 90]),
+    # the same with a first sequence of 20 pictures, or pic_order_cnt_type 1 or 2
+    "mvc-synthetic/mvc_2d_then_3d_long": ([20 + 2 * i for i in range(20)] + [80, 100, 120], [90, 110, 130]),
+    "mvc-synthetic/mvc_2d_then_3d_poc1": ([20, 40, 60, 80, 100, 120], [90, 110, 130]),
+    "mvc-synthetic/mvc_2d_then_3d_poc2": ([20, 40, 60, 80, 100, 120], [90, 110, 130]),
 }
 
 # Fixtures of more than one macroblock per picture, as (base frames, dependent frames), each

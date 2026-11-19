@@ -4,7 +4,8 @@
 // promises the API itself makes to a caller: the version and the defaults,
 // the INVALID results, the end of a stream (END after send_end, and END
 // again), a flush after the end followed by the same stream again, the
-// pts / user_data passthrough, and a caller that holds its latest frame
+// pts / user_data passthrough, the poc 0 of every IDR picture (8.2.1), and a
+// caller that holds its latest frame
 // while it sends the next NALs - through an end of sequence and a change of
 // the frame size - and the frame size limit max_frame_pixels, at the size of
 // each stream's frames after cropping and one below, and a seek to an I picture
@@ -58,6 +59,7 @@ typedef struct {
 	int frames;
 	uint64_t hash;
 	int pts_errors; // frames whose pts is not one that was sent with a NAL
+	int idr_poc_errors; // views of IDR pictures whose poc is not 0 (8.2.1)
 	int64_t max_pts;
 	int width, height, coded_width, coded_height; // of the first frame
 } Output;
@@ -80,6 +82,9 @@ static void receive_all(Edge264MvcDecoder *dec, Output *o) {
 			// every NAL was sent with pts = 1000 + its offset and user_data = -pts
 			if (f.views[v].pts < 1000 || f.views[v].pts > o->max_pts || f.views[v].user_data != -f.views[v].pts)
 				o->pts_errors++;
+			// the picture order count restarts at every IDR picture, whose own is 0
+			if ((f.views[v].flags & EDGE264MVC_VIEW_IDR) && f.views[v].poc != 0)
+				o->idr_poc_errors++;
 		}
 		o->frames++;
 		edge264mvc_release_frame(dec, &f);
@@ -146,6 +151,7 @@ static void check_stream(const char *path, int n_threads) {
 	Edge264MvcFrame f;
 	CHECK(edge264mvc_receive_frame(dec, &f) == EDGE264MVC_END, "%s (%d threads): END was not repeated", path, n_threads);
 	CHECK(first.pts_errors == 0, "%s (%d threads): %d views carried a pts or user_data never sent", path, n_threads, first.pts_errors);
+	CHECK(first.idr_poc_errors == 0, "%s (%d threads): %d views of IDR pictures had a poc other than 0", path, n_threads, first.idr_poc_errors);
 	// a flush after the end starts a new stream (a seek back to the start)
 	edge264mvc_flush(dec);
 	end = decode_stream(dec, buf, size, &again);

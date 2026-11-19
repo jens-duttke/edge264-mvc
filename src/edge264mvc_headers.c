@@ -2752,7 +2752,10 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		// unset_currPic must happen before prevPicOrderCnt to get an up-to-date value
 		dec->FrameNum = derive_FrameNum(dec, frame_num, FrameNumMask, non_base_view, t->field_pic_flag);
 		int prevPicOrderCnt = dec->prevPicOrderCnt[non_base_view];
-		int inc = (int)(((unsigned)pic_order_cnt_lsb - (unsigned)prevPicOrderCnt) << shift) >> shift; // sign-extends the lsb difference
+		// the lsb difference, taken in (-MaxPicOrderCntLsb/2, MaxPicOrderCntLsb/2]:
+		// equation 8-3 counts a step of exactly half the range as forward in both
+		// directions, so the sign extension runs on the difference minus one
+		int inc = ((int)(((unsigned)pic_order_cnt_lsb - (unsigned)prevPicOrderCnt - 1) << shift) >> shift) + 1;
 		// picture order counts are added modulo 2^32: on a damaged stream the
 		// syntax elements (up to +-2^31) overflow an int, which is undefined
 		BottomFieldOrderCnt = TopFieldOrderCnt = (int)((unsigned)prevPicOrderCnt + inc);

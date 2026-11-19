@@ -272,3 +272,9 @@ Guards MBAFF frames of monochrome (4:0:0) video, whose pictures come out with ne
 Guards the reserved value 3 of `weighted_bipred_idc`, which 7.4.2.2 does not allow. A 32x32 Main profile stream whose PPS carries it: an IDR picture at POC 0 and a P picture at POC 8, both of I_PCM macroblocks with distinct samples, then a B picture of skipped macroblocks at POC 2, so that every macroblock blends both references (`tests/gen_weighted_bipred_reserved.py`). No weights are derived for the value 3, yet the blend took it for implicit weighted prediction and read implicit weights never computed for the slice, left over on the stack of the decoding thread, so the B picture came out wrong and differed between single- and multithreaded decoding. The value is now read as 0, the default average. The JM reference decoder leaves the weights of this case undefined; the hash is anchored to FFmpeg, which predicts it with the default average.
 
 Without the fix this line FAILs.
+
+## `poc_half_lsb.264`
+
+Guards the picture order count of a `pic_order_cnt_lsb` step of exactly half of MaxPicOrderCntLsb. A 16x16 Main profile stream with MaxPicOrderCntLsb 16 and four reference pictures of I_PCM macroblocks with distinct samples, an IDR picture and three P pictures, whose `pic_order_cnt_lsb` go 0, 8, 0, 8 (`tests/gen_poc_half_lsb.py`). Equation 8-3 counts a step of 8 as forward both upwards and downwards, so the picture order counts are 0, 8, 16 and 24 and the pictures come out in decoding order. The decoder took both steps as backward and output the pictures in reverse. The hash is anchored to FFmpeg.
+
+Without the fix this line FAILs.

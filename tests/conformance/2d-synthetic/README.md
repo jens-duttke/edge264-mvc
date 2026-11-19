@@ -278,3 +278,9 @@ Without the fix this line FAILs.
 Guards the picture order count of a `pic_order_cnt_lsb` step of exactly half of MaxPicOrderCntLsb. A 16x16 Main profile stream with MaxPicOrderCntLsb 16 and four reference pictures of I_PCM macroblocks with distinct samples, an IDR picture and three P pictures, whose `pic_order_cnt_lsb` go 0, 8, 0, 8 (`tests/gen_poc_half_lsb.py`). Equation 8-3 counts a step of 8 as forward both upwards and downwards, so the picture order counts are 0, 8, 16 and 24 and the pictures come out in decoding order. The decoder took both steps as backward and output the pictures in reverse. The hash is anchored to FFmpeg.
 
 Without the fix this line FAILs.
+
+## `new_picture_detection.264`
+
+Guards the detection of the first slice of a new picture (7.4.1.2.4). A 32x16 Main profile stream of pictures of two I_PCM macroblocks with distinct samples, each coded as two slices (`tests/gen_new_picture_detection.py`). Every picture after the first of a sequence carries an MMCO 5, so that the next one may repeat its `frame_num` and `pic_order_cnt_lsb` (7.4.1.2.4 NOTE 1): with `pic_order_cnt_type` 0, two pictures that differ from the one before them only in `pic_parameter_set_id`, then only in `delta_pic_order_cnt_bottom`; with `pic_order_cnt_type` 1, one that differs only in `delta_pic_order_cnt[1]`. The decoder did not compare these three syntax elements, took the slices of each such picture for slices of the picture before it, and output 4 pictures instead of 7, two of them concealed. The hash is anchored to FFmpeg.
+
+Without the fix this line FAILs.

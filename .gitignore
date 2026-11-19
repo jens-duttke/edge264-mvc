@@ -68,6 +68,7 @@
 !tests/gen_weighted_bipred_reserved.py
 !tests/gen_poc_half_lsb.py
 !tests/gen_mvc_end_of_sequence.py
+!tests/gen_new_picture_detection.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

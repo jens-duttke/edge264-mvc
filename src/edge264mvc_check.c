@@ -71,8 +71,8 @@ static void unsupported_logger(const char *str) {
 		"unsupp-nals: the trace of an unsupported NAL lacks the unsupported marker:\n%s\n", str);
 }
 static void finish_frame_post() {
-	ASSERT(count_frames == 12,
-		"finish-frame: number of decoded frames (%d) differs from expected (12)\n",
+	ASSERT(count_frames == 15,
+		"finish-frame: number of decoded frames (%d) differs from expected (15)\n",
 		count_frames);
 }
 

@@ -1,4 +1,4 @@
---- # All conditions (detected and ignored) for detecting the start of a new frame
+--- # All conditions for detecting the start of a new frame (7.4.1.2.4)
 
 # start with pic_order_cnt_type == 0
 - nal_ref_idc: 3
@@ -62,7 +62,7 @@
     intra_chroma_pred_mode: 0
     coded_block_pattern: 0
 
-# changing pic_parameter_set_id (ignored)
+# changing pic_parameter_set_id
 - nal_ref_idc: 1
   nal_unit_type: 5 # Coded slice of an IDR picture
   first_mb_in_slice: 1
@@ -98,7 +98,7 @@
     intra_chroma_pred_mode: 0
     coded_block_pattern: 0
 
-# changing delta_pic_order_cnt_bottom (ignored)
+# changing delta_pic_order_cnt_bottom
 - nal_ref_idc: 1
   nal_unit_type: 5 # Coded slice of an IDR picture
   first_mb_in_slice: 1
@@ -263,7 +263,7 @@
     intra_chroma_pred_mode: 0
     coded_block_pattern: 0
 
-# changing delta_pic_order_cnt[1] (ignored)
+# changing delta_pic_order_cnt[1]
 - nal_ref_idc: 1
   nal_unit_type: 1 # Coded slice of a non-IDR picture
   first_mb_in_slice: 1

@@ -49,18 +49,18 @@ static const i8x16 Default_8x8_Inter[4] = {
  * _ frame_num differs (dec->FrameNum contains the previous unwrapped decoded
  *   value unaffected by mmco=5)
  * _ nal_ref_idc differs
- * _ pic_order_cnt_type=0 and pic_order_cnt_lsb differs
- *   (dec->TopFieldOrderCnt contains the previous value unaffected by mmco=5)
- * _ pic_order_cnt_type=1 and TopFieldOrderCnt differs (as long as frame_num
- *   and nal_ref_idc tests are done before, this is equivalent with a
- *   difference on delta_pic_order_cnt[0])
+ * _ pic_parameter_set_id differs
+ * _ field_pic_flag or bottom_field_flag differs
+ * _ pic_order_cnt_type=0 and pic_order_cnt_lsb or delta_pic_order_cnt_bottom
+ *   differs (dec->TopFieldOrderCnt contains the previous value unaffected by
+ *   mmco=5)
+ * _ pic_order_cnt_type=1 and delta_pic_order_cnt[0] or [1] differs
  * _ idr_pic_id differs (useful on streams of IDR frames to distinguish them),
  *   with -1 when IdrPicFlag=0
  * _ view_id differs (between base and non-base)
- * 
- * pic_parameter_set_id is ignored since not stored, and spec mandates that
- * POCs should differ anyway. BottomFieldOrderCnt is ignored too because the
- * test on TopFieldOrderCnt is sufficient.
+ *
+ * After a picture with mmco=5, the next one may repeat its frame_num and
+ * pic_order_cnt_lsb (7.4.1.2.4 NOTE 1), so the other syntax elements matter.
  */
 static void release_held_task(Edge264MvcDecoder *dec, int32_t mb_bound);
 static void settle_mb_bounds(Edge264MvcDecoder *dec, int pic);
@@ -2739,14 +2739,16 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		idr_pic_id != dec->idr_pic_id))
 		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
 	int field_changed = dec->currPic >= 0 && currField != dec->currField;
-	if ((dep_corrupt || dep_continuation) && field_changed)
+	int pps_changed = dec->currPic >= 0 && pic_parameter_set_id != dec->pic_parameter_set_id;
+	if ((dep_corrupt || dep_continuation) && (field_changed || pps_changed))
 		return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
-	if (dec->currPic >= 0 && (frame_num_changed || nal_ref_idc_changed || field_changed ||
+	if (dec->currPic >= 0 && (frame_num_changed || nal_ref_idc_changed || field_changed || pps_changed ||
 		(dec->nal_unit_type == 20) != (dec->non_base_frames >> dec->currPic & 1) ||
 		idr_pic_id != dec->idr_pic_id)) {
 		unset_currPic(dec);
 	}
 	dec->idr_pic_id = idr_pic_id;
+	dec->pic_parameter_set_id = pic_parameter_set_id;
 
 	// An inter-coded MVC dependent-view slice (type 20, P/B) predicts from the base
 	// view of its access unit via the inter-view reference. A corrupt/incomplete
@@ -2777,12 +2779,17 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 	int TopFieldOrderCnt, BottomFieldOrderCnt;
 	if (sps->pic_order_cnt_type == 0) {
 		int pic_order_cnt_lsb = get_uv(&dec->gb, sps->log2_max_pic_order_cnt_lsb);
+		int delta_pic_order_cnt_bottom = 0;
+		if (t->pps.bottom_field_pic_order_in_frame_present_flag && !t->field_pic_flag)
+			delta_pic_order_cnt_bottom = get_se32(&dec->gb, (-1u << 31) + 1, (1u << 31) - 1);
 		int shift = WORD_BIT - sps->log2_max_pic_order_cnt_lsb;
-		if (dec->currPic >= 0 && pic_order_cnt_lsb != ((unsigned)dec->TopFieldOrderCnt << shift >> shift)) {
+		if (dec->currPic >= 0 && (pic_order_cnt_lsb != ((unsigned)dec->TopFieldOrderCnt << shift >> shift) ||
+			delta_pic_order_cnt_bottom != dec->delta_pic_order_cnt_bottom)) {
 			if (dep_corrupt || dep_continuation)
 				return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
 			unset_currPic(dec);
 		}
+		dec->delta_pic_order_cnt_bottom = delta_pic_order_cnt_bottom;
 		// unset_currPic must happen before prevPicOrderCnt to get an up-to-date value
 		dec->FrameNum = derive_FrameNum(dec, frame_num, FrameNumMask, non_base_view, t->field_pic_flag);
 		int prevPicOrderCnt = dec->prevPicOrderCnt[non_base_view];
@@ -2796,7 +2803,7 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 		log_dec(dec, "  pic_order_cnt: {type: 0, bits: %u, absolute: %d",
 			sps->log2_max_pic_order_cnt_lsb, TopFieldOrderCnt);
 		if (t->pps.bottom_field_pic_order_in_frame_present_flag && !t->field_pic_flag) {
-			BottomFieldOrderCnt = (int)((unsigned)BottomFieldOrderCnt + get_se32(&dec->gb, (-1u << 31) + 1, (1u << 31) - 1));
+			BottomFieldOrderCnt = (int)((unsigned)BottomFieldOrderCnt + delta_pic_order_cnt_bottom);
 			log_dec(dec, ", bottom: %d", BottomFieldOrderCnt);
 		}
 		log_dec(dec, "}\n");
@@ -2812,12 +2819,14 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 				log_dec(dec, ", delta1: %d", delta_pic_order_cnt1);
 			}
 		}
-		if (dec->currPic >= 0 && delta_pic_order_cnt0 != dec->delta_pic_order_cnt0) {
+		if (dec->currPic >= 0 && (delta_pic_order_cnt0 != dec->delta_pic_order_cnt0 ||
+			delta_pic_order_cnt1 != dec->delta_pic_order_cnt1)) {
 			if (dep_corrupt || dep_continuation)
 				return print_dec(dec, "  decode_NAL_result: %s\n", EBADMSG);
 			unset_currPic(dec);
 		}
 		dec->delta_pic_order_cnt0 = delta_pic_order_cnt0;
+		dec->delta_pic_order_cnt1 = delta_pic_order_cnt1;
 		// unset_currPic must happen before PrevRefFrameNum to get a definitive value
 		dec->FrameNum = derive_FrameNum(dec, frame_num, FrameNumMask, non_base_view, t->field_pic_flag);
 		int absFrameNum = (sps->num_ref_frames_in_pic_order_cnt_cycle > 0) ? dec->FrameNum : 0;

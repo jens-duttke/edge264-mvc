@@ -9,7 +9,7 @@ edge264-mvc's own tests - MVC conformance, real-world decode robustness, memory 
 | All supported types of NAL units with/without logging | All OK | supp-nals |
 | All unsupported types of NAL units with/without logging | All unsupp | unsupp-nals |
 | Maximal header log-wise | All OK | max-logs |
-| All conditions (incl. ignored) for detecting the start of a new frame | All OK | finish-frame |
+| All conditions for detecting the start of a new frame | All OK | finish-frame |
 | nal_ref_idc=0 on NAL types 5, 6, 7, 8, 9, 10, 11, 12 and 15 | All OK | nal-ref-idc-0 |
 | forbidden_zero_bit=1 on a slice and a PPS | 2 errors, the rest OK | forbidden-bit |
 | Surrounding the CPB/frame buffers with protected memory | All OK | page-boundaries |

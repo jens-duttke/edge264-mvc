@@ -721,6 +721,7 @@ struct Edge264MvcDecoder {
 	int32_t BottomFieldOrderCnt;
 	Edge264MvcSeqParameterSet sps;
 	Edge264MvcSeqParameterSet ssps;
+	// from OutputPocBase to HavePrevOutputPoc: kept across an end of sequence (see clear_decoder)
 	int64_t OutputPocBase[2];
 	int64_t PrevOutputUnwrapped[2]; // previous exported DisplayPoc per view, kept strictly increasing (see edge264mvc_unwrap_output_poc)
 	int8_t HavePrevOutputPoc[2];

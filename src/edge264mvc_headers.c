@@ -345,10 +345,18 @@ static int alloc_frame(Edge264MvcDecoder *dec, int id) {
 	}
 }
 
-static void clear_decoder(Edge264MvcDecoder *dec) {
+// end_of_sequence keeps what outlives a coded video sequence (the fields from
+// OutputPocBase to HavePrevOutputPoc): the display order of the output keeps
+// increasing across an end of sequence, as it does across an IDR picture.
+static void clear_decoder(Edge264MvcDecoder *dec, int end_of_sequence) {
 	// frames received but not released yet keep their slots until released
 	FrameMask held = dec->output_frames & ~dec->to_get_frames;
-	memset((void *)dec + offsetof(Edge264MvcDecoder, nal_ref_idc), 0, offsetof(Edge264MvcDecoder, log_base_us) - offsetof(Edge264MvcDecoder, nal_ref_idc));
+	size_t from = offsetof(Edge264MvcDecoder, nal_ref_idc);
+	if (end_of_sequence) {
+		memset((void *)dec + from, 0, offsetof(Edge264MvcDecoder, OutputPocBase) - from);
+		from = offsetof(Edge264MvcDecoder, HavePrevOutputPoc) + sizeof(dec->HavePrevOutputPoc);
+	}
+	memset((void *)dec + from, 0, offsetof(Edge264MvcDecoder, log_base_us) - from);
 	dec->output_frames = held;
 	dec->currPic = dec->basePic = -1;
 	dec->held_task = -1;
@@ -380,7 +388,7 @@ int ADD_VARIANT(parse_end_of_sequence)(Edge264MvcDecoder *dec, Edge264MvcUnrefCb
 		bump_all_frames(dec);
 		if (dec->to_get_frames)
 			return ENOBUFS;
-		clear_decoder(dec);
+		clear_decoder(dec, 1);
 		ret = 0;
 	}
 	return print_dec(dec, "  decode_NAL_result: %s\n", ret);
@@ -4216,7 +4224,7 @@ int ADD_VARIANT(parse_seq_parameter_set)(Edge264MvcDecoder *dec, Edge264MvcUnref
 			bump_all_frames(dec);
 			if (dec->to_get_frames)
 				return ENOBUFS; // SPS should be reparsed after clearing frames, so we don't print it yet
-			clear_decoder(dec);
+			clear_decoder(dec, 0);
 			memcpy(&dec->out, &format, sizeof(format)); // GCC-14 crashes on dec->out = format
 			dec->out_monochrome = sps.chroma_format_idc == 0;
 			dec->interlaced = !sps.frame_mbs_only_flag;

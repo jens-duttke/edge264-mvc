@@ -84,6 +84,9 @@ EXPECTED = {
 #     inter-view ref before the switch wrongly emits 128 here.
 EXPECTED_NONFLAT = {
     "mvc-synthetic/mvc_interview_reflist": ([128, 128], [192, 192]),
+    # mvc_eos_display_order - two sequences of two access units, each view component an
+    # I_PCM macroblock of one value (tests/gen_mvc_end_of_sequence.py), output in order.
+    "mvc-synthetic/mvc_eos_display_order": ([40, 80, 120, 160], [60, 100, 140, 180]),
 }
 
 def main():

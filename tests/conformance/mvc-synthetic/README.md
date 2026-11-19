@@ -155,6 +155,16 @@ decoder reproduces that hash. Run it from the repo root:
   order matches FFmpeg's. `mvc_idr_leading.yaml` is produced by
   `tests/gen_mvc_ordering.py` with the argument `idr-leading`.
 
+- **mvc_eos_display_order** (4 frames) - a **fork regression guard** for the display
+  order across an end of sequence: two coded video sequences of an IDR and a P access
+  unit each, separated by an end of sequence NAL unit, with the parameter sets sent
+  before each sequence. The picture order counts restart at the second IDR access unit;
+  the display order of the output must keep increasing, as it does across an IDR picture
+  without an end of sequence. The end of sequence reset the counter the display order is
+  derived from, so it started again at 0 and the harness reports an order error. Every
+  view component is one I_PCM macroblock of a single value, so `ground_truth.py` derives
+  both hashes. Produced by `tests/gen_mvc_end_of_sequence.py` with the argument `resend`.
+
 ## Regenerating
 
 After an intentional, reviewed change to decoded output:

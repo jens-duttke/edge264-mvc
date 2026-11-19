@@ -339,7 +339,7 @@ static void flush_decoder(Edge264MvcDecoder *dec) {
 	if (dec->n_threads)
 		pthread_mutex_lock(&dec->lock);
 	flush_frames(dec);
-	clear_decoder(dec); // frames received but not released yet stay valid
+	clear_decoder(dec, 0); // frames received but not released yet stay valid
 	if (dec->n_threads)
 		pthread_mutex_unlock(&dec->lock);
 }

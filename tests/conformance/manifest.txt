@@ -301,6 +301,11 @@ mvc-synthetic/mvc_display_ordering 8 1 0b51b61ff4711325ac6af977efce9ce4 95190a3f
 # counting both views against max_num_reorder_frames outputs the IDR picture first, so the
 # base and dependent hashes FAIL on the unfixed decoder.
 mvc-synthetic/mvc_idr_leading 8 1 58d6da9e905c1325f9beb79d14fc0ce4 619d8f9585e21325ac627ff6635d8ce4
+# mvc_eos_display_order (tests/gen_mvc_end_of_sequence.py resend; see mvc-synthetic/README.md): two
+# coded video sequences separated by an end of sequence, the parameter sets sent before each. The
+# picture order counts restart at the second IDR access unit while the harness requires the display
+# order to keep increasing; flat I_PCM values per view component, hashes derived by ground_truth.py.
+mvc-synthetic/mvc_eos_display_order 4 1 e4935bbce35e5b25fc2de64b324e7ce4 710e34f237f6a3253302856a0003f4e4
 # MVC fixture encoded with JMVC 8.5 (ITU-T H.264.2), not an ITU vector; see
 # mvc-jmvc/README.md. Both views are anchored to the JMVC decoder's output
 # (check=OK dep_check=OK). Its dependent-view B slices put the base view at

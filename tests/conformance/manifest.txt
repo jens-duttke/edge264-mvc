@@ -293,7 +293,8 @@ mvc-synthetic/mvc_dep_before_base 2 1 db3681d9568edf2599f4c9f5e2cf4ce4 db3681d95
 mvc-synthetic/mvc_late_dependent 4 1 a048378e15cb9b259ead3cfae1ebfce4 db3681d9568edf2599f4c9f5e2cf4ce4
 # Trailing 1 = paced consumer: also decode draining only when the DPB reports
 # full, which holds frames into the dependent-view frame_num gap; without the
-# (FrameNum, POC) pairing fix the decoder aborts here, run forked so it FAILs cleanly.
+# pairing fix (POC and the base view parsed next to the dependent view) the decoder
+# aborts here, run forked so it FAILs cleanly.
 mvc-synthetic/mvc_interview_reflist 2 1 db3681d9568edf2599f4c9f5e2cf4ce4 f372da8cb6f0df25d0ef1f058e1c4ce4
 mvc-synthetic/mvc_mmco5_pairing 3 1 696a95091c933d253656812f9555a4e4 696a95091c933d253656812f9555a4e4
 mvc-synthetic/mvc_dependent_frame_num_gap 12 1 20fc95a352de8b25f2685fdbf0debce4 20fc95a352de8b25f2685fdbf0debce4 1
@@ -314,6 +315,12 @@ mvc-synthetic/mvc_eos_display_order 4 1 e4935bbce35e5b25fc2de64b324e7ce4 710e34f
 # same two sequences with the parameter sets sent only before the first one, which the second one
 # keeps using across the end of sequence (7.4.1.2.1); same content, so the same hashes.
 mvc-synthetic/mvc_eos_parameter_sets 4 1 e4935bbce35e5b25fc2de64b324e7ce4 710e34f237f6a3253302856a0003f4e4
+# mvc_2d_then_3d, mvc_nonref_dependent, mvc_dependent_gap (tests/gen_mvc_view_frame_num.py; see
+# mvc-synthetic/README.md): the two views of an access unit carry different frame_num values, which
+# 7.4.3 allows per view; flat I_PCM view components, hashes derived by ground_truth.py.
+mvc-synthetic/mvc_2d_then_3d 6 1 141acd7f5d646525fb2e2f07088b0ee4 8e2353fe5de25d2560e1e4e32587abe4
+mvc-synthetic/mvc_nonref_dependent 4 1 b2afdd1bde3ec32550ee11a17eeb28e4 8b5797bde5aa2b2551ec51bd447d90e4
+mvc-synthetic/mvc_dependent_gap 4 1 b2afdd1bde3ec32550ee11a17eeb28e4 8b5797bde5aa2b2551ec51bd447d90e4
 # MVC fixture encoded with JMVC 8.5 (ITU-T H.264.2), not an ITU vector; see
 # mvc-jmvc/README.md. Both views are anchored to the JMVC decoder's output
 # (check=OK dep_check=OK). Its dependent-view B slices put the base view at

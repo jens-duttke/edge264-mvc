@@ -105,16 +105,18 @@ static void dequeue_frame(Edge264MvcDecoder *dec, int view, int i) {
 
 /**
  * Tells whether a dependent view belongs to the same access unit as a base
- * view: the two views of one access unit share a FrameNum and a POC, and the
- * base view is the one parsed right before the dependent (H.7.4.1.2.5), or
- * right after it on a stream that sends the dependent first. A damaged stream
- * may give a later base view the same pair, which is not this dependent's -
+ * view: the two views of one access unit share a POC (H.8.1), and the base view
+ * is the one parsed right before the dependent (H.7.4.1.2.5), or right after it
+ * on a stream that sends the dependent first. Their frame_num may differ, as
+ * 7.4.3 constrains it per view (H.7.4.3): a dependent view coding non-reference
+ * pictures, a gap in one view, or a stereo sequence after one of the base view
+ * alone, which leaves the base view counting its FrameNum on. A damaged stream
+ * may give a later base view the same POC, which is not this dependent's -
  * taking it made the pairing depend on whether that base was parsed by the
  * time the dependent was looked at, hence on the thread timing.
  */
 static inline int same_access_unit(const Edge264MvcDecoder *dec, int base, int dep) {
-	return dec->FrameNums[base] == dec->FrameNums[dep] &&
-		dec->FieldOrderCnt[0][base] == dec->FieldOrderCnt[0][dep] &&
+	return dec->FieldOrderCnt[0][base] == dec->FieldOrderCnt[0][dep] &&
 		(dec->FrameIds[base] + 1 == dec->AuBaseIds[0][dep] || dec->FrameIds[base] + 1 == dec->AuBaseIds[1][dep]);
 }
 
@@ -3092,12 +3094,16 @@ int ADD_VARIANT(parse_slice_layer_without_partitioning)(Edge264MvcDecoder *dec, 
 			settle_recovery_bits(dec, currPic);
 		dec->frame_flip_bits ^= (FrameMask)1 << currPic;
 		dec->FrameIds[currPic] = ++dec->prevFrameId;
-		// remember the base views around each dependent view (see same_access_unit)
+		// remember the base views around each dependent view (see same_access_unit):
+		// one whose POC is that of the base view parsed right before it belongs to
+		// that one, and -1 keeps the next base view from being taken for its own;
+		// otherwise it was sent before its base view, the next one parsed
 		if (non_base_view) {
 			dec->AuBaseIds[0][currPic] = dec->lastBaseId;
-			dec->AuBaseIds[1][currPic] = 0;
+			dec->AuBaseIds[1][currPic] = dec->lastBaseId && dec->TopFieldOrderCnt == dec->lastBasePoc ? -1 : 0;
 		} else {
 			dec->lastBaseId = dec->FrameIds[currPic] + 1;
+			dec->lastBasePoc = dec->TopFieldOrderCnt;
 			for (FrameMask d = dec->non_base_frames; d; d &= d - 1) {
 				if (dec->AuBaseIds[1][mask_ctz(d)] == 0)
 					dec->AuBaseIds[1][mask_ctz(d)] = dec->lastBaseId;

@@ -70,6 +70,7 @@
 !tests/gen_mvc_end_of_sequence.py
 !tests/gen_new_picture_detection.py
 !tests/gen_duplicate_last_slice.py
+!tests/gen_mvc_view_frame_num.py
 !tests/conformance_check.c
 !tests/conformance
 !tests/conformance/2d

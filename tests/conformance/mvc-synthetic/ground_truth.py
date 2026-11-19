@@ -89,6 +89,12 @@ EXPECTED_NONFLAT = {
     "mvc-synthetic/mvc_eos_display_order": ([40, 80, 120, 160], [60, 100, 140, 180]),
     # mvc_eos_parameter_sets - the same content with the parameter sets sent only once
     "mvc-synthetic/mvc_eos_parameter_sets": ([40, 80, 120, 160], [60, 100, 140, 180]),
+    # tests/gen_mvc_view_frame_num.py: the views of an access unit with different frame_num
+    # values, each view component an I_PCM macroblock of one value; mvc_2d_then_3d starts
+    # with three pictures of the base view alone, whose dependent views do not exist.
+    "mvc-synthetic/mvc_2d_then_3d": ([20, 40, 60, 80, 100, 120], [90, 110, 130]),
+    "mvc-synthetic/mvc_nonref_dependent": ([20, 40, 60, 80], [30, 50, 70, 90]),
+    "mvc-synthetic/mvc_dependent_gap": ([20, 40, 60, 80], [30, 50, 70, 90]),
 }
 
 def main():

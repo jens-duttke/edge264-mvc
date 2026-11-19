@@ -67,8 +67,9 @@ decoder reproduces that hash. Run it from the repo root:
   views still share a `FrameNum` and a POC. The last AU also has the lowest
   non-zero POC, so a *paced* consumer (drain only when the DPB reports full)
   force-bumps it while its dependent is not yet queued - exactly where the old
-  decode-order "`base + 1`" pairing shortcut misresolved the pair. Pairing by
-  (`FrameNum`, POC) fixes it; without the fix the held, mispaired frames overflow
+  decode-order "`base + 1`" pairing shortcut misresolved the pair. Pairing by the
+  POC and the base view parsed next to the dependent view fixes it; without the fix
+  the held, mispaired frames overflow
   the DPB and the decoder aborts. This fixture is flagged paced in the manifest
   (trailing `1`) and the harness runs paced fixtures in a forked child, so that
   abort is reported as a clean FAIL rather than dumping core. Unlike the JVT MVC
@@ -85,8 +86,8 @@ decoder reproduces that hash. Run it from the repo root:
   `max_dec_frame_buffering = 4` force-bumps a base under a *paced* consumer while its
   same-POC dependent is still queued; the pre-fix scan matched on POC **alone** and
   paired the base with the wrong same-POC dependent, stranding frames until the DPB
-  overflows and the decoder aborts. Matching on (`FrameNum`, POC) - as the hold/bump
-  scans already do - fixes it. Under multithreading the same mispair swaps two frames'
+  overflows and the decoder aborts. Matching on the POC and the base view parsed next
+  to the dependent view - as the hold/bump scans do - fixes it. Under multithreading the same mispair swaps two frames'
   dependent halves non-deterministically; the paced DPB overflow is the deterministic,
   all-128-detectable manifestation guarded here. Flagged paced in the manifest.
   Profile 128, level 4.1, `max_num_reorder_frames = 1`, `max_dec_frame_buffering = 4`.
@@ -174,6 +175,22 @@ decoder reproduces that hash. Run it from the repo root:
   and rejected the second sequence as corrupt, so only 2 of the 4 frames came out. Same
   content as `mvc_eos_display_order`, hence the same hashes. Produced by
   `tests/gen_mvc_end_of_sequence.py` with the argument `stored`.
+
+- **mvc_2d_then_3d** (6 frames, 3 stereo), **mvc_nonref_dependent** (4 stereo) and
+  **mvc_dependent_gap** (4 stereo) - **fork regression guards** for the pairing of
+  the views of an access unit whose `frame_num` values differ, which 7.4.3 allows,
+  as it constrains `frame_num` per view (H.7.4.3); only their POCs must match (H.8.1).
+  `mvc_2d_then_3d` is a sequence of the base view alone, three reference pictures,
+  then a stereo sequence of three access units, as a menu before a stereo movie: the
+  base view counts its `frame_num` on across the IDR picture, the dependent view
+  starts from 0. In `mvc_nonref_dependent` the dependent view codes non-reference
+  pictures after its IDR picture, so its `frame_num` stays 1 while that of the base
+  view goes on; in `mvc_dependent_gap` the dependent view skips a `frame_num` value.
+  The pairing required equal `frame_num` values, so the dependent views were decoded
+  but never output - from the first stereo access unit on in `mvc_2d_then_3d`. Every
+  view component is one I_PCM macroblock of a single value, so `ground_truth.py`
+  derives both hashes. Produced by `tests/gen_mvc_view_frame_num.py` with the
+  fixture name as argument.
 
 ## Regenerating
 

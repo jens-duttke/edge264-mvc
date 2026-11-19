@@ -1080,6 +1080,7 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 		c.t.next_deblock_idc = in_turn ? currPic : -1;
 		c.t.next_deblock_addr = (in_turn || c.t.disable_deblocking_filter_idc == 2) && !whole ? c.t.first_mb_in_slice : INT_MIN;
 		c.fmo_decoded = 0;
+		c.stopped_on_claim = 0;
 		// A slice started before its bound is known decodes, deblocks and publishes
 		// as usual: should it go past the bound, the slice following it is the next
 		// NAL, so no task of a later picture reads this one yet, and its rows can be
@@ -1186,8 +1187,12 @@ void *ADD_VARIANT(worker_loop)(void *arg) {
 			deblock_range(&c, currPic, max(c.t.next_deblock_addr, (int)c.t.first_mb_in_slice), keep_mb);
 		
 		// on error, recover the other mbs and signal them as erroneous (those of a
-		// slice group are left to conceal_frame, as recover_slice takes them in a row)
-		if (__builtin_expect(ret != 0, 0) && !c.t.fmo_map && !c.t.MbaffFrameFlag)
+		// slice group are left to conceal_frame, as recover_slice takes them in a row);
+		// a slice ending at its first macroblock, which an older slice decoded, has
+		// none to recover, and flagging its picture would depend on whether the
+		// picture was output before this slice ran
+		if (__builtin_expect(ret != 0, 0) && !c.t.fmo_map && !c.t.MbaffFrameFlag &&
+			!(c.stopped_on_claim && c.CurrMbAddr == c.t.first_mb_in_slice))
 			recover_slice(&c, currPic, keep_mb);
 		
 		// update c.d->next_deblock_addr (atomic: read concurrently by other threads)

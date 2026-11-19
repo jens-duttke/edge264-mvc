@@ -263,3 +263,12 @@ multithreaded (`EDGE264MVC_THREADS=8` and `-1`), where these deadlocks surface.
   out, so the decoded half was lost and the next picture predicted from the
   concealed one. 3 frames, 1 rejected NAL; the hash pins the decoded bottom half
   in the P pictures.
+
+- duplicate_last_slice.264: 32x16 pictures of two I_PCM macroblocks coded as two
+  slices each, the second slice of the IDR picture sent twice, with
+  `max_num_reorder_frames = 0` (tests/gen_duplicate_last_slice.py). The copy starts
+  at a macroblock the first one decoded, so it ends there without decoding any.
+  It still flagged its picture as concealed, though there was nothing to conceal:
+  single-threaded the picture was already output when the copy ran, with worker
+  threads usually not, so the flag differed between the two (`make check-stress`
+  compares the flags of every run). 2 frames, no rejected NAL.

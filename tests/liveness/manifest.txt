@@ -211,3 +211,8 @@ mvc_requeue_dependent 45
 # of the same POC that never came out, so the picture after it predicted from a
 # fully concealed one. The hash pins the decoded bottom half in both pictures.
 rejected_first_slice 3 1 40d5742d25259b25
+# duplicate_last_slice: the second of the two slices of an IDR picture sent twice, with
+# max_num_reorder_frames 0 (tests/gen_duplicate_last_slice.py). The copy starts at a
+# macroblock the first one decoded and ends there; check-stress compares the flags of
+# every multithreaded run with the single-threaded one, which output the picture first.
+duplicate_last_slice 2 0

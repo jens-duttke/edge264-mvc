@@ -2152,8 +2152,10 @@ static noinline void CAFUNC(parse_slice_data)
 			}
 		}
 		int prev_recovery_bits = __atomic_exchange_n(&mb->recovery_bits, ctx->t.frame_flip_bit, __ATOMIC_ACQ_REL);
-		if (prev_recovery_bits == ctx->t.frame_flip_bit && !claim_after_older_slices(ctx))
+		if (prev_recovery_bits == ctx->t.frame_flip_bit && !claim_after_older_slices(ctx)) {
+			ctx->stopped_on_claim = 1;
 			return;
+		}
 
 		// set and reset neighbouring pointers depending on their availability
 		int unavail16x16 = (ctx->mbx == 0 ? 9 : 0) | (ctx->mbx == ctx->t.pic_width_in_mbs - 1) << 2 | (ctx->mby == 0 ? 14 : 0);

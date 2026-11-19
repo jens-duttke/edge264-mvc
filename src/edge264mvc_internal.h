@@ -510,6 +510,7 @@ typedef struct Edge264MvcContext {
 	int32_t CurrMbAddr;
 	int32_t mb_skip_run;
 	int8_t overrun; // the slice decoded past mb_bound before learning it, and is decoded again
+	int8_t stopped_on_claim; // the slice ended at a macroblock an older slice of its picture decoded
 	int16_t task_id;
 	int8_t currPic;
 	uint8_t *samples_mb[3]; // address of top-left byte of each plane in current macroblock
